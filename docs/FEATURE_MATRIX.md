@@ -171,7 +171,8 @@ No feature has a paid tier, license check, quota or artificial limit.
 | Platform | Status | Evidence |
 |---|---|---|
 | Linux x86_64 debug build and run | VERIFIED | Built and run under Xvfb on Ubuntu 26.04 |
-| Linux release build and .deb package | VERIFIED | `npx tauri build --bundles deb` produced a 12.1 MiB .deb with correct metadata; the release binary (embedded frontend) was run under Xvfb. Installing the .deb with dpkg was not tested (no root on the dev machine) |
-| Linux AppImage and rpm | NOT_STARTED | Standard Tauri bundles; not built yet |
-| Windows x86_64 | NOT_STARTED | CI workflow defined; not run yet |
-| macOS (Apple Silicon, Intel) | NOT_STARTED | CI workflow defined; signing needs credentials |
+| Linux release build and .deb package | VERIFIED | `npx tauri build --bundles deb` produced a 28 MiB .deb (most of it the embedded DuckDB engine) with correct metadata; the release binary (embedded frontend) was run under Xvfb. Installing the .deb with dpkg was not tested (no root on the dev machine) |
+| Linux AppImage and rpm | IMPLEMENTED | Built by CI and `release.yml` on Ubuntu 24.04; not yet launched |
+| Windows x86_64 (.msi, NSIS setup.exe) | IMPLEMENTED | Built by CI on `windows-latest` (clippy clean); not yet installed or launched. Unsigned |
+| macOS Apple Silicon (.dmg) | IMPLEMENTED | Built by CI on `macos-latest`; not yet launched. Unsigned and not notarized |
+| macOS Intel | NOT_STARTED | No x86_64 build yet |
