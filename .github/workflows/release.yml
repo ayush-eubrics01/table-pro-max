@@ -79,7 +79,8 @@ jobs:
             echo "::error::The TAURI_SIGNING_PRIVATE_KEY secret is not set. See docs/RELEASING.md."
             exit 1
           fi
-          npx tauri build --config '{"bundle":{"createUpdaterArtifacts":true}}'
+          # Signed updater files, plus a numeric MSI version for pre-release tags.
+          npx tauri build --config "$(node scripts/release-build-config.mjs "${{ needs.check.outputs.version }}")"
       - name: Collect installers
         shell: bash
         run: |
