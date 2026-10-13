@@ -15,6 +15,8 @@ Versions `0.x` and versions with a suffix (`1.2.0-rc.1`) are marked as pre-relea
 5. `cargo audit` and `npm audit --omit=dev` pass. Any ignored advisory is explained in
    `docs/DECISIONS.md`.
 6. Tag and push: `git tag -a vX.Y.Z -m "Table Pro Max X.Y.Z" && git push origin vX.Y.Z`.
+   The tagged commit's message must not contain `[skip ci]` (or `[ci skip]`, `[no ci]`):
+   GitHub applies it to the tag push too, and the release workflow silently does not start.
 7. When the workflow finishes, open the draft release and check:
    - every installer is attached: `.deb`, `.rpm`, `.AppImage`, `.msi`, `-setup.exe`, `.dmg`,
      and `SHA256SUMS`;
