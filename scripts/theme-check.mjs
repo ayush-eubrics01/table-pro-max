@@ -51,6 +51,29 @@ function oklab(hex) {
   ];
 }
 
+// Machado, Oliveira & Fernandes (2009), severity 1.0, applied in linear RGB.
+const CVD = {
+  protanopia: [
+    [0.152286, 1.052583, -0.204868],
+    [0.114503, 0.786281, 0.099216],
+    [-0.003882, -0.048116, 1.051998],
+  ],
+  deuteranopia: [
+    [0.367322, 0.860646, -0.227968],
+    [0.280085, 0.672501, 0.047413],
+    [-0.01182, 0.04294, 0.968881],
+  ],
+};
+export const CVD_TYPES = Object.keys(CVD);
+
+/** The colour as seen with the given colour-vision deficiency, as #rrggbb. */
+export function simulate(hex, type) {
+  const lin = rgb(hex).map(linear);
+  const out = CVD[type].map((row) => Math.min(1, Math.max(0, row[0] * lin[0] + row[1] * lin[1] + row[2] * lin[2])));
+  const enc = (c) => (c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055);
+  return `#${out.map((c) => Math.round(enc(c) * 255).toString(16).padStart(2, "0")).join("")}`;
+}
+
 export function deltaE(a, b) {
   const [x, y] = [oklab(a), oklab(b)];
   return 100 * Math.hypot(x[0] - y[0], x[1] - y[1], x[2] - y[2]);

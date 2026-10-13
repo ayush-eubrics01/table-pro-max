@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { ENVS, contrast, deltaE, failures, parseThemes } from "./theme-check.mjs";
+import { CVD_TYPES, ENVS, contrast, deltaE, failures, parseThemes, simulate } from "./theme-check.mjs";
 
 const css = readFileSync("src/styles/tokens.css", "utf8");
 const themes = parseThemes(css);
@@ -12,6 +12,9 @@ describe("theme checker", () => {
     expect(contrast("#FFFFFF", "#FFFFFF")).toBeCloseTo(1, 5);
     expect(deltaE("#4ED6A0", "#4ED6A0")).toBe(0);
     expect(deltaE("#000000", "#FFFFFF")).toBeCloseTo(100, 0);
+    // Red and green move closer for a protanope; grey is unchanged.
+    expect(deltaE(simulate("#ff0000", "protanopia"), simulate("#00ff00", "protanopia"))).toBeLessThan(deltaE("#ff0000", "#00ff00"));
+    expect(simulate("#808080", "deuteranopia")).toBe("#808080");
   });
 
   it("reports a pair below its target and a missing token", () => {
@@ -55,5 +58,19 @@ describe("theme tokens", () => {
   it("app.css uses no color-mix() either", () => {
     const app = readFileSync("src/styles/app.css", "utf8");
     expect(app).not.toMatch(/color-mix/);
+  });
+
+  it("environment colours stay apart for protanopia and deuteranopia (production most of all)", () => {
+    for (const [name, theme] of [["light", themes.light], ["dark", themes.dark]]) {
+      for (const type of CVD_TYPES) {
+        for (let i = 0; i < ENVS.length; i++)
+          for (let j = i + 1; j < ENVS.length; j++) {
+            const [a, b] = [ENVS[i], ENVS[j]];
+            const d = deltaE(simulate(theme[`--env-${a}`], type), simulate(theme[`--env-${b}`], type));
+            const floor = a === "production" || b === "production" ? 8 : 6;
+            expect(d, `${name}/${type}: ${a} vs ${b}`).toBeGreaterThanOrEqual(floor);
+          }
+      }
+    }
   });
 });
