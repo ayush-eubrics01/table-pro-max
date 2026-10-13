@@ -1,20 +1,31 @@
 # Table Pro Max
 
-A free, privacy-first desktop database client for **PostgreSQL, MySQL, MariaDB and SQLite**.
-It is built with Rust and Tauri for Linux, Windows and macOS.
+A free, privacy-first desktop database client for **PostgreSQL, MySQL, MariaDB, SQLite,
+DuckDB and Redis**. It is built with Rust and Tauri for Linux, Windows and macOS.
 
 - **Free, with no catches.** No account, no license key, no premium tier, no limits on tabs,
   filters or connections.
-- **Private.** The app talks only to your databases. No telemetry. Connections, history and
+- **Private.** The app talks only to your databases, plus the AI service you configure if you
+  turn the optional assistant on (every request is shown to you before it is sent). No telemetry. Connections, history and
   saved queries stay on your machine, and passwords go to your system keychain.
 - **Safe editing.** Grid edits stay pending until you review the generated SQL and commit them
   in one transaction. Destructive statements ask first. Production connections are
   unmistakable, and read-only mode is enforced by the database session itself.
 
 What exists today, and how it was verified, is listed in
-[docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md). Features not listed there as implemented
-(import/export, dashboards, SSH tunnels, more databases) are on the
+[docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md). What comes next is on the
 [roadmap](docs/ROADMAP.md).
+
+## Install
+Download an installer from [Releases](../../releases): `.deb`, `.rpm` or `.AppImage` for
+Linux, `.msi` or `-setup.exe` for Windows, `.dmg` for macOS on Apple Silicon. Check the file
+against `SHA256SUMS` from the same release.
+
+The builds are not code-signed yet, so the OS warns on first launch:
+- **Windows:** SmartScreen says "Windows protected your PC". Choose *More info*, then *Run anyway*.
+- **macOS:** Gatekeeper may say the app "is damaged" or "cannot be verified". After copying it to
+  Applications, run `xattr -dr com.apple.quarantine "/Applications/Table Pro Max.app"`.
+- **Linux AppImage:** `chmod +x` the file, then run it.
 
 ## Run from source
 

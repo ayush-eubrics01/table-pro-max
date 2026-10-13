@@ -13,13 +13,13 @@ Milestones follow the engineering plan. Status reflects the code in this reposit
 | 6 | Advanced data tools: filters, schema editing, quick open, explain, import/export | Done |
 | 7 | Metrics board: dashboards, charts, SQL widgets with bounded concurrency | Done |
 | 8 | SQL Server, DuckDB, Redis; optional AI; optional MCP | DuckDB, Redis and AI done; SQL Server evaluated; MCP not started |
-| 9 | Cross-platform readiness: Linux packages, Windows and macOS CI builds, credential stores, installers | Linux `.deb` built and run; CI workflow written but not yet run |
-| 10 | Release hardening: regression, security review, licenses, reproducible builds, checklist | Not started |
+| 9 | Cross-platform readiness: Linux packages, Windows and macOS CI builds, credential stores, installers | Linux, Windows and macOS installers built in CI; tag-triggered draft releases (`release.yml`); Linux `.deb` run. Windows/macOS installers not yet launched; no code signing |
+| 10 | Release hardening: regression, security review, licenses, reproducible builds, checklist | Release checklist written (`docs/RELEASING.md`); the rest not started |
 
 ## Next up (in order)
-1. First Windows/macOS CI runs; AppImage and rpm.
+1. Launch the Windows and macOS installers on real machines; code signing when certificates exist.
 2. Query parameters and snippets.
 3. Optional local MCP server (off by default, read-only by default).
 4. SQL Server adapter (`tiberius`).
 5. TLS test fixture; automated UI end-to-end in CI (tauri-driver on Linux runners).
-6. Release checklist (milestone 10).
+6. macOS Intel build; auto-update (signed update manifests only).
