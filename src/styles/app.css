@@ -1414,6 +1414,26 @@ pre,
   color: var(--accent);
 }
 
+.dialog.connecting {
+  width: min(440px, calc(100vw - 32px));
+  margin-top: 18vh;
+}
+.connecting-title {
+  margin: 6px 0 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+.connecting-target {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+.connecting-wait {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--text-muted);
+}
+
 /* ---- palette ------------------------------------------------------------- */
 
 .palette {

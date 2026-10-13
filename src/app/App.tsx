@@ -10,6 +10,7 @@ import { useWorkspaces, type Tab } from "../stores/workspaces";
 import { confirmAction, notifyError, useUi } from "../stores/ui";
 import { Overlays } from "../components/Overlays";
 import { Home } from "../features/connections/Home";
+import { ConnectingDialog } from "../features/connections/ConnectingDialog";
 import { connectRedisWithPrompt, connectWithPrompt } from "../features/connections/connectFlow";
 import { OpenAnything } from "../features/command-palette/OpenAnything";
 import { SettingsDialog } from "../features/settings/SettingsDialog";
@@ -114,6 +115,7 @@ export function App() {
   }, []);
 
   const active = workspaces.find((w) => w.id === activeId);
+  const connectingProfile = connecting ? useConnections.getState().byId(connecting) : undefined;
 
   const closeWorkspace = async (id: string) => {
     const ws = useWorkspaces.getState().workspaces.find((w) => w.id === id);
@@ -181,6 +183,7 @@ export function App() {
       <StatusBar ws={active} version={appInfo?.version} />
       {paletteOpen && <OpenAnything onConnect={(p) => void connect(p)} />}
       {settingsOpen && <SettingsDialog appInfo={appInfo} onClose={() => useUi.getState().setSettingsOpen(false)} />}
+      {connectingProfile && <ConnectingDialog profile={connectingProfile} />}
       <Overlays />
       {isMainWindow && <FirstRunUpdatePrompt />}
     </div>
