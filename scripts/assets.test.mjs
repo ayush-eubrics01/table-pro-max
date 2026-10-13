@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { execSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 const root = process.cwd();
@@ -35,5 +36,10 @@ describe("bundled assets", () => {
     expect(deps["lucide-react"]).toBeUndefined();
     const offenders = files("src").filter((f) => /\.tsx?$/.test(f) && read(f).includes("lucide-react"));
     expect(offenders).toEqual([]);
+  });
+
+  it("tracks no Python bytecode or other build output", () => {
+    const tracked = execSync("git ls-files", { encoding: "utf8" }).split("\n");
+    expect(tracked.filter((f) => /__pycache__|\.pyc$/.test(f))).toEqual([]);
   });
 });

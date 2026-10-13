@@ -7,3 +7,7 @@
 /src-tauri/target
 /src-tauri/gen/schemas
 /coverage
+
+# Python bytecode (scripts/dev)
+__pycache__/
+*.pyc
