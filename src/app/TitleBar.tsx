@@ -17,7 +17,7 @@ export function TitleBar({ mac, onCloseWorkspace }: Props) {
   const workspaces = useWorkspaces((s) => s.workspaces);
   const activeId = useWorkspaces((s) => s.activeId);
   const activate = (id: string | null) => useWorkspaces.getState().activate(id);
-  const tabs = useRef<HTMLElement>(null);
+  const tabs = useRef<HTMLDivElement>(null);
 
   // With many connections the strip scrolls; keep the active tab visible.
   useEffect(() => {
@@ -32,11 +32,19 @@ export function TitleBar({ mac, onCloseWorkspace }: Props) {
         </span>
         <span data-tauri-drag-region>Table Pro Max</span>
       </div>
-      <nav className="titlebar-tabs" role="tablist" aria-label="Open connections" ref={tabs}>
+      <nav className="titlebar-tabs" role="tablist" aria-label="Open connections">
         <button className="tb-tab" role="tab" aria-selected={activeId === null} onClick={() => activate(null)}>
           <Icon name="grid_view" size={15} />
           <span className="label">Connections</span>
         </button>
+        {/* Only the connection tabs scroll, so Connections stays reachable; the wheel scrolls sideways. */}
+        <div
+          className="titlebar-conn-tabs"
+          ref={tabs}
+          onWheel={(e) => {
+            if (e.deltaY !== 0 && e.deltaX === 0) e.currentTarget.scrollLeft += e.deltaY;
+          }}
+        >
         {workspaces.map((w) => (
           <div
             key={w.id}
@@ -63,6 +71,7 @@ export function TitleBar({ mac, onCloseWorkspace }: Props) {
             </button>
           </div>
         ))}
+        </div>
       </nav>
       <div className="titlebar-drag" data-tauri-drag-region />
       <div className="titlebar-actions">

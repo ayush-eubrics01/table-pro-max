@@ -72,4 +72,14 @@ describe("TitleBar", () => {
     render(<TitleBar mac={false} onCloseWorkspace={() => undefined} />);
     expect(seen.some((el) => el.getAttribute("aria-selected") === "true" && el.textContent?.includes("Local PG"))).toBe(true);
   });
+
+  it("keeps the Connections tab outside the scrolling strip and scrolls it with the mouse wheel", () => {
+    const { container } = render(<TitleBar mac={false} onCloseWorkspace={() => undefined} />);
+    const scroller = container.querySelector(".titlebar-conn-tabs") as HTMLElement;
+    expect(scroller).not.toBeNull();
+    expect(scroller.contains(screen.getByRole("tab", { name: /Connections/ }))).toBe(false);
+    expect(scroller.contains(screen.getByRole("tab", { name: /Local PG/ }))).toBe(true);
+    fireEvent.wheel(scroller, { deltaY: 120 });
+    expect(scroller.scrollLeft).toBe(120);
+  });
 });
