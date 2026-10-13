@@ -14,6 +14,9 @@ import { Home } from "../features/connections/Home";
 import { connectRedisWithPrompt, connectWithPrompt } from "../features/connections/connectFlow";
 import { OpenAnything } from "../features/command-palette/OpenAnything";
 import { SettingsDialog } from "../features/settings/SettingsDialog";
+import { FirstRunUpdatePrompt } from "../features/updates/FirstRunUpdatePrompt";
+import { UpdateBanner } from "../features/updates/UpdateBanner";
+import { useUpdates } from "../features/updates/store";
 import { StatusBar, WorkspaceView } from "./WorkspaceView";
 import { loadSaved, scheduleSave } from "./restore";
 
@@ -62,6 +65,7 @@ export function App() {
     void (async () => {
       try {
         await useSettings.getState().load();
+        if (isMainWindow) void useUpdates.getState().init();
         api.appInfo().then(setAppInfo).catch(() => undefined);
         await useConnections.getState().load().catch((e) => notifyError(e, "Connections could not be loaded"));
         if (!isMainWindow || !useSettings.getState().settings["workspace.restore"]) return;
@@ -207,6 +211,7 @@ export function App() {
       </nav>
 
       <div style={{ minHeight: 0, display: "flex", flexDirection: "column" }}>
+        {isMainWindow && <UpdateBanner />}
         {activeId === null && <Home appInfo={appInfo} connecting={connecting} onConnect={(p) => void connect(p)} />}
         {workspaces.map((w) => (
           <WorkspaceView key={w.id} ws={w} visible={w.id === activeId} />
@@ -217,6 +222,7 @@ export function App() {
       {paletteOpen && <OpenAnything onConnect={(p) => void connect(p)} />}
       {settingsOpen && <SettingsDialog appInfo={appInfo} onClose={() => useUi.getState().setSettingsOpen(false)} />}
       <Overlays />
+      {isMainWindow && <FirstRunUpdatePrompt />}
     </div>
   );
 }

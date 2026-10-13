@@ -5,6 +5,7 @@ import { useSettings, type Settings } from "../../stores/settings";
 import { confirmAction, notify, notifyError } from "../../stores/ui";
 import { api } from "../../lib/ipc";
 import { AiSettings } from "../ai/AiSettings";
+import { UpdateSettings } from "../updates/UpdateSettings";
 
 function NumberField({ label, k, min, max, hint }: { label: string; k: keyof Settings; min: number; max: number; hint?: string }) {
   const value = useSettings((s) => s.settings[k]) as number;
@@ -134,6 +135,7 @@ export function SettingsDialog({ appInfo, onClose }: { appInfo: AppInfo | null; 
       </div>
 
       <AiSettings />
+      <UpdateSettings />
 
       {appInfo && (
         <div className="notice">
@@ -145,7 +147,7 @@ export function SettingsDialog({ appInfo, onClose }: { appInfo: AppInfo | null; 
           <br />
           Passwords are stored in: {appInfo.credentialStore}
           <br />
-          Nothing is sent to any server other than the databases you connect to and, only if you turn it on, the AI service you set up above.
+          Nothing is sent to any server other than the databases you connect to and, only if you allow it, the AI service you set up above and GitHub when checking for updates.
         </div>
       )}
     </Dialog>
