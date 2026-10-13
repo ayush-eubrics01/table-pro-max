@@ -147,6 +147,16 @@ describe("update banner", () => {
     expect(installs()).toHaveLength(1);
   });
 
+  it("Cancel stops the running download", async () => {
+    await found();
+    render(<UpdateBanner />);
+    fireEvent.click(screen.getByRole("button", { name: "Update now" }));
+    await waitFor(() => expect(installs()).toHaveLength(1));
+    const jobId = installs()[0]!.args.jobId;
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "update_cancel" && c.args.jobId === jobId)).toBe(true));
+  });
+
   it("offers Download when this install cannot update itself", async () => {
     status.canInstall = false;
     status.installKind = "unknown";
