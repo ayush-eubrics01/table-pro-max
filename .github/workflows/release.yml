@@ -1,8 +1,9 @@
 name: Release
 
-# Pushing a tag such as v0.1.0 builds unsigned installers on Linux, Windows and macOS and
-# attaches them, with SHA256SUMS, to a DRAFT GitHub release. Nothing is published until a
-# maintainer reviews the draft and publishes it. See docs/RELEASING.md.
+# Pushing a tag such as v0.1.0 builds installers on Linux, Windows and macOS plus updater
+# files signed with the project's key (TAURI_SIGNING_PRIVATE_KEY), and attaches them with
+# latest.json (the in-app update manifest) and SHA256SUMS to a DRAFT GitHub release. Nothing
+# reaches users until a maintainer publishes the draft. See docs/RELEASING.md.
 
 on:
   push:
@@ -35,6 +36,13 @@ jobs:
             exit 1
           fi
           echo "version=$tag" >> "$GITHUB_OUTPUT"
+      - name: Updater config is safe to ship
+        run: |
+          jq -e '.plugins.updater
+                 | (.pubkey | length > 40)
+                   and .requireSignedVersion == true
+                   and (has("dangerousInsecureTransportProtocol") | not)
+                   and (has("allowDowngrades") | not)' src-tauri/tauri.conf.json
 
   build:
     name: Build (${{ matrix.platform }})
@@ -61,8 +69,17 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: Build bundles (unsigned)
-        run: npx tauri build
+      - name: Build bundles (installers unsigned, updates signed)
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::The TAURI_SIGNING_PRIVATE_KEY secret is not set. See docs/RELEASING.md."
+            exit 1
+          fi
+          npx tauri build --config '{"bundle":{"createUpdaterArtifacts":true}}'
       - name: Collect installers
         shell: bash
         run: |
@@ -70,16 +87,26 @@ jobs:
           b=target/release/bundle
           out=release-assets  # not dist/: that is the Vite build output
           mkdir "$out"
+          shopt -s nullglob
+          # take <signed|plain> <published name> <matches...>: exactly one match, copied
+          # (with its updater signature when signed) under the published name.
+          take() {
+            local mode=$1 name=$2; shift 2
+            if [ $# -ne 1 ]; then echo "::error::expected one file for $name, found $#: $*"; exit 1; fi
+            cp "$1" "$out/$name"
+            if [ "$mode" = signed ]; then cp "$1.sig" "$out/$name.sig"; fi
+          }
           case "$RUNNER_OS" in
             Linux)
-              cp "$b/deb/Table Pro Max_${v}_amd64.deb"           "$out/table-pro-max_${v}_amd64.deb"
-              cp "$b/rpm/Table Pro Max-${v}-1.x86_64.rpm"         "$out/table-pro-max-${v}-1.x86_64.rpm"
-              cp "$b/appimage/Table Pro Max_${v}_amd64.AppImage"  "$out/table-pro-max_${v}_amd64.AppImage" ;;
+              take signed "table-pro-max_${v}_amd64.deb"          "$b"/deb/*.deb
+              take signed "table-pro-max-${v}-1.x86_64.rpm"        "$b"/rpm/*.rpm
+              take signed "table-pro-max_${v}_amd64.AppImage"      "$b"/appimage/*.AppImage ;;
             Windows)
-              cp "$b/msi/Table Pro Max_${v}_x64_en-US.msi"        "$out/table-pro-max_${v}_x64_en-US.msi"
-              cp "$b/nsis/Table Pro Max_${v}_x64-setup.exe"       "$out/table-pro-max_${v}_x64-setup.exe" ;;
+              take signed "table-pro-max_${v}_x64_en-US.msi"       "$b"/msi/*.msi
+              take signed "table-pro-max_${v}_x64-setup.exe"       "$b"/nsis/*-setup.exe ;;
             macOS)
-              cp "$b/dmg/Table Pro Max_${v}_aarch64.dmg"          "$out/table-pro-max_${v}_aarch64.dmg" ;;
+              take plain  "table-pro-max_${v}_aarch64.dmg"         "$b"/dmg/*.dmg
+              take signed "table-pro-max_${v}_aarch64.app.tar.gz"  "$b"/macos/*.app.tar.gz ;;
           esac
           ls -l "$out"
       - uses: actions/upload-artifact@v4
@@ -101,6 +128,14 @@ jobs:
           path: release-assets
           pattern: release-*
           merge-multiple: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Updater manifest
+        run: |
+          v="${{ needs.check.outputs.version }}"
+          node scripts/updater-manifest.mjs --version "$v" --repo "$GITHUB_REPOSITORY" \
+            --notes "docs/releases/v$v.md" --dir release-assets --out release-assets/latest.json
       - name: Checksums
         working-directory: release-assets
         run: |
@@ -115,6 +150,6 @@ jobs:
           notes="docs/releases/v${v}.md"
           [ -f "$notes" ] || { echo "::error::Missing release notes $notes"; exit 1; }
           pre=""
-          case "$v" in 0.*|*-*) pre="--prerelease" ;; esac
+          case "$v" in *-*) pre="--prerelease" ;; esac  # only suffixed tags; plain tags are offered as updates
           gh release create "$GITHUB_REF_NAME" release-assets/* --draft $pre --verify-tag \
             --title "Table Pro Max $v" --notes-file "$notes"
