@@ -28,6 +28,8 @@ pub struct AppState {
     pub pending_update: Mutex<Option<tauri_plugin_updater::Update>>,
     /// Cancellation tokens of running update downloads (at most one).
     pub update_jobs: Mutex<HashMap<String, Arc<tokio_util::sync::CancellationToken>>>,
+    /// Held from "Update now" until the installer returns: one install at a time.
+    pub update_lock: tpm_core::updates::InstallLock,
 }
 
 impl AppState {
