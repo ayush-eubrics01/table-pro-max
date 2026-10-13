@@ -119,12 +119,23 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+      # Ubuntu's mirrors are sometimes very slow (minutes for ~60 MB), so the downloaded .deb
+      # files are cached. Bump the key suffix when the package list changes.
+      - name: Cache Linux packages
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-${{ runner.arch }}-webkit41-v1-norec
       - name: Linux system dependencies
         if: runner.os == 'Linux'
         run: |
+          mkdir -p ~/apt-archives/partial
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
-            libayatana-appindicator3-dev librsvg2-dev libxdo-dev build-essential file
+          sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/apt-archives" \
+            libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev build-essential pkg-config file
+          sudo chown -R "$USER" ~/apt-archives
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
