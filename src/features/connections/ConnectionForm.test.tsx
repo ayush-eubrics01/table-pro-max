@@ -107,4 +107,11 @@ describe("ConnectionForm", () => {
     await waitFor(() => expect(screen.getByDisplayValue("db.internal")).toBeInTheDocument());
     expect(screen.queryByDisplayValue(/s3cret@/)).not.toBeInTheDocument();
   });
+
+  it("re-clicking the selected engine tile keeps the port", async () => {
+    render(<ConnectionForm appInfo={appInfo(true)} initialUrl="postgres://svc:s3cret@db.internal:6543/shop" onClose={() => undefined} onSaved={() => undefined} />);
+    await waitFor(() => expect(screen.getByDisplayValue("6543")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("radio", { name: /PostgreSQL/ }));
+    expect(screen.getByDisplayValue("6543")).toBeInTheDocument();
+  });
 });

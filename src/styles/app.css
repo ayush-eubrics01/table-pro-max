@@ -1433,6 +1433,13 @@ pre,
   gap: var(--space-3);
   color: var(--text-muted);
 }
+.connecting-wait .btn {
+  margin-left: auto;
+}
+/* Keep the title bar's window controls usable while connecting. */
+.connecting-backdrop {
+  top: var(--titlebar-height);
+}
 
 /* ---- palette ------------------------------------------------------------- */
 

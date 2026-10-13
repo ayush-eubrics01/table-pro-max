@@ -220,7 +220,7 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
             role="radio"
             aria-checked={p.driver === d.value}
             disabled={isEdit && p.driver !== d.value}
-            onClick={() => setDriver(d.value)}
+            onClick={() => d.value !== p.driver && setDriver(d.value)}
           >
             <span className="driver-mark">{d.short}</span>
             {d.label}
