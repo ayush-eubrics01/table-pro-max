@@ -535,3 +535,32 @@ export interface AiAnswer {
   inputTokens: number | null;
   outputTokens: number | null;
 }
+
+export type UpdateAuto = "ask" | "on" | "off";
+export type InstallKind = "appimage" | "deb" | "rpm" | "nsis" | "msi" | "app" | "unknown";
+
+export interface UpdateStatus {
+  currentVersion: string;
+  auto: UpdateAuto;
+  /** Milliseconds since the epoch; 0 means never. */
+  lastCheck: number;
+  installKind: InstallKind;
+  canInstall: boolean;
+}
+
+export interface AvailableUpdate {
+  version: string;
+  date: string | null;
+  notes: string | null;
+}
+
+export interface UpdateCheck {
+  available: AvailableUpdate | null;
+  skipped: boolean;
+}
+
+export interface UpdateProgress {
+  jobId: string;
+  downloaded: number;
+  total: number | null;
+}
