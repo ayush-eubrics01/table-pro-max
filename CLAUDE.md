@@ -23,6 +23,12 @@ Rust core. Read `docs/ARCHITECTURE.md` and `docs/FEATURE_MATRIX.md` before chang
 - App: `npm run tauri dev` (needs WebKitGTK dev packages on Linux; see README).
 - Lint Rust: `cargo clippy --workspace --all-targets` and `cargo fmt --all`.
 
+## Workflow
+- Branch from `main` (`feat/`, `fix/`, `design/`, `perf/`, `docs/`, `ci/`, `chore/`), open a PR,
+  squash-merge after **CI passed**. Never push to `main`. Details in `CONTRIBUTING.md`.
+- PR titles become the commit on `main`: `type: what changed`. Never use `[skip ci]`.
+- Versions are set only with `node scripts/bump-version.mjs X.Y.Z`.
+
 ## Rules that matter here
 - Never add feature gates, license checks, telemetry or network calls other than to user
   databases, the user-configured AI endpoint (`ai.rs`; off by default, every request

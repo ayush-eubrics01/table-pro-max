@@ -12,7 +12,8 @@ are marked as pre-releases and are never offered; use them to test a release bui
 ## Checklist
 1. `main` is green in CI (core with integration tests, frontend, desktop builds, audit).
 2. The version is the same in `Cargo.toml` (`[workspace.package]`), `package.json` and
-   `src-tauri/tauri.conf.json`. The workflow stops if the tag does not match all three.
+   `src-tauri/tauri.conf.json`: set it with `node scripts/bump-version.mjs X.Y.Z`, which also
+   updates both lock files, in a PR. The workflow stops if the tag does not match all three.
 3. `docs/releases/vX.Y.Z.md` exists. The workflow uses it as the release notes and stops
    without it. Say what changed, what is unverified, and anything users must do.
 4. `docs/FEATURE_MATRIX.md` statuses are current. Nothing is called VERIFIED without evidence.
@@ -30,6 +31,9 @@ are marked as pre-releases and are never offered; use them to test a release bui
    - the notes read correctly.
 8. Publish the draft. To abandon a release, delete the draft and the tag
    (`git push origin :refs/tags/vX.Y.Z`), fix the problem, and tag again.
+
+Hotfixes for an older release, when `main` already holds unreleased work, go through a
+`release/X.Y` branch made from the release tag; see CONTRIBUTING.md.
 
 ## Signing key
 In-app updates are verified with a minisign key pair. The public key is in

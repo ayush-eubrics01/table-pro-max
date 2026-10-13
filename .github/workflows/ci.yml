@@ -1,17 +1,21 @@
 name: CI
 
+# Every PR and every push to main runs this. "CI passed" is the one required check: it always
+# reports, so docs-only PRs are not left waiting. Build jobs are skipped when only docs, Markdown
+# or LICENSE files changed. PRs build the desktop app on Linux only; Windows and macOS build on
+# main and on PRs labelled `full-ci`. See CONTRIBUTING.md.
+
 on:
   push:
     branches: [main]
-    paths-ignore: ["docs/**", "**/*.md", "LICENSE*"]
   pull_request:
-    paths-ignore: ["docs/**", "**/*.md", "LICENSE*"]
+    types: [opened, synchronize, reopened, labeled]
 
-# Changes that only touch docs do not run CI. A newer push to the same PR or branch
-# cancels the run still in progress.
+# A newer push to the same PR cancels its run in progress. Runs on main are never cancelled,
+# so every merged commit gets a full result.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -20,8 +24,45 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  changes:
+    name: Plan
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.plan.outputs.code }}
+      platforms: ${{ steps.plan.outputs.platforms }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+        run: |
+          # Build unless every changed file is documentation. Unknown base (new branch, force
+          # push): build.
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            code=true
+          elif [ -n "$(git diff --name-only "$(git merge-base "$BASE" "$HEAD")" "$HEAD" | { grep -vE '^docs/|\.md$|^LICENSE' || true; })" ]; then
+            code=true
+          else
+            code=false
+          fi
+          if [ "$EVENT" = push ] || [ "$FULL_CI" = true ]; then
+            platforms='["ubuntu-24.04","windows-latest","macos-latest"]'
+          else
+            platforms='["ubuntu-24.04"]'
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "platforms=$platforms" >> "$GITHUB_OUTPUT"
+          echo "Code changed: $code. Desktop builds: $platforms"
+
   core:
     name: Rust core (unit + integration)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -42,6 +83,8 @@ jobs:
 
   frontend:
     name: Frontend
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -57,14 +100,12 @@ jobs:
 
   desktop:
     name: Desktop build (${{ matrix.platform }})
-    needs: [core, frontend]
+    needs: [changes, core, frontend]
+    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: ubuntu-24.04
-          - platform: windows-latest
-          - platform: macos-latest
+        platform: ${{ fromJSON(needs.changes.outputs.platforms) }}
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -92,6 +133,8 @@ jobs:
 
   audit:
     name: Dependency audit
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -103,3 +146,20 @@ jobs:
           node-version: 24
       - run: npm ci
       - run: npm audit --omit=dev
+
+  ci-passed:
+    name: CI passed
+    if: always()
+    needs: [changes, core, frontend, desktop, audit]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Every job passed or was skipped for a docs-only change
+        env:
+          PLAN: ${{ needs.changes.result }}
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "plan: $PLAN; jobs: $RESULTS"
+          [ "$PLAN" = success ] || { echo "::error::the plan job did not succeed"; exit 1; }
+          for r in $RESULTS; do
+            case "$r" in success|skipped) ;; *) echo "::error::a CI job ended with: $r"; exit 1 ;; esac
+          done

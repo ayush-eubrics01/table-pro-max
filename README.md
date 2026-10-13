@@ -62,6 +62,9 @@ npm run tauri build        # bundles land in target/release/bundle/
 Code signing and notarization (Windows, macOS) need your own certificates. Unsigned builds work
 locally but show OS warnings.
 
+## Contributing
+Branches, pull requests, CI and releases are described in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Tests
 ```sh
 cargo test -p tpm-core                       # Rust unit tests (no database needed)
