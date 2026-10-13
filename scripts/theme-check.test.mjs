@@ -82,4 +82,14 @@ describe("theme tokens", () => {
     const placeholder = /\.input::placeholder,\s*\.textarea::placeholder\s*\{([^}]*)\}/.exec(app)?.[1] ?? "";
     expect(placeholder).toMatch(/color:\s*var\(--text-faint\)/);
   });
+
+  it("keyboard focus is a solid accent ring on inputs and an accent bar on menu items", () => {
+    const app = readFileSync("src/styles/app.css", "utf8");
+    const input = /\.input:focus,\s*\.select:focus,\s*\.textarea:focus\s*\{([^}]*)\}/.exec(app)?.[1] ?? "";
+    expect(input).toMatch(/border-color:\s*var\(--focus\)/);
+    expect(input).toMatch(/box-shadow:\s*0 0 0 1px var\(--focus\)/);
+    const menu = /\.menu button:focus-visible\s*\{([^}]*)\}/.exec(app)?.[1] ?? "";
+    expect(menu).toMatch(/box-shadow:\s*inset 2px 0 0 var\(--focus\)/);
+    expect(menu).toMatch(/background:\s*var\(--surface-active\)/);
+  });
 });

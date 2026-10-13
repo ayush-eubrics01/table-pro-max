@@ -142,7 +142,8 @@ pre,
 .textarea:focus {
   outline: none;
   border-color: var(--focus);
-  box-shadow: 0 0 0 3px var(--focus-ring);
+  /* 1px border + 1px ring = a solid 2px accent edge, with a soft halo outside it. */
+  box-shadow: 0 0 0 1px var(--focus), 0 0 0 4px var(--focus-ring);
 }
 .input[aria-invalid="true"] {
   border-color: var(--danger);
@@ -330,9 +331,12 @@ pre,
   text-align: left;
   cursor: pointer;
 }
-.menu button:hover,
-.menu button:focus-visible {
+.menu button:hover {
   background: var(--surface-hover);
+}
+.menu button:focus-visible {
+  background: var(--surface-active);
+  box-shadow: inset 2px 0 0 var(--focus);
   outline: none;
 }
 .menu button.danger {
