@@ -59,15 +59,20 @@ Several people can work at once because each change lives on its own branch:
 
 ### What CI runs
 
-| Event | Runs |
-|---|---|
-| Pull request | Rust core (with real databases), frontend, dependency audit, Linux desktop build (about 25 minutes) |
-| PR labelled `full-ci` | The above, plus the Windows and macOS desktop builds (about 50 minutes) |
-| Push to `main` (every merge) | Everything, on all three platforms |
-| Only docs, Markdown or LICENSE changed | Nothing but the "CI passed" check, which passes straight away |
+| Event | Runs | Typical time |
+|---|---|---|
+| Pull request | Rust core (with real databases), frontend, dependency audit, desktop app compiled and linted on Linux | about 10 minutes |
+| PR labelled `full-ci` | The above on all three platforms, plus Windows, macOS and Linux installers attached to the run | about 50 minutes |
+| Push to `main` (every merge) | Everything, desktop app compiled and linted on Linux, Windows and macOS (no installers) | about 15 minutes |
+| Release tag (`v*`) | Signed installers for all three platforms in a draft release (`release.yml`) | about 35 minutes |
+| Only docs, Markdown or LICENSE changed | Nothing but the "CI passed" check, which passes straight away | seconds |
 
-Add the `full-ci` label when a PR touches anything platform-specific: `src-tauri/`, credential
-stores, file paths, installers or the release workflow. Never put `[skip ci]` in a PR title: the
+Only `main` saves build caches; pull requests reuse them, so the first run after a dependency
+change is slower.
+
+Add the `full-ci` label when a PR touches anything platform-specific (`src-tauri/`, credential
+stores, file paths, installers, the release workflow), or when someone wants to download and try
+the PR as an installer. Never put `[skip ci]` in a PR title: the
 required check would never report and the PR could not merge.
 
 ### Rules on `main`
