@@ -1,0 +1,12 @@
+# cargo-audit configuration. Every ignored advisory needs a reason here and in
+# docs/DECISIONS.md.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071 (rsa, "Marvin" timing side channel; no fixed release exists).
+    # Pulled in by russh's `rsa` feature for RSA host keys and RSA user keys. The client only
+    # performs a private-key operation once per SSH login (signing the auth challenge), which
+    # does not give a network attacker the many timed operations the attack needs; host key
+    # checks use public-key operations only. See DECISIONS D14.
+    "RUSTSEC-2023-0071",
+]

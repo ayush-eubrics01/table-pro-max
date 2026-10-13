@@ -1,0 +1,48 @@
+[package]
+name = "tpm-core"
+description = "Database access, storage and safety core for Table Pro Max"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+tokio-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+async-trait = "0.1.92"
+url = "2.5.8"
+percent-encoding = "2.3.2"
+hex = "0.4.3"
+csv = "1.4.0"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde"] }
+tokio-postgres = { version = "0.7.18", features = ["with-serde_json-1"] }
+tokio-postgres-rustls = { version = "0.14.0", default-features = false, features = ["ring"] }
+rustls-native-certs = "0.8.5"
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+mysql_async = { version = "0.37.1", default-features = false, features = ["default-rustls-ring"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "column_decltype"] }
+sqlparser = "0.63.0"
+bytes = "1.12.1"
+futures-util = "0.3.34"
+keyring = { version = "4", optional = true }
+rust_xlsxwriter = { version = "0.99.1", features = ["constant_memory"] }
+russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
+duckdb = { version = "1.10506", features = ["bundled"], optional = true }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json"] }
+redis = { version = "1.7", default-features = false, features = ["tokio-comp", "tokio-rustls-comp", "tls-rustls-insecure", "streams"] }
+
+[features]
+default = ["os-keyring", "duckdb"]
+# Native credential stores: Keychain (macOS), Credential Manager (Windows),
+# Secret Service over D-Bus (Linux/BSD).
+os-keyring = ["dep:keyring"]
+# Embedded DuckDB (bundled C++ engine; adds several minutes to a clean build).
+duckdb = ["dep:duckdb"]
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
