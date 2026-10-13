@@ -17,6 +17,9 @@ use crate::state::AppState;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Opener: Rust-side only (release page); no webview permission is granted.
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let paths = app.path();
             let data_dir = paths.app_data_dir()?;
@@ -51,6 +54,8 @@ pub fn run() {
                 log_dir,
                 jobs: Default::default(),
                 ai_jobs: Default::default(),
+                pending_update: Default::default(),
+                update_jobs: Default::default(),
             });
             Ok(())
         })
@@ -89,6 +94,11 @@ pub fn run() {
             commands::ai::ai_preview,
             commands::ai::ai_send,
             commands::ai::ai_cancel,
+            commands::update::update_status,
+            commands::update::update_check,
+            commands::update::update_install,
+            commands::update::update_cancel,
+            commands::update::update_open_release_page,
             commands::query::list_databases,
             commands::query::list_schemas,
             commands::query::list_objects,

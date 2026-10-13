@@ -24,6 +24,10 @@ pub struct AppState {
     pub jobs: Mutex<HashMap<String, Arc<AtomicBool>>>,
     /// Cancellation tokens of in-flight AI requests.
     pub ai_jobs: Mutex<HashMap<String, Arc<tokio_util::sync::CancellationToken>>>,
+    /// The update found by the last check, waiting for "Update now".
+    pub pending_update: Mutex<Option<tauri_plugin_updater::Update>>,
+    /// Cancellation tokens of running update downloads (at most one).
+    pub update_jobs: Mutex<HashMap<String, Arc<tokio_util::sync::CancellationToken>>>,
 }
 
 impl AppState {
