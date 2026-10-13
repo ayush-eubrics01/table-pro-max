@@ -1,11 +1,20 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Minimal permissions for the main window. File access happens only through app commands that validate paths; there is no generic filesystem, shell or HTTP access from the webview.",
-  "windows": ["main", "window-*"],
+  "description": "Minimal permissions for the main window. File access happens only through app commands that validate paths; there is no generic filesystem, shell or HTTP access from the webview. Window permissions are limited to what the custom title bar needs (drag, minimise, maximise, close).",
+  "windows": [
+    "main",
+    "window-*"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-set-title",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-internal-toggle-maximize",
+    "core:window:allow-is-maximized",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging",
     "dialog:allow-open",
     "dialog:allow-save",
     "dialog:allow-message",

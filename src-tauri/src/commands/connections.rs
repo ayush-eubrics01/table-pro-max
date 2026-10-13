@@ -348,11 +348,16 @@ pub async fn import_connections(state: State<'_, AppState>, path: String) -> Res
 #[tauri::command]
 pub async fn open_window(app: tauri::AppHandle) -> Result<()> {
     let label = format!("window-{}", uuid::Uuid::new_v4().simple());
-    tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::App("index.html".into()))
+    let builder = tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::App("index.html".into()))
         .title("Table Pro Max")
         .inner_size(1280.0, 820.0)
-        .min_inner_size(900.0, 560.0)
-        .build()
-        .map_err(|e| AppError::internal(format!("Could not open a window: {e}")))?;
+        .min_inner_size(900.0, 560.0);
+    // Same chrome as the main window (tauri.<os>.conf.json): native traffic lights on macOS,
+    // the app's own title bar elsewhere.
+    #[cfg(target_os = "macos")]
+    let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.decorations(false);
+    builder.build().map_err(|e| AppError::internal(format!("Could not open a window: {e}")))?;
     Ok(())
 }
