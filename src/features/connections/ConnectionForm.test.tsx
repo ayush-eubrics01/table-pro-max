@@ -83,4 +83,28 @@ describe("ConnectionForm", () => {
     fireEvent.change(screen.getByLabelText("TLS"), { target: { value: "require_insecure" } });
     expect(screen.getByText(/server's identity is not checked/)).toBeInTheDocument();
   });
+
+  it("switches engine with the tiles: file engines show the file picker, Redis asks for a database number", () => {
+    render(<ConnectionForm appInfo={appInfo(true)} onClose={() => undefined} onSaved={() => undefined} />);
+    fireEvent.click(screen.getByRole("radio", { name: /SQLite/ }));
+    expect(screen.getByText("Database file")).toBeInTheDocument();
+    expect(screen.queryByText("Host")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: /Redis/ }));
+    expect(screen.getByText("Database number (0–15)")).toBeInTheDocument();
+  });
+
+  it("sets the environment with the colour chips and warns for an unguarded production connection", () => {
+    render(<ConnectionForm appInfo={appInfo(true)} onClose={() => undefined} onSaved={() => undefined} />);
+    fireEvent.click(screen.getByRole("radio", { name: "Production" }));
+    expect(screen.getByRole("radio", { name: "Production" })).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByText("Safety & timeouts"));
+    fireEvent.change(screen.getByLabelText("Query safety"), { target: { value: "normal" } });
+    expect(screen.getByText(/production connection runs statements without confirmation/)).toBeInTheDocument();
+  });
+
+  it("fills the form from a URL passed in from the home screen", async () => {
+    render(<ConnectionForm appInfo={appInfo(true)} initialUrl="postgres://svc:s3cret@db.internal:6543/shop" onClose={() => undefined} onSaved={() => undefined} />);
+    await waitFor(() => expect(screen.getByDisplayValue("db.internal")).toBeInTheDocument());
+    expect(screen.queryByDisplayValue(/s3cret@/)).not.toBeInTheDocument();
+  });
 });

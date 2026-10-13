@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { AppInfo, ConnectionProfile, Driver, ServerInfo, SshConfig } from "../../types/backend";
 import { api, toError, type BackendError } from "../../lib/ipc";
-import { DRIVERS, ENVIRONMENTS, SAFETY_MODES, isFileDriver } from "../../lib/env";
+import { DRIVERS, ENVIRONMENTS, SAFETY_MODES, envStyle, isFileDriver } from "../../lib/env";
+import { Icon } from "../../components/Icon";
 import { Dialog } from "../../components/Dialog";
 import { newProfile, useConnections } from "../../stores/connections";
 import { resolveConnectError } from "./connectFlow";
@@ -16,7 +17,7 @@ interface Props {
   onSaved: (profile: ConnectionProfile, connect: boolean) => void;
 }
 
-export function ConnectionForm({ initial, appInfo, onClose, onSaved }: Props) {
+export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved }: Props) {
   const isEdit = !!initial;
   const keychainAvailable = appInfo?.credentialStoreAvailable ?? true;
   // Without a credential store, "save password" is impossible: default to asking.
@@ -48,10 +49,10 @@ export function ConnectionForm({ initial, appInfo, onClose, onSaved }: Props) {
     });
   };
 
-  const importUrl = async () => {
+  const importFrom = async (source: string) => {
     setError(null);
     try {
-      const parsed = await api.parseUrl(url);
+      const parsed = await api.parseUrl(source);
       setP(fixMode({ ...parsed.profile, id: p.id, name: p.name || parsed.profile.name, environment: p.environment, safetyMode: p.safetyMode }));
       if (parsed.password) setPassword(parsed.password);
       setUrl("");
@@ -59,6 +60,15 @@ export function ConnectionForm({ initial, appInfo, onClose, onSaved }: Props) {
       setError(toError(e));
     }
   };
+  const importUrl = () => importFrom(url);
+
+  // A URL pasted on the home screen is parsed straight away; the field is cleared on success.
+  useEffect(() => {
+    if (initialUrl) {
+      setUrl(initialUrl);
+      void importFrom(initialUrl);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const validName = p.name.trim() || (sqlite ? p.filePath?.split(/[\\/]/).pop() : `${p.database || p.host}`) || "";
   const profileToSave = (): ConnectionProfile => ({
@@ -144,6 +154,16 @@ export function ConnectionForm({ initial, appInfo, onClose, onSaved }: Props) {
     if (typeof path === "string") set({ tls: { ...p.tls, caCertPath: path } });
   };
 
+  const passwordStorage = (value: ConnectionProfile["passwordMode"] | SshConfig["secretMode"], onChange: (v: string) => void, label: string, noneLabel: string) => (
+    <select className="select" value={value} aria-label={label} onChange={(e) => onChange(e.target.value)}>
+      <option value="keychain" disabled={!keychainAvailable}>
+        {keychainAvailable ? `In ${appInfo?.credentialStore ?? "system keychain"}` : "In system keychain (unavailable)"}
+      </option>
+      <option value="ask">Ask every time</option>
+      <option value="none">{noneLabel}</option>
+    </select>
+  );
+
   return (
     <Dialog
       title={isEdit ? `Edit ${initial.name}` : "New connection"}
@@ -152,34 +172,32 @@ export function ConnectionForm({ initial, appInfo, onClose, onSaved }: Props) {
       footer={
         <>
           <button className="btn" onClick={test} disabled={busy !== null}>
-            {busy === "test" ? "Testing…" : "Test connection"}
+            <Icon name="speed" size={15} /> {busy === "test" ? "Testing…" : "Test"}
           </button>
-          {tested && (
-            <span className="hint" role="status">
-              Connected to {tested.product} {tested.version}
-            </span>
-          )}
+          <span className={tested ? "hint test-ok" : "hint"} role="status">
+            {tested ? `Connected to ${tested.product} ${tested.version}` : "Test before saving — nothing is stored until you save."}
+          </span>
           <span className="spacer" />
-          <button className="btn" onClick={onClose} disabled={busy !== null}>
+          <button className="btn btn-ghost" onClick={onClose} disabled={busy !== null}>
             Cancel
           </button>
           <button className="btn" onClick={() => submit(false)} disabled={busy !== null || !validName}>
             Save
           </button>
           <button className="btn btn-primary" onClick={() => submit(true)} disabled={busy !== null || !validName}>
-            Save and connect
+            Save &amp; connect
           </button>
         </>
       }
     >
       {!isEdit && (
         <div className="field">
-          <span className="hint">Paste a connection URL to fill the form</span>
-          <div className="field-row">
+          <div className="field-row url-field">
+            <Icon name="open_in_new" size={15} style={{ position: "absolute", left: 10, top: 9, color: "var(--text-faint)" }} />
             <input
               className="input mono"
-              style={{ flex: 1 }}
-              placeholder="postgres://user:password@host:5432/database"
+              style={{ flex: 1, paddingLeft: 32 }}
+              placeholder="Paste a URL — postgres://user:pass@host:5432/db"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && url && importUrl()}
@@ -191,58 +209,67 @@ export function ConnectionForm({ initial, appInfo, onClose, onSaved }: Props) {
               Fill from URL
             </button>
           </div>
+          <span className="hint">Optional — or fill the fields by hand.</span>
         </div>
       )}
 
+      <div role="radiogroup" aria-label="Database type" className="engine-tiles">
+        {DRIVERS.map((d) => (
+          <button
+            key={d.value}
+            role="radio"
+            aria-checked={p.driver === d.value}
+            disabled={isEdit && p.driver !== d.value}
+            onClick={() => setDriver(d.value)}
+          >
+            <span className="driver-mark">{d.short}</span>
+            {d.label}
+          </button>
+        ))}
+      </div>
+
+      <h3 className="form-section">General</h3>
       <div className="field-row">
         <label className="field">
           <span>Name</span>
-          <input className="input" value={p.name} placeholder={validName || "My database"} onChange={(e) => set({ name: e.target.value })} />
+          <input className="input" value={p.name} placeholder={validName || "e.g. Billing staging"} onChange={(e) => set({ name: e.target.value })} />
         </label>
         <label className="field">
-          <span>Database type</span>
-          <select className="select" value={p.driver} onChange={(e) => setDriver(e.target.value as Driver)} disabled={isEdit}>
-            {DRIVERS.map((d) => (
-              <option key={d.value} value={d.value}>
-                {d.label}
-              </option>
-            ))}
-          </select>
+          <span>Group · optional</span>
+          <input className="input" value={p.group ?? ""} placeholder="e.g. Billing" onChange={(e) => set({ group: e.target.value || null })} />
         </label>
       </div>
-
-      <div className="field-row">
-        <label className="field">
-          <span>Environment</span>
-          <select className="select" value={p.environment} onChange={(e) => set({ environment: e.target.value as ConnectionProfile["environment"] })}>
-            {ENVIRONMENTS.map((e) => (
-              <option key={e.value} value={e.value}>
-                {e.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field">
-          <span>Group</span>
-          <input className="input" value={p.group ?? ""} placeholder="Optional, e.g. Billing" onChange={(e) => set({ group: e.target.value || null })} />
-        </label>
+      <div className="field">
+        <span className="hint">Environment — colours the window so you always know where you are</span>
+        <div role="radiogroup" aria-label="Environment" className="env-chips">
+          {ENVIRONMENTS.map((e) => (
+            <button key={e.value} role="radio" aria-checked={p.environment === e.value} style={envStyle(e.value)} onClick={() => set({ environment: e.value })}>
+              <span className="env-dot" />
+              {e.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {sqlite ? (
-        <label className="field">
-          <span>Database file</span>
-          <div className="field-row">
-            <input className="input mono" style={{ flex: 1 }} value={p.filePath ?? ""} onChange={(e) => set({ filePath: e.target.value || null })} />
-            <button className="btn" onClick={browseFile}>
-              Choose file…
-            </button>
-            <button className="btn" onClick={createFile}>
-              Create new…
-            </button>
-          </div>
-        </label>
+        <>
+          <h3 className="form-section">File</h3>
+          <label className="field">
+            <span>Database file</span>
+            <div className="field-row">
+              <input className="input mono" style={{ flex: 1 }} value={p.filePath ?? ""} onChange={(e) => set({ filePath: e.target.value || null })} />
+              <button className="btn" onClick={browseFile}>
+                Choose file…
+              </button>
+              <button className="btn" onClick={createFile}>
+                Create new…
+              </button>
+            </div>
+          </label>
+        </>
       ) : (
         <>
+          <h3 className="form-section">Server</h3>
           <div className="field-row">
             <label className="field" style={{ flex: 3 }}>
               <span>Host</span>
@@ -281,36 +308,32 @@ export function ConnectionForm({ initial, appInfo, onClose, onSaved }: Props) {
                 onChange={(e) => setPassword(e.target.value)}
               />
             </label>
-            <label className="field">
-              <span>Password storage</span>
-              <select className="select" value={p.passwordMode} onChange={(e) => set({ passwordMode: e.target.value as ConnectionProfile["passwordMode"] })}>
-                <option value="keychain" disabled={!keychainAvailable}>
-                  {keychainAvailable ? `Save in ${appInfo?.credentialStore ?? "system keychain"}` : "Save in system keychain (unavailable)"}
-                </option>
-                <option value="ask">Ask every time</option>
-                <option value="none">No password</option>
-              </select>
-            </label>
+            <div className="field">
+              <span>Remember password</span>
+              {passwordStorage(p.passwordMode, (v) => set({ passwordMode: v as ConnectionProfile["passwordMode"] }), "Password storage", "No password")}
+            </div>
           </div>
           {!keychainAvailable && (
             <div className="notice notice-warning">
               No system credential store was found, so passwords cannot be saved. You will be asked for the password when connecting; it is kept in memory until the app closes.
             </div>
           )}
+
+          <h3 className="form-section">Security</h3>
           <div className="field-row">
-            <label className="field">
+            <div className="field">
               <span>TLS</span>
-              <select className="select" value={p.tls.mode} onChange={(e) => set({ tls: { ...p.tls, mode: e.target.value as ConnectionProfile["tls"]["mode"] } })}>
-                <option value="prefer">Prefer (use TLS when offered, verify certificate)</option>
-                <option value="require">Require and verify certificate</option>
+              <select className="select" aria-label="TLS" value={p.tls.mode} onChange={(e) => set({ tls: { ...p.tls, mode: e.target.value as ConnectionProfile["tls"]["mode"] } })}>
+                <option value="prefer">Prefer — use TLS if offered (certificate verified)</option>
+                <option value="require">Require and verify the certificate</option>
                 <option value="require_insecure">Require, skip certificate verification</option>
                 <option value="disable">Disable</option>
               </select>
-            </label>
+            </div>
             <label className="field">
-              <span>CA certificate (optional)</span>
+              <span>CA certificate · optional</span>
               <div className="field-row">
-                <input className="input mono" style={{ flex: 1 }} value={p.tls.caCertPath ?? ""} onChange={(e) => set({ tls: { ...p.tls, caCertPath: e.target.value || null } })} />
+                <input className="input mono" style={{ flex: 1 }} placeholder="None" value={p.tls.caCertPath ?? ""} onChange={(e) => set({ tls: { ...p.tls, caCertPath: e.target.value || null } })} />
                 <button className="btn" onClick={browseCa}>
                   Choose…
                 </button>
@@ -321,9 +344,15 @@ export function ConnectionForm({ initial, appInfo, onClose, onSaved }: Props) {
             <div className="notice notice-warning">Traffic is encrypted, but the server's identity is not checked. Anyone able to intercept the connection could impersonate the server.</div>
           )}
 
-          <label className="checkbox">
+          <label className="toggle-card">
+            <Icon name="key" size={16} />
+            <span>
+              <strong>Connect through an SSH tunnel</strong>
+              <span className="hint">For databases inside a private network</span>
+            </span>
             <input
               type="checkbox"
+              className="switch"
               checked={!!p.ssh}
               onChange={(e) =>
                 set({
@@ -333,7 +362,6 @@ export function ConnectionForm({ initial, appInfo, onClose, onSaved }: Props) {
                 })
               }
             />
-            Connect through an SSH tunnel
           </label>
           {p.ssh && (
             <>
@@ -389,16 +417,10 @@ export function ConnectionForm({ initial, appInfo, onClose, onSaved }: Props) {
                     onChange={(e) => setSshSecret(e.target.value)}
                   />
                 </label>
-                <label className="field">
-                  <span>SSH secret storage</span>
-                  <select className="select" value={p.ssh.secretMode} onChange={(e) => setSsh({ secretMode: e.target.value as SshConfig["secretMode"] })}>
-                    <option value="keychain" disabled={!keychainAvailable}>
-                      {keychainAvailable ? `Save in ${appInfo?.credentialStore ?? "system keychain"}` : "Save in system keychain (unavailable)"}
-                    </option>
-                    <option value="ask">Ask every time</option>
-                    <option value="none">None (unencrypted key)</option>
-                  </select>
-                </label>
+                <div className="field">
+                  <span>Remember SSH secret</span>
+                  {passwordStorage(p.ssh.secretMode, (v) => setSsh({ secretMode: v as SshConfig["secretMode"] }), "SSH secret storage", "None (unencrypted key)")}
+                </div>
               </div>
               <p className="hint" style={{ margin: 0 }}>
                 Host and port above are resolved from the SSH server. Host keys are checked against ~/.ssh/known_hosts; new hosts must be confirmed by fingerprint.
@@ -408,34 +430,37 @@ export function ConnectionForm({ initial, appInfo, onClose, onSaved }: Props) {
         </>
       )}
 
-      <div className="field-row">
-        <label className="field">
-          <span>Query safety</span>
-          <select className="select" value={p.safetyMode} onChange={(e) => set({ safetyMode: e.target.value as ConnectionProfile["safetyMode"] })}>
-            {SAFETY_MODES.map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-          <span className="hint">{SAFETY_MODES.find((m) => m.value === p.safetyMode)?.help}</span>
-        </label>
-        <label className="field">
-          <span>Query timeout (seconds, 0 for none)</span>
-          <input className="input" inputMode="numeric" value={p.queryTimeoutSecs} onChange={(e) => set({ queryTimeoutSecs: Number(e.target.value.replace(/\D/g, "")) || 0 })} />
-        </label>
-        {!sqlite && (
+      <details className="form-collapse">
+        <summary>Safety &amp; timeouts</summary>
+        <div className="field-row">
           <label className="field">
-            <span>Connect timeout (seconds)</span>
-            <input
-              className="input"
-              inputMode="numeric"
-              value={p.connectTimeoutSecs}
-              onChange={(e) => set({ connectTimeoutSecs: Math.max(1, Math.min(600, Number(e.target.value.replace(/\D/g, "")) || 1)) })}
-            />
+            <span>Query safety</span>
+            <select className="select" aria-label="Query safety" value={p.safetyMode} onChange={(e) => set({ safetyMode: e.target.value as ConnectionProfile["safetyMode"] })}>
+              {SAFETY_MODES.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+            <span className="hint">{SAFETY_MODES.find((m) => m.value === p.safetyMode)?.help}</span>
           </label>
-        )}
-      </div>
+          <label className="field">
+            <span>Query timeout (seconds, 0 for none)</span>
+            <input className="input" inputMode="numeric" value={p.queryTimeoutSecs} onChange={(e) => set({ queryTimeoutSecs: Number(e.target.value.replace(/\D/g, "")) || 0 })} />
+          </label>
+          {!sqlite && (
+            <label className="field">
+              <span>Connect timeout (seconds)</span>
+              <input
+                className="input"
+                inputMode="numeric"
+                value={p.connectTimeoutSecs}
+                onChange={(e) => set({ connectTimeoutSecs: Math.max(1, Math.min(600, Number(e.target.value.replace(/\D/g, "")) || 1)) })}
+              />
+            </label>
+          )}
+        </div>
+      </details>
       {p.environment === "production" && p.safetyMode === "normal" && (
         <div className="notice notice-warning">This production connection runs statements without confirmation. Consider confirming destructive statements or read-only mode.</div>
       )}
