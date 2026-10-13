@@ -109,7 +109,8 @@ export function Home({ appInfo, onConnect, connecting }: Props) {
           <div style={{ flex: 1 }}>
             <h1>Connections</h1>
             <p className="home-sub">
-              {connections.length} saved · passwords in {appInfo?.credentialStore ?? "your system keychain"}
+              {connections.length} saved ·{" "}
+              {appInfo && !appInfo.credentialStoreAvailable ? "passwords are asked for when connecting" : `passwords in ${appInfo?.credentialStore ?? "your system keychain"}`}
             </p>
           </div>
           <button className="btn" onClick={importProfiles} title="Import connections from a file">

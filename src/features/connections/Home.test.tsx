@@ -72,4 +72,12 @@ describe("Home", () => {
     expect(screen.getByRole("dialog", { name: "Edit Stage" })).toBeInTheDocument();
     expect(onConnect).not.toHaveBeenCalled();
   });
+
+  it("says where passwords go, including when no keychain is available", () => {
+    const info = (available: boolean) => ({ version: "0.1.0", dataDir: "/d", logDir: "/l", credentialStore: available ? "Secret Service" : "unavailable", credentialStoreAvailable: available, platform: "linux" });
+    const { rerender } = render(<Home appInfo={info(true)} connecting={null} onConnect={() => undefined} />);
+    expect(screen.getByText("5 saved · passwords in Secret Service")).toBeInTheDocument();
+    rerender(<Home appInfo={info(false)} connecting={null} onConnect={() => undefined} />);
+    expect(screen.getByText("5 saved · passwords are asked for when connecting")).toBeInTheDocument();
+  });
 });
