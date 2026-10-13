@@ -95,6 +95,8 @@ export const PAIRS = [
   ["--null", ["--selection", "--selection-strong"], 3],
   // Production badges are filled: text on the solid production colour.
   ["--env-production-on", ["--env-production"], 4.5],
+  // The production status bar is tinted; its secondary text uses --text-muted there.
+  ["--text-muted", ["--env-production-bg"], 4.5],
   ["--accent", SURFACES, 4.5],
   ["--danger", SURFACES, 4.5],
   ["--warning", SURFACES, 4.5],

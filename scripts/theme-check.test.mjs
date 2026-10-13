@@ -92,4 +92,10 @@ describe("theme tokens", () => {
     expect(menu).toMatch(/box-shadow:\s*inset 2px 0 0 var\(--focus\)/);
     expect(menu).toMatch(/background:\s*var\(--surface-active\)/);
   });
+
+  it("secondary status bar text stays readable on the production tint", () => {
+    const app = readFileSync("src/styles/app.css", "utf8");
+    const rule = /\.statusbar\[data-env="production"\] \.mono,\s*\.statusbar\[data-env="production"\] \.version\s*\{([^}]*)\}/.exec(app)?.[1] ?? "";
+    expect(rule).toMatch(/color:\s*var\(--text-muted\)/);
+  });
 });

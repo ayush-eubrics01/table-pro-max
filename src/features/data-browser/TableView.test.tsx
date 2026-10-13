@@ -63,7 +63,7 @@ describe("TableView", () => {
     renderView();
     const cell = await screen.findByText("ada@example.com");
     fireEvent.doubleClick(cell.closest(".grid-cell")!);
-    const editor = screen.getByLabelText("Edit email");
+    const editor = await screen.findByLabelText("Edit email");
     fireEvent.change(editor, { target: { value: "new@example.com" } });
     fireEvent.keyDown(editor, { key: "Enter" });
 
@@ -92,8 +92,9 @@ describe("TableView", () => {
     renderView();
     const cell = await screen.findByText("grace@example.com");
     fireEvent.doubleClick(cell.closest(".grid-cell")!);
-    fireEvent.change(screen.getByLabelText("Edit email"), { target: { value: "x" } });
-    fireEvent.keyDown(screen.getByLabelText("Edit email"), { key: "Enter" });
+    const editor = await screen.findByLabelText("Edit email");
+    fireEvent.change(editor, { target: { value: "x" } });
+    fireEvent.keyDown(editor, { key: "Enter" });
     fireEvent.click(await screen.findByRole("button", { name: /Discard/ }));
     expect(screen.queryByText(/pending change/)).not.toBeInTheDocument();
     expect(calls.some((c) => c.cmd === "preview_changes" || c.cmd === "apply_changes")).toBe(false);

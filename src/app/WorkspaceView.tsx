@@ -175,8 +175,15 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
   );
 }
 
-export function StatusBar({ ws }: { ws: Workspace | undefined }) {
-  if (!ws) return <footer className="statusbar">No connection open</footer>;
+export function StatusBar({ ws, version }: { ws: Workspace | undefined; version?: string }) {
+  if (!ws)
+    return (
+      <footer className="statusbar">
+        <span>No connection open</span>
+        <span className="grow" />
+        {version && <span className="version">v{version}</span>}
+      </footer>
+    );
   const s = ws.session;
   const reconnect = async () => {
     try {
@@ -196,21 +203,26 @@ export function StatusBar({ ws }: { ws: Workspace | undefined }) {
           </button>
         </>
       )}
-      <span className="env-dot" style={envStyle(s.environment)} />
-      <strong>{envLabel(s.environment)}</strong>
+      <span className="env-label" style={envStyle(s.environment)}>
+        <span className="env-dot" />
+        {envLabel(s.environment)}
+      </span>
       <span>{s.connectionName}</span>
       <span className="mono">{s.target}</span>
       <span>
         {s.server.product} {s.server.version}
       </span>
       <span className="grow" />
-      {s.readOnly && (
-        <span>
-          <Icon name="lock" size={11} /> read-only
+      {s.readOnly ? (
+        <span className="write-mode">
+          <Icon name="lock" size={12} /> Read-only
         </span>
+      ) : (
+        <span className="write-mode">Writes enabled</span>
       )}
       <span title="Query safety mode">{safetyLabel(s.safetyMode)}</span>
-      <span>{ws.schema}</span>
+      <span className="mono">{ws.schema}</span>
+      {version && <span className="version">v{version}</span>}
     </footer>
   );
 }
