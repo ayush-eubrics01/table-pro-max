@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { Icon } from "../components/Icon";
 import { api } from "../lib/ipc";
 import { envStyle } from "../lib/env";
@@ -16,6 +17,12 @@ export function TitleBar({ mac, onCloseWorkspace }: Props) {
   const workspaces = useWorkspaces((s) => s.workspaces);
   const activeId = useWorkspaces((s) => s.activeId);
   const activate = (id: string | null) => useWorkspaces.getState().activate(id);
+  const tabs = useRef<HTMLElement>(null);
+
+  // With many connections the strip scrolls; keep the active tab visible.
+  useEffect(() => {
+    tabs.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [activeId, workspaces.length]);
 
   return (
     <header className="titlebar" data-tauri-drag-region data-mac={mac || undefined}>
@@ -25,7 +32,7 @@ export function TitleBar({ mac, onCloseWorkspace }: Props) {
         </span>
         <span data-tauri-drag-region>Table Pro Max</span>
       </div>
-      <nav className="titlebar-tabs" role="tablist" aria-label="Open connections">
+      <nav className="titlebar-tabs" role="tablist" aria-label="Open connections" ref={tabs}>
         <button className="tb-tab" role="tab" aria-selected={activeId === null} onClick={() => activate(null)}>
           <Icon name="grid_view" size={15} />
           <span className="label">Connections</span>

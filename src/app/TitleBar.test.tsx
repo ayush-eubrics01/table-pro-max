@@ -63,4 +63,13 @@ describe("TitleBar", () => {
     expect(container.querySelector("header")).toHaveAttribute("data-mac", "true");
     expect(screen.getByText("⌘ K")).toBeInTheDocument();
   });
+
+  it("scrolls the active connection tab into view", () => {
+    const seen: Element[] = [];
+    Element.prototype.scrollIntoView = function (this: Element) {
+      seen.push(this);
+    };
+    render(<TitleBar mac={false} onCloseWorkspace={() => undefined} />);
+    expect(seen.some((el) => el.getAttribute("aria-selected") === "true" && el.textContent?.includes("Local PG"))).toBe(true);
+  });
 });
