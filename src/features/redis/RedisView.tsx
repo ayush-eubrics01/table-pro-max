@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { KeyRound, RefreshCw, Search, Trash2, Clock, Plus, Terminal } from "lucide-react";
+import { Icon } from "../../components/Icon";
 import type { RedisKey, RedisValue } from "../../types/backend";
 import { api, toError } from "../../lib/ipc";
 import { confirmAction, notify, notifyError, promptText } from "../../stores/ui";
@@ -122,7 +122,7 @@ export function RedisView({ ws }: { ws: Workspace }) {
         <div className="sidebar-section">
           <div className="field-row" style={{ gap: 4 }}>
             <div style={{ position: "relative", flex: 1, display: "flex" }}>
-              <Search size={13} style={{ position: "absolute", left: 8, top: 8, color: "var(--text-faint)" }} />
+              <Icon name="search" size={13} style={{ position: "absolute", left: 8, top: 8, color: "var(--text-faint)" }} />
               <input
                 className="input mono"
                 style={{ paddingLeft: 26, flex: 1 }}
@@ -133,11 +133,11 @@ export function RedisView({ ws }: { ws: Workspace }) {
               />
             </div>
             <button className="btn btn-ghost btn-icon" aria-label="Scan keys" title="Scan (SCAN MATCH)" onClick={() => void scan(true)}>
-              <RefreshCw size={14} className={scanning ? "spin" : undefined} />
+              <Icon name="refresh" size={14} className={scanning ? "spin" : undefined} />
             </button>
             {!readOnly && (
               <button className="btn btn-ghost btn-icon" aria-label="New string key" title="New string key" onClick={newString}>
-                <Plus size={14} />
+                <Icon name="add" size={14} />
               </button>
             )}
           </div>
@@ -169,10 +169,10 @@ export function RedisView({ ws }: { ws: Workspace }) {
         <div className="toolbar" role="toolbar">
           <div className="segmented" role="group" aria-label="View">
             <button aria-pressed={view === "key"} onClick={() => setView("key")}>
-              <KeyRound size={12} /> Key
+              <Icon name="key" size={12} /> Key
             </button>
             <button aria-pressed={view === "console"} onClick={() => setView("console")}>
-              <Terminal size={12} /> Console
+              <Icon name="terminal" size={12} /> Console
             </button>
           </div>
           {view === "key" && selected && (
@@ -184,15 +184,15 @@ export function RedisView({ ws }: { ws: Workspace }) {
               {current && current.ttl >= 0 && <span className="meta">expires in {ttlLabel(current.ttl)}</span>}
               <span className="grow" />
               <button className="btn btn-ghost btn-icon" aria-label="Reload key" onClick={() => void open(selected)}>
-                <RefreshCw size={14} />
+                <Icon name="refresh" size={14} />
               </button>
               {!readOnly && (
                 <>
                   <button className="btn btn-ghost btn-icon" aria-label="Set expiry" title="Set or remove expiry" onClick={() => void setTtl(selected)}>
-                    <Clock size={14} />
+                    <Icon name="schedule" size={14} />
                   </button>
                   <button className="btn btn-ghost btn-icon" aria-label="Delete key" onClick={() => void removeKey(selected)}>
-                    <Trash2 size={14} />
+                    <Icon name="delete" size={14} />
                   </button>
                 </>
               )}
@@ -381,7 +381,7 @@ function HashEditor({ sid, keyName, fields, readOnly, onChanged }: { sid: string
                       }
                     }}
                   >
-                    <Trash2 size={13} />
+                    <Icon name="delete" size={13} />
                   </button>
                 </td>
               )}
@@ -398,7 +398,7 @@ function HashEditor({ sid, keyName, fields, readOnly, onChanged }: { sid: string
               if (f) await save(f, "");
             }}
           >
-            <Plus size={14} /> Field
+            <Icon name="add" size={14} /> Field
           </button>
         </div>
       )}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Home as HomeIcon, Settings as SettingsIcon, X, AppWindow, Unplug } from "lucide-react";
+import { Icon } from "../components/Icon";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AppInfo, ConnectionProfile, ObjectKind } from "../types/backend";
 import { api } from "../lib/ipc";
@@ -167,7 +167,7 @@ export function App() {
     <div className="shell">
       <nav className="conn-strip" role="tablist" aria-label="Open connections">
         <button className="conn-strip-tab" role="tab" aria-selected={activeId === null} onClick={() => useWorkspaces.getState().activate(null)}>
-          <HomeIcon size={14} />
+          <Icon name="grid_view" size={14} />
           <span className="label">Connections</span>
         </button>
         {workspaces.map((w) => (
@@ -182,7 +182,7 @@ export function App() {
             onKeyDown={(e) => e.key === "Enter" && useWorkspaces.getState().activate(w.id)}
             title={w.session.target}
           >
-            {w.health === "down" ? <Unplug size={13} aria-label="Connection lost" color="var(--danger)" /> : <span className="env-dot" />}
+            {w.health === "down" ? <Icon name="link_off" size={13} label="Connection lost" color="var(--danger)" /> : <span className="env-dot" />}
             <span className="label">{w.profile.name}</span>
             <button
               className="tab-close"
@@ -192,7 +192,7 @@ export function App() {
                 void closeWorkspace(w.id);
               }}
             >
-              <X size={12} />
+              <Icon name="close" size={12} />
             </button>
           </div>
         ))}
@@ -203,10 +203,10 @@ export function App() {
           title="New window (Ctrl+Shift+N)"
           onClick={() => void api.openWindow().catch((err) => notifyError(err, "Could not open a window"))}
         >
-          <AppWindow size={14} />
+          <Icon name="new_window" size={14} />
         </button>
         <button className="conn-strip-tab" aria-label="Settings" title="Settings (Ctrl+,)" onClick={() => useUi.getState().setSettingsOpen(true)}>
-          <SettingsIcon size={14} />
+          <Icon name="settings" size={14} />
         </button>
       </nav>
 

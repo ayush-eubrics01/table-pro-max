@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { KeyRound, Plus, Trash2, Pencil, Undo2 } from "lucide-react";
+import { Icon } from "../../components/Icon";
 import type { AlterOp, ColumnDef, SessionInfo, TableStructure } from "../../types/backend";
 import { api } from "../../lib/ipc";
 import { notify, notifyError } from "../../stores/ui";
@@ -50,17 +50,17 @@ export function StructureView({ session, structure, onChanged }: Props) {
       {editable && (
         <div className="field-row" style={{ alignItems: "center", flex: "none" }}>
           <button className="btn" onClick={() => setColumnDialog({ mode: "add" })}>
-            <Plus size={14} /> Add column
+            <Icon name="add" size={14} /> Add column
           </button>
           <button className="btn" onClick={() => setIndexDialog(true)}>
-            <Plus size={14} /> Add index
+            <Icon name="add" size={14} /> Add index
           </button>
           <span style={{ flex: 1 }} />
           {ops.length > 0 && (
             <>
               <span className="hint">{pluralize(ops.length, "pending structure change")}</span>
               <button className="btn" onClick={() => setOps([])}>
-                <Undo2 size={14} /> Discard
+                <Icon name="undo" size={14} /> Discard
               </button>
               <button className="btn btn-primary" onClick={preview}>
                 Review SQL
@@ -87,7 +87,7 @@ export function StructureView({ session, structure, onChanged }: Props) {
           <tbody>
             {s.columns.map((c) => (
               <tr key={c.name} className={dropped(c.name) ? "removed" : touched(c.name) ? "pending" : undefined}>
-                <td>{c.primaryKey !== null && <KeyRound size={12} aria-label={`Primary key position ${c.primaryKey}`} />}</td>
+                <td>{c.primaryKey !== null && <Icon name="key" size={12} label={`Primary key position ${c.primaryKey}`} />}</td>
                 <td>{c.name}</td>
                 <td className="mono">{c.dataType}</td>
                 <td>{c.nullable ? "yes" : "no"}</td>
@@ -96,7 +96,7 @@ export function StructureView({ session, structure, onChanged }: Props) {
                 {editable && (
                   <td>
                     <button className="btn btn-ghost btn-icon" aria-label={`Edit ${c.name}`} onClick={() => setColumnDialog({ mode: "edit", name: c.name })}>
-                      <Pencil size={13} />
+                      <Icon name="edit" size={13} />
                     </button>
                     <button
                       className="btn btn-ghost btn-icon"
@@ -105,7 +105,7 @@ export function StructureView({ session, structure, onChanged }: Props) {
                         setOps((o) => (dropped(c.name) ? o.filter((x) => !(x.type === "dropColumn" && x.name === c.name)) : [...o, { type: "dropColumn", name: c.name }]))
                       }
                     >
-                      {dropped(c.name) ? <Undo2 size={13} /> : <Trash2 size={13} />}
+                      {dropped(c.name) ? <Icon name="undo" size={13} /> : <Icon name="delete" size={13} />}
                     </button>
                   </td>
                 )}
@@ -122,7 +122,7 @@ export function StructureView({ session, structure, onChanged }: Props) {
                 {editable && (
                   <td>
                     <button className="btn btn-ghost btn-icon" aria-label="Remove new column" onClick={() => setOps((x) => x.filter((y) => y !== o))}>
-                      <Trash2 size={13} />
+                      <Icon name="delete" size={13} />
                     </button>
                   </td>
                 )}
@@ -168,7 +168,7 @@ export function StructureView({ session, structure, onChanged }: Props) {
                             )
                           }
                         >
-                          {droppedIndex(i.name) ? <Undo2 size={13} /> : <Trash2 size={13} />}
+                          {droppedIndex(i.name) ? <Icon name="undo" size={13} /> : <Icon name="delete" size={13} />}
                         </button>
                       )}
                     </td>

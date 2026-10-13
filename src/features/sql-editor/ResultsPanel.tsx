@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CheckCircle2, XCircle, Ban, Download } from "lucide-react";
+import { Icon } from "../../components/Icon";
 import type { Cell, Dialect, ScriptResult, StatementResult } from "../../types/backend";
 import { api } from "../../lib/ipc";
 import { formatCount, formatDuration, pluralize } from "../../lib/text";
@@ -116,7 +116,7 @@ export function ResultsPanel({ result, running, dialect }: { result: ScriptResul
             <span>{formatDuration(current.durationMs)}</span>
             {current.resultId && (
               <button className="btn btn-ghost" onClick={() => setExporting(current)}>
-                <Download size={14} /> Export
+                <Icon name="download" size={14} /> Export
               </button>
             )}
           </div>
@@ -128,12 +128,12 @@ export function ResultsPanel({ result, running, dialect }: { result: ScriptResul
             <div className="entry" key={i}>
               {s.error ? (
                 s.error.kind === "cancelled" ? (
-                  <Ban size={16} color="var(--warning)" aria-label="Cancelled" />
+                  <Icon name="block" size={16} color="var(--warning)" label="Cancelled" />
                 ) : (
-                  <XCircle size={16} color="var(--danger)" aria-label="Error" />
+                  <Icon name="cancel" size={16} color="var(--danger)" label="Error" />
                 )
               ) : (
-                <CheckCircle2 size={16} color="var(--accent)" aria-label="Success" />
+                <Icon name="check_circle" size={16} color="var(--accent)" label="Success" />
               )}
               <div>
                 <div>

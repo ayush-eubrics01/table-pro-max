@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Download, RefreshCw } from "lucide-react";
+import { Icon } from "../../components/Icon";
 import { useUpdates } from "./store";
 
 /** "Version X is available" under the connection strip. Release notes are shown as plain text. */
@@ -20,7 +20,7 @@ export function UpdateBanner() {
   return (
     <div className="update-banner" role="region" aria-label="Update available">
       <div className="update-banner-row">
-        <RefreshCw size={14} aria-hidden />
+        <Icon name="refresh" size={14} aria-hidden />
         <span>Table Pro Max {available.version} is available.</span>
         {working && (
           <span className="hint" role="status">
@@ -45,7 +45,7 @@ export function UpdateBanner() {
           </button>
         ) : (
           <button className="btn btn-primary" onClick={() => void actions.openReleasePage()}>
-            <Download size={14} /> Download
+            <Icon name="download" size={14} /> Download
           </button>
         )}
         {!working && (

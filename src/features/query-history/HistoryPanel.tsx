@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Trash2 } from "lucide-react";
+import { Icon } from "../../components/Icon";
 import type { HistoryEntry } from "../../types/backend";
 import { api } from "../../lib/ipc";
 import { formatDuration } from "../../lib/text";
@@ -42,7 +42,7 @@ export function HistoryPanel({ connectionId, onInsert, onOpen, refreshKey }: Pro
         <div className="field-row" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <span className="hint">Double-click to open, click to insert</span>
           <button className="btn btn-ghost btn-icon" aria-label="Clear history" onClick={clear}>
-            <Trash2 size={14} />
+            <Icon name="delete" size={14} />
           </button>
         </div>
       </div>
