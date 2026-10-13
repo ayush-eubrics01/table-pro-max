@@ -10,6 +10,8 @@ check the npm packages' `license` fields before each release.
 |---|---|---|---|---|
 | tauri, tauri-build | 2.12 / 2.7 | Apache-2.0 OR MIT | github.com/tauri-apps/tauri | Desktop shell |
 | tauri-plugin-dialog | 2.8 | Apache-2.0 OR MIT | github.com/tauri-apps/plugins-workspace | Native file dialogs |
+| tauri-plugin-updater (rustls, zip) | 2.13 | Apache-2.0 OR MIT | github.com/tauri-apps/plugins-workspace | Signed in-app updates |
+| tauri-plugin-opener | 2.7 | Apache-2.0 OR MIT | github.com/tauri-apps/plugins-workspace | Opens the release page in the browser (Rust side only) |
 | tokio, tokio-util | 1.53 / 0.7 | MIT | github.com/tokio-rs/tokio | Async runtime |
 | tokio-postgres | 0.7.18 | MIT OR Apache-2.0 | github.com/rust-postgres/rust-postgres | PostgreSQL driver |
 | tokio-postgres-rustls | 0.14 | MIT | github.com/jbg/tokio-postgres-rustls | PostgreSQL TLS |

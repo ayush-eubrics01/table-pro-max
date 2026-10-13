@@ -158,6 +158,18 @@ No feature has a paid tier, license check, quota or artificial limit.
 | Opt-in and configuration | Off by default; turning it on shows what will be sent. Providers: Anthropic Messages API (default model `claude-opus-5-5`) or any OpenAI-compatible `/chat/completions` server (Ollama, LM Studio…). Plain http only to localhost; API key in the OS credential store (memory only when none) | VERIFIED | `ai.rs`, `commands/ai.rs`, `AiSettings.tsx` | `ai::*` unit tests; manual (Xvfb) | |
 | Explain, fix error, improve, write SQL | Exact request previewed before each send; table/column names only when ticked; editable error text; row data never sent; answer rendered as text; SQL only inserted at the cursor, never run; cancel | VERIFIED | `ai.rs`, `AiPanel.tsx`, `answer.ts` | `ai_http` (local fake server: body equals the preview, auth header, 404, cancel, connection refused); `answer.test.ts`; manual (Xvfb) against a fake local server, request body inspected | Not exercised against a real model (no API key or Ollama in the dev environment). Anthropic TLS and key rejection verified live with an invalid key (`TPM_AI_LIVE_TLS=1`). No streaming; answers arrive whole (up to 16,000 tokens, 5-minute timeout) |
 
+## Updates
+
+| Feature | Behaviour | Status | Code | Evidence | Known limitations |
+|---|---|---|---|---|---|
+| Consent and daily check | Asked once on first launch; automatic checks only after "Check automatically", at most every 24 h (a clock that moved backwards still checks); "Check now" in Settings always works; offline failures stay quiet | VERIFIED | `updates.rs`, `commands/update.rs`, `features/updates/` | `updates::*`; `updates.test.tsx`; manual (Xvfb): no request before consent, exactly one manifest request after it | |
+| Banner and install | "X is available" with release notes as plain text; Update now warns about uncommitted grid edits, saves the workspace, downloads with progress (cancellable), installs and restarts; Download opens the release page when the app cannot install itself | VERIFIED | `UpdateBanner.tsx`, `store.ts`, `commands/update.rs` | `updates.test.tsx`; manual (Xvfb): AppImage 0.1.0 → 0.1.1 replaced in place and restarted as 0.1.1 | |
+| Verification | minisign signature against the embedded public key; signed version must match the announced one; downgrades refused | VERIFIED | plugin config, `commands/update.rs` | manual (Xvfb): one flipped byte refused; 0.1.1 file announced as 0.1.2 refused; file unchanged both times | |
+| AppImage self-update | Replaces the AppImage file | VERIFIED | plugin | manual (Xvfb) as above | |
+| `.deb` / `.rpm` update | Installed with the system package manager after the system password prompt (`pkexec`) | IMPLEMENTED | plugin | manual (Xvfb): `.deb` build detected (offers Update now via the `linux-x86_64-deb` entry) | The root install itself not yet run |
+| Windows (NSIS, MSI) and macOS (.app) updates | Passive installer on Windows; `.app` replaced on macOS | IMPLEMENTED | plugin, `release.yml` | — | Not yet run on real machines |
+| Release pipeline | Tag builds sign every updater file, attach `latest.json` (9 targets) and `SHA256SUMS` to a draft; only `-suffix` tags are pre-releases | IMPLEMENTED | `release.yml`, `scripts/updater-manifest.mjs` | `updater-manifest.test.mjs`; collect step simulated for all three OSes with a pre-release version; actionlint | Becomes VERIFIED with the first signed release run |
+
 ## Not yet started
 
 | Area | Status | Notes |
