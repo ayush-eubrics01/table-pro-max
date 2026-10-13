@@ -73,4 +73,13 @@ describe("theme tokens", () => {
       }
     }
   });
+
+  it("production badges are filled and placeholders use the checked faint text colour", () => {
+    const app = readFileSync("src/styles/app.css", "utf8");
+    const prod = /\.env-badge\[data-env="production"\]\s*\{([^}]*)\}/.exec(app)?.[1] ?? "";
+    expect(prod).toMatch(/background:\s*var\(--env-production\)/);
+    expect(prod).toMatch(/color:\s*var\(--env-production-on\)/);
+    const placeholder = /\.input::placeholder,\s*\.textarea::placeholder\s*\{([^}]*)\}/.exec(app)?.[1] ?? "";
+    expect(placeholder).toMatch(/color:\s*var\(--text-faint\)/);
+  });
 });

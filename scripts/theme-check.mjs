@@ -88,7 +88,13 @@ const CODE_BG = ["--bg", "--surface"];
 export const PAIRS = [
   ["--text", SURFACES, 4.5],
   ["--text-muted", SURFACES, 4.5],
-  ["--text-faint", SURFACES, 3],
+  // Faint text carries hints, placeholders and keyboard shortcuts: still body text.
+  ["--text-faint", [...SURFACES, "--surface-hover"], 4.5],
+  // NULL is data the user must read; it stays faint but legible, also on selected rows.
+  ["--null", ["--bg", "--surface"], 4.5],
+  ["--null", ["--selection", "--selection-strong"], 3],
+  // Production badges are filled: text on the solid production colour.
+  ["--env-production-on", ["--env-production"], 4.5],
   ["--accent", SURFACES, 4.5],
   ["--danger", SURFACES, 4.5],
   ["--warning", SURFACES, 4.5],

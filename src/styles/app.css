@@ -128,7 +128,7 @@ pre,
 }
 .input::placeholder,
 .textarea::placeholder {
-  color: var(--text-dim);
+  color: var(--text-faint);
 }
 .textarea {
   height: auto;
@@ -439,9 +439,11 @@ pre,
   color: var(--env-text);
   border: 1px solid transparent;
 }
-/* Production keeps an outline so it never reads as just another colour. */
+/* Production is filled, never just another tint, so it reads as production at a glance. */
 .env-badge[data-env="production"] {
+  background: var(--env-production);
   border-color: var(--env-production);
+  color: var(--env-production-on);
   font-weight: 600;
 }
 
