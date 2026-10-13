@@ -355,7 +355,10 @@ pub async fn open_window(app: tauri::AppHandle) -> Result<()> {
     // Same chrome as the main window (tauri.<os>.conf.json): native traffic lights on macOS,
     // the app's own title bar elsewhere.
     #[cfg(target_os = "macos")]
-    let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true)
+        .traffic_light_position(tauri::LogicalPosition::new(14.0, 14.0));
     #[cfg(not(target_os = "macos"))]
     let builder = builder.decorations(false);
     builder.build().map_err(|e| AppError::internal(format!("Could not open a window: {e}")))?;

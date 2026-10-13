@@ -17,6 +17,8 @@ describe("window chrome", () => {
   it("keeps the native traffic lights on macOS, under an overlay title bar", () => {
     const w = main("src-tauri/tauri.macos.conf.json");
     expect(w).toMatchObject({ ...SIZE, titleBarStyle: "Overlay", hiddenTitle: true });
+    // Centre the 14 px traffic lights in the 42 px bar (the default suits a 28 px one).
+    expect(w.trafficLightPosition).toEqual({ x: 14, y: 14 });
     expect(w.decorations).not.toBe(false);
   });
 
