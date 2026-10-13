@@ -16,6 +16,8 @@ tauri-build = { version = "2.7", features = [] }
 tpm-core = { path = "../crates/tpm-core" }
 tauri = { version = "2.12", features = [] }
 tauri-plugin-dialog = "2.8"
+tauri-plugin-updater = { version = "2.13.3", default-features = false, features = ["rustls-tls", "zip"] }
+tauri-plugin-opener = "2.7.1"
 tokio.workspace = true
 tokio-util.workspace = true
 serde.workspace = true

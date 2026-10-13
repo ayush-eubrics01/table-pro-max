@@ -4,3 +4,4 @@ pub mod library;
 pub mod query;
 pub mod redis;
 pub mod transfer;
+pub mod update;
