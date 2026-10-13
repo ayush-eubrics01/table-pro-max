@@ -1,6 +1,7 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Code2, Eye, FileCode2, Plus, Table2, X, Lock, BarChart3 } from "lucide-react";
 import { useWorkspaces, type Tab, type Workspace } from "../stores/workspaces";
+import { usePendingEdits } from "../stores/pendingEdits";
 import { Sidebar } from "../features/database-explorer/Sidebar";
 import { TableView } from "../features/data-browser/TableView";
 import { QueryTab } from "../features/sql-editor/QueryTab";
@@ -24,6 +25,13 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
   const [dirtyTables, setDirtyTables] = useState<Record<string, boolean>>({});
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(264);
+
+  // Tell app-wide actions (updates) how many tables here have uncommitted edits.
+  useEffect(() => {
+    const open = new Set(ws.tabs.map((t) => t.id));
+    usePendingEdits.getState().set(ws.id, Object.entries(dirtyTables).filter(([id, d]) => d && open.has(id)).length);
+  }, [dirtyTables, ws.tabs, ws.id]);
+  useEffect(() => () => usePendingEdits.getState().set(ws.id, 0), [ws.id]);
 
   const requestClose = async (tab: Tab) => {
     const dirty = (tab.kind === "query" && tab.dirty && tab.sql.trim().length > 0 && !tab.savedQueryId) || dirtyTables[tab.id];

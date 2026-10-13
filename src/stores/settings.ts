@@ -20,6 +20,10 @@ export interface Settings {
   /** Empty means the provider default. */
   "ai.model": string;
   "ai.baseUrl": string;
+  /** Automatic update checks: asked once on first launch. */
+  "updates.auto": "ask" | "on" | "off";
+  /** Written by the backend after each completed check (ms since the epoch). */
+  "updates.lastCheck": number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -39,6 +43,8 @@ export const DEFAULT_SETTINGS: Settings = {
   "ai.provider": "anthropic",
   "ai.model": "",
   "ai.baseUrl": "",
+  "updates.auto": "ask",
+  "updates.lastCheck": 0,
 };
 
 interface SettingsState {

@@ -58,6 +58,12 @@ export function scheduleSave(workspaces: Workspace[], activeId: string | null) {
   }, 800);
 }
 
+/** Writes the snapshot now, cancelling a pending debounced save (used before restarting). */
+export async function saveNow(workspaces: Workspace[], activeId: string | null) {
+  clearTimeout(timer);
+  await api.setWorkspace(WORKSPACE_KEY, snapshot(workspaces, activeId));
+}
+
 export async function loadSaved(): Promise<SavedSession | null> {
   try {
     return await api.getWorkspace<SavedSession>(WORKSPACE_KEY);
