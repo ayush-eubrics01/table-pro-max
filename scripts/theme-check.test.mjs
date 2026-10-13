@@ -51,4 +51,9 @@ describe("theme tokens", () => {
   it("uses explicit tokens instead of color-mix()", () => {
     expect(css).not.toMatch(/color-mix/);
   });
+
+  it("app.css uses no color-mix() either", () => {
+    const app = readFileSync("src/styles/app.css", "utf8");
+    expect(app).not.toMatch(/color-mix/);
+  });
 });

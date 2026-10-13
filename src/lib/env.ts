@@ -16,6 +16,15 @@ export function envColorVar(env: Environment): string {
   return `var(--env-${env})`;
 }
 
+/** CSS variables that colour an environment dot, stripe or badge (see .env-dot, .env-badge). */
+export function envStyle(env: Environment): Record<string, string> {
+  return {
+    "--env-color": `var(--env-${env})`,
+    "--env-bg": `var(--env-${env}-bg)`,
+    "--env-text": `var(--env-${env}-text)`,
+  };
+}
+
 export const SAFETY_MODES: { value: SafetyMode; label: string; help: string }[] = [
   { value: "normal", label: "Run everything", help: "Statements run without extra prompts." },
   {

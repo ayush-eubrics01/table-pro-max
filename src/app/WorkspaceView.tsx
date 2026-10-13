@@ -9,7 +9,7 @@ import { DefinitionView } from "../features/schema-browser/DefinitionView";
 import { DashboardView } from "../features/dashboards/DashboardView";
 import { RedisView } from "../features/redis/RedisView";
 import { api } from "../lib/ipc";
-import { envColorVar, envLabel, safetyLabel } from "../lib/env";
+import { envColorVar, envLabel, envStyle, safetyLabel } from "../lib/env";
 import { confirmAction, notifyError } from "../stores/ui";
 import { connectWithPrompt, reconnectWithPrompt } from "../features/connections/connectFlow";
 
@@ -196,7 +196,7 @@ export function StatusBar({ ws }: { ws: Workspace | undefined }) {
           </button>
         </>
       )}
-      <span className="env-dot" style={{ ["--env-color" as string]: envColorVar(s.environment) }} />
+      <span className="env-dot" style={envStyle(s.environment)} />
       <strong>{envLabel(s.environment)}</strong>
       <span>{s.connectionName}</span>
       <span className="mono">{s.target}</span>

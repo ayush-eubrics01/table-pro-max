@@ -52,7 +52,8 @@ export interface DataGridProps {
   ariaLabel: string;
 }
 
-const ROW_HEIGHT = 26;
+/** Must equal --row-height in tokens.css (rowHeight.test.ts). */
+export const ROW_HEIGHT = 30;
 const HEADER_HEIGHT = 26;
 const ROWNUM_WIDTH = 56;
 const MIN_COL = 48;
