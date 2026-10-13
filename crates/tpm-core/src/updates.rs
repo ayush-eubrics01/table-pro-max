@@ -104,6 +104,28 @@ pub fn release_page_url(version: &str) -> Result<String> {
     Ok(format!("https://github.com/{REPO}/releases/tag/v{version}"))
 }
 
+/// One update install at a time. A claim is held from "Update now" until the installer returns,
+/// so a second request is refused even while a long install (a password prompt) is running.
+#[derive(Debug, Default)]
+pub struct InstallLock(std::sync::atomic::AtomicBool);
+
+/// Releases the [`InstallLock`] when dropped.
+#[derive(Debug)]
+pub struct InstallClaim<'a>(&'a InstallLock);
+
+impl InstallLock {
+    pub fn try_claim(&self) -> Option<InstallClaim<'_>> {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.0.compare_exchange(false, true, SeqCst, SeqCst).ok().map(|_| InstallClaim(self))
+    }
+}
+
+impl Drop for InstallClaim<'_> {
+    fn drop(&mut self) {
+        self.0.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +206,19 @@ mod tests {
         assert!(!InstallKind::Unknown.can_install());
         assert_eq!(serde_json::to_value(InstallKind::Appimage).unwrap(), json!("appimage"));
         assert_eq!(serde_json::to_value(AutoMode::On).unwrap(), json!("on"));
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn one_install_at_a_time_until_the_claim_is_released() {
+        let lock = InstallLock::default();
+        let first = lock.try_claim().expect("a free lock can be claimed");
+        assert!(lock.try_claim().is_none(), "a second install must be refused while the first runs");
+        drop(first);
+        assert!(lock.try_claim().is_some(), "the lock is free again once the install ends");
     }
 }

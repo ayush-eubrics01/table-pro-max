@@ -56,6 +56,7 @@ pub fn run() {
                 ai_jobs: Default::default(),
                 pending_update: Default::default(),
                 update_jobs: Default::default(),
+                update_lock: Default::default(),
             });
             Ok(())
         })

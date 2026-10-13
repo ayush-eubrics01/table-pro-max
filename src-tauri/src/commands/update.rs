@@ -169,16 +169,12 @@ pub async fn update_install(app: AppHandle, state: State<'_, AppState>, job_id: 
         .unwrap_or_else(|p| p.into_inner())
         .clone()
         .ok_or_else(|| AppError::new(ErrorKind::NotFound, "No update is waiting. Check for updates first."))?;
+    // Held until the installer returns (or the app restarts), not just for the download.
+    let _claim = state.update_lock.try_claim().ok_or_else(|| {
+        AppError::new(ErrorKind::Conflict, "An update is already being installed").with_code("update_busy")
+    })?;
     let token = Arc::new(CancellationToken::new());
-    {
-        let mut jobs = state.update_jobs.lock().unwrap_or_else(|p| p.into_inner());
-        if !jobs.is_empty() {
-            return Err(
-                AppError::new(ErrorKind::Conflict, "An update is already being installed").with_code("update_busy")
-            );
-        }
-        jobs.insert(job_id.clone(), token.clone());
-    }
+    state.update_jobs.lock().unwrap_or_else(|p| p.into_inner()).insert(job_id.clone(), token.clone());
 
     let emitter = app.clone();
     let progress_id = job_id.clone();
