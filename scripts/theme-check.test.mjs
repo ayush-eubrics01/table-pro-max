@@ -1,0 +1,54 @@
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+import { ENVS, contrast, deltaE, failures, parseThemes } from "./theme-check.mjs";
+
+const css = readFileSync("src/styles/tokens.css", "utf8");
+const themes = parseThemes(css);
+const SHARED = /^--(font-|text-(xs|sm|md|lg|xl)$|space-|radius-|[a-z-]*height$)/;
+
+describe("theme checker", () => {
+  it("computes WCAG contrast and OKLab distance", () => {
+    expect(contrast("#000000", "#FFFFFF")).toBeCloseTo(21, 1);
+    expect(contrast("#FFFFFF", "#FFFFFF")).toBeCloseTo(1, 5);
+    expect(deltaE("#4ED6A0", "#4ED6A0")).toBe(0);
+    expect(deltaE("#000000", "#FFFFFF")).toBeCloseTo(100, 0);
+  });
+
+  it("reports a pair below its target and a missing token", () => {
+    const theme = { "--text": "#777777", "--bg": "#888888" };
+    const f = failures(theme);
+    expect(f.some((x) => x.startsWith("--text on --bg"))).toBe(true);
+    expect(f.some((x) => x.includes("missing --surface"))).toBe(true);
+  });
+});
+
+describe("theme tokens", () => {
+  it("dark is identical whether chosen in Settings or followed from the system", () => {
+    expect(themes.darkMedia).toEqual(themes.darkAttr);
+  });
+
+  it("both themes define the same colour tokens", () => {
+    const lightColours = Object.keys(themes.light).filter((k) => !SHARED.test(k)).sort();
+    expect(Object.keys(themes.darkAttr).sort()).toEqual(lightColours);
+  });
+
+  it("text, icons, focus and environment colours are readable in both themes", () => {
+    expect(failures(themes.light)).toEqual([]);
+    expect(failures(themes.dark)).toEqual([]);
+  });
+
+  it("environment colours are distinct from each other and from the accent", () => {
+    for (const [name, theme] of [["light", themes.light], ["dark", themes.dark]]) {
+      const keys = [...ENVS.map((e) => `--env-${e}`), "--accent"];
+      for (let i = 0; i < keys.length; i++)
+        for (let j = i + 1; j < keys.length; j++) {
+          const d = deltaE(theme[keys[i]], theme[keys[j]]);
+          expect(d, `${name}: ${keys[i]} vs ${keys[j]}`).toBeGreaterThanOrEqual(15);
+        }
+    }
+  });
+
+  it("uses explicit tokens instead of color-mix()", () => {
+    expect(css).not.toMatch(/color-mix/);
+  });
+});
