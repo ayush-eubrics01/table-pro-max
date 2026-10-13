@@ -419,8 +419,17 @@ pre,
   gap: 2px;
   padding-top: 6px;
   min-width: 0;
+}
+.titlebar-conn-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
+}
+.titlebar-conn-tabs::-webkit-scrollbar {
+  display: none;
 }
 .tb-tab {
   display: flex;
@@ -432,9 +441,14 @@ pre,
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  max-width: 240px;
-  flex: none;
+  /* Connection tabs shrink like browser tabs before the strip starts scrolling. */
+  flex: 0 1 220px;
+  min-width: 96px;
   white-space: nowrap;
+}
+.titlebar-tabs > .tb-tab {
+  flex: none;
+  min-width: 0;
 }
 .tb-tab:hover {
   color: var(--text);
@@ -578,6 +592,10 @@ pre,
 .statusbar .version {
   font-family: var(--font-code);
   color: var(--text-faint);
+}
+.statusbar[data-env="production"] .mono,
+.statusbar[data-env="production"] .version {
+  color: var(--text-muted);
 }
 .statusbar .write-mode {
   display: inline-flex;
