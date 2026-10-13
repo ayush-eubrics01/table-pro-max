@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AppInfo, ConnectionProfile, ObjectKind } from "../types/backend";
 import { api } from "../lib/ipc";
+import { envStyle } from "../lib/env";
 import { uid } from "../lib/text";
 import { useConnections } from "../stores/connections";
 import { useSettings } from "../stores/settings";
@@ -167,6 +168,7 @@ export function App() {
   return (
     <div className="shell">
       <TitleBar mac={isMac} onCloseWorkspace={(id) => void closeWorkspace(id)} />
+      <div className="env-stripe" data-env={active?.session.environment} style={active ? envStyle(active.session.environment) : undefined} />
 
       <div style={{ minHeight: 0, display: "flex", flexDirection: "column" }}>
         {isMainWindow && <UpdateBanner />}
@@ -176,7 +178,7 @@ export function App() {
         ))}
       </div>
 
-      <StatusBar ws={active} />
+      <StatusBar ws={active} version={appInfo?.version} />
       {paletteOpen && <OpenAnything onConnect={(p) => void connect(p)} />}
       {settingsOpen && <SettingsDialog appInfo={appInfo} onClose={() => useUi.getState().setSettingsOpen(false)} />}
       <Overlays />

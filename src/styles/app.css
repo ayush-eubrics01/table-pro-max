@@ -378,7 +378,7 @@ pre,
 
 .shell {
   display: grid;
-  grid-template-rows: auto 1fr var(--statusbar-height);
+  grid-template-rows: var(--titlebar-height) auto 1fr var(--statusbar-height);
   height: 100%;
 }
 
@@ -544,23 +544,45 @@ pre,
   grid-template-columns: var(--sidebar-width, 264px) 1fr;
   grid-template-rows: 1fr;
   min-height: 0;
-  border-top: 3px solid var(--env-color, transparent);
 }
-.workspace[data-env="production"] {
-  border-top-width: 4px;
+
+.env-stripe {
+  height: 2px;
+  background: var(--env-color, transparent);
+}
+.env-stripe[data-env="production"] {
+  height: 3px;
 }
 
 .statusbar {
   display: flex;
   align-items: center;
-  gap: var(--space-4);
-  padding: 0 var(--space-4);
+  gap: 14px;
+  padding: 0 12px;
+  height: var(--statusbar-height);
   font-size: var(--text-xs);
   color: var(--text-muted);
   background: var(--bg-sunken);
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-hairline);
   white-space: nowrap;
   overflow: hidden;
+}
+.statusbar .env-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--env-text);
+  font-weight: 600;
+}
+.statusbar .mono,
+.statusbar .version {
+  font-family: var(--font-code);
+  color: var(--text-faint);
+}
+.statusbar .write-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .statusbar[data-env="production"] {
   background: var(--env-production-bg);
