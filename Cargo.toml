@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["crates/tpm-core", "src-tauri"]
+# The desktop shell needs a webview toolchain (WebKitGTK on Linux); keep plain
+# `cargo build`/`cargo test` limited to the portable core. Use `-p table-pro-max`
+# or `--workspace` for the app.
+default-members = ["crates/tpm-core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+tokio-util = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "debuginfo"
