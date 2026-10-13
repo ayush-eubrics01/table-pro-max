@@ -4,6 +4,9 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import type { UpdateStatus } from "../../types/backend";
 import { Overlays } from "../../components/Overlays";
 import { usePendingEdits } from "../../stores/pendingEdits";
+import { DEFAULT_SETTINGS, useSettings } from "../../stores/settings";
+import { useWorkspaces } from "../../stores/workspaces";
+import { profile, session } from "../../test/fixtures";
 import { FirstRunUpdatePrompt } from "./FirstRunUpdatePrompt";
 import { UpdateBanner } from "./UpdateBanner";
 import { useUpdates } from "./store";
@@ -18,11 +21,13 @@ const INITIAL = useUpdates.getState();
 beforeEach(() => {
   calls = [];
   stored = {};
-  status = { currentVersion: "0.1.0", auto: "ask", lastCheck: 0, installKind: "appimage", canInstall: true };
+  status = { currentVersion: "0.1.0", auto: "ask", lastCheck: 0, installKind: "appimage", canInstall: true, openWindows: 1 };
   checkResult = { available: { version: "0.2.0", date: null, notes: "<b>Faster</b> grid" }, skipped: false };
   checkFails = null;
   useUpdates.setState(INITIAL, true);
   usePendingEdits.setState({ byWorkspace: {} });
+  useSettings.setState({ settings: { ...DEFAULT_SETTINGS } });
+  useWorkspaces.setState({ workspaces: [] });
   mockIPC(
     (cmd, args) => {
       const a = (args ?? {}) as Record<string, unknown>;
@@ -159,3 +164,63 @@ describe("update banner", () => {
     expect(screen.queryByText(/is available/)).not.toBeInTheDocument();
   });
 });
+
+describe("unsaved work outside the grid", () => {
+  const found = async () => {
+    status.auto = "on";
+    await useUpdates.getState().init();
+  };
+  const dirtyQuery = () =>
+    useWorkspaces.setState({
+      workspaces: [
+        {
+          id: "ws-1",
+          profile,
+          session,
+          schema: "public",
+          activeTabId: "t1",
+          tabs: [{ kind: "query", id: "t1", title: "Query 1", sql: "select 1", savedQueryId: null, dirty: true }],
+        },
+      ],
+    } as never);
+
+  it("warns that other windows will close", async () => {
+    status.openWindows = 3;
+    await found();
+    render(
+      <>
+        <UpdateBanner />
+        <Overlays />
+      </>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Update now" }));
+    expect(await screen.findByText(/2 other windows will close/)).toBeInTheDocument();
+    expect(installs()).toHaveLength(0);
+  });
+
+  it("warns about unsaved query tabs when tabs are not reopened", async () => {
+    useSettings.setState({ settings: { ...DEFAULT_SETTINGS, "workspace.restore": false } });
+    dirtyQuery();
+    await found();
+    render(
+      <>
+        <UpdateBanner />
+        <Overlays />
+      </>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Update now" }));
+    expect(await screen.findByText(/1 unsaved query tab/)).toBeInTheDocument();
+    expect(installs()).toHaveLength(0);
+  });
+
+  it("does not warn about query tabs that will be reopened, and saves them first", async () => {
+    dirtyQuery();
+    await found();
+    render(<UpdateBanner />);
+    fireEvent.click(screen.getByRole("button", { name: "Update now" }));
+    await waitFor(() => expect(installs()).toHaveLength(1));
+    const order = calls.map((c) => c.cmd).filter((c) => c === "set_workspace" || c === "update_install");
+    expect(order).toEqual(["set_workspace", "update_install"]);
+  });
+});
+

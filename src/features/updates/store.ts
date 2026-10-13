@@ -33,6 +33,24 @@ interface UpdatesState {
 
 const busy = (phase: UpdatePhase) => phase === "checking" || phase === "downloading" || phase === "installing";
 
+/** What an update restart would discard, one sentence each. Empty when nothing is at risk. */
+function unsavedWork(openWindows: number): string[] {
+  const out: string[] = [];
+  const tables = pendingTableCount();
+  if (tables > 0) out.push(`${tables} ${tables === 1 ? "table has" : "tables have"} uncommitted changes.`);
+  // With "reopen tabs" on, query text is saved before the restart and restored after it.
+  if (!useSettings.getState().settings["workspace.restore"]) {
+    const queries = useWorkspaces
+      .getState()
+      .workspaces.flatMap((w) => w.tabs)
+      .filter((t) => t.kind === "query" && t.dirty && !t.savedQueryId && t.sql.trim()).length;
+    if (queries > 0) out.push(`${queries} unsaved query ${queries === 1 ? "tab" : "tabs"} will not be reopened.`);
+  }
+  const others = openWindows - 1;
+  if (others > 0) out.push(`${others} other ${others === 1 ? "window" : "windows"} will close without saving.`);
+  return out;
+}
+
 function describe(e: unknown): string {
   const err = toError(e);
   return err.detail ? `${err.message}: ${err.detail}` : err.message;
@@ -82,11 +100,12 @@ export const useUpdates = create<UpdatesState>((set, get) => ({
     if (!available || busy(phase) || get().installClaimed) return;
     set({ installClaimed: true });
     try {
-      const pending = pendingTableCount();
-      if (pending > 0) {
+      const status = await api.updateStatus().catch(() => get().status);
+      const losses = unsavedWork(status?.openWindows ?? 1);
+      if (losses.length > 0) {
         const ok = await confirmAction({
           title: `Update to ${available.version} now?`,
-          body: `${pending} ${pending === 1 ? "table has" : "tables have"} uncommitted changes. They will be lost when the app restarts.`,
+          body: `${losses.join(" ")} This work will be lost when the app restarts.`,
           confirmLabel: "Update anyway",
           danger: true,
         });
