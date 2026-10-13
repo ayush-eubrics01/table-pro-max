@@ -8,6 +8,9 @@ export const ENVIRONMENTS: { value: Environment; label: string }[] = [
   { value: "production", label: "Production" },
 ];
 
+/** Order of the environment groups on the Connections home: the riskiest first. */
+export const ENV_ORDER: Environment[] = ["production", "staging", "testing", "development", "local"];
+
 export function envLabel(env: Environment): string {
   return ENVIRONMENTS.find((e) => e.value === env)?.label ?? env;
 }
@@ -47,10 +50,10 @@ export function safetyLabel(mode: SafetyMode): string {
 export const DRIVERS: { value: Driver; label: string; short: string }[] = [
   { value: "postgres", label: "PostgreSQL", short: "PG" },
   { value: "mysql", label: "MySQL", short: "MY" },
-  { value: "mariadb", label: "MariaDB", short: "MDB" },
-  { value: "sqlite", label: "SQLite", short: "SQLT" },
-  { value: "duckdb", label: "DuckDB", short: "DUCK" },
-  { value: "redis", label: "Redis", short: "RDS" },
+  { value: "mariadb", label: "MariaDB", short: "MA" },
+  { value: "sqlite", label: "SQLite", short: "SQ" },
+  { value: "duckdb", label: "DuckDB", short: "DU" },
+  { value: "redis", label: "Redis", short: "RD" },
 ];
 
 export function isFileDriver(d: Driver): boolean {

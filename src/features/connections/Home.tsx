@@ -2,9 +2,9 @@ import { useMemo, useState } from "react";
 import { Icon } from "../../components/Icon";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { api } from "../../lib/ipc";
-import type { AppInfo, ConnectionProfile, StoredConnection } from "../../types/backend";
+import type { AppInfo, ConnectionProfile, Environment, StoredConnection } from "../../types/backend";
 import { useConnections } from "../../stores/connections";
-import { driverShort, driverLabel, envColorVar } from "../../lib/env";
+import { ENV_ORDER, driverLabel, driverShort, envLabel, envStyle, isFileDriver } from "../../lib/env";
 import { EnvBadge } from "../../components/EnvBadge";
 import { ContextMenu, useContextMenu } from "../../components/Menu";
 import { confirmAction, notify, notifyError } from "../../stores/ui";
@@ -16,7 +16,20 @@ interface Props {
   connecting: string | null;
 }
 
-type SortKey = "manual" | "name" | "recent";
+type SortKey = "manual" | "recent" | "name";
+
+const SORTS: { key: SortKey; label: string }[] = [
+  { key: "manual", label: "Custom" },
+  { key: "recent", label: "Recent" },
+  { key: "name", label: "Name" },
+];
+
+/** `scheme://…` with no spaces: offer to create a connection from it instead of searching. */
+const URL_LIKE = /^[a-z][a-z0-9+.-]*:\/\/\S+$/i;
+
+function target(p: ConnectionProfile): string {
+  return isFileDriver(p.driver) ? (p.filePath ?? "") : `${p.user ? `${p.user}@` : ""}${p.host}:${p.port ?? ""}/${p.database}`;
+}
 
 export function Home({ appInfo, onConnect, connecting }: Props) {
   const connections = useConnections((s) => s.connections);
@@ -24,25 +37,25 @@ export function Home({ appInfo, onConnect, connecting }: Props) {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortKey>("manual");
   const [editing, setEditing] = useState<ConnectionProfile | "new" | null>(null);
+  const [pendingUrl, setPendingUrl] = useState<string | null>(null);
   const menu = useContextMenu();
+  const isUrl = URL_LIKE.test(search.trim());
 
   const groups = useMemo(() => {
-    const needle = search.trim().toLowerCase();
-    const filtered = connections.filter(({ profile: p }) =>
-      !needle || [p.name, p.host, p.database, p.user, p.group ?? "", p.filePath ?? "", ...p.tags].some((v) => v.toLowerCase().includes(needle)),
+    const needle = isUrl ? "" : search.trim().toLowerCase();
+    const filtered = connections.filter(
+      ({ profile: p }) =>
+        !needle || [p.name, p.host, p.database, p.user, p.group ?? "", p.filePath ?? "", ...p.tags].some((v) => v.toLowerCase().includes(needle)),
     );
     const sorted = [...filtered].sort((a, b) => {
       if (sort === "name") return a.profile.name.localeCompare(b.profile.name);
       if (sort === "recent") return (b.lastUsedAt ?? "").localeCompare(a.lastUsedAt ?? "");
       return a.sortOrder - b.sortOrder;
     });
-    const map = new Map<string, StoredConnection[]>();
-    for (const c of sorted) {
-      const g = c.profile.group?.trim() || "";
-      map.set(g, [...(map.get(g) ?? []), c]);
-    }
-    return [...map.entries()].sort(([a], [b]) => (a === "" ? 1 : b === "" ? -1 : a.localeCompare(b)));
-  }, [connections, search, sort]);
+    const byEnv = new Map<Environment, StoredConnection[]>();
+    for (const c of sorted) byEnv.set(c.profile.environment, [...(byEnv.get(c.profile.environment) ?? []), c]);
+    return ENV_ORDER.filter((env) => byEnv.has(env)).map((env) => [env, byEnv.get(env)!] as const);
+  }, [connections, search, sort, isUrl]);
 
   const exportProfiles = async (ids: string[] | null) => {
     const path = await saveDialog({ defaultPath: "connections.json", filters: [{ name: "JSON", extensions: ["json"] }] });
@@ -77,43 +90,74 @@ export function Home({ appInfo, onConnect, connecting }: Props) {
     if (ok) await remove(p.id).catch((e) => notifyError(e));
   };
 
+  const createFromUrl = () => {
+    // The URL can hold a password: hand it to the form and clear the search box straight away.
+    setPendingUrl(search.trim());
+    setSearch("");
+    setEditing("new");
+  };
+
+  const closeForm = () => {
+    setEditing(null);
+    setPendingUrl(null);
+  };
+
   return (
     <div className="home">
       <div className="home-inner">
         <div className="home-head">
-          <h1>Connections</h1>
-          <button className="btn btn-ghost" onClick={importProfiles} title="Import connections from a file">
-            <Icon name="upload" size={14} /> Import
+          <div style={{ flex: 1 }}>
+            <h1>Connections</h1>
+            <p className="home-sub">
+              {connections.length} saved ·{" "}
+              {appInfo && !appInfo.credentialStoreAvailable ? "passwords are asked for when connecting" : `passwords in ${appInfo?.credentialStore ?? "your system keychain"}`}
+            </p>
+          </div>
+          <button className="btn" onClick={importProfiles} title="Import connections from a file">
+            <Icon name="download" size={15} /> Import
           </button>
-          <button className="btn btn-ghost" onClick={() => exportProfiles(null)} disabled={connections.length === 0} title="Export connections (without passwords)">
-            <Icon name="download" size={14} /> Export
+          <button className="btn" onClick={() => exportProfiles(null)} disabled={connections.length === 0} title="Export connections (without passwords)">
+            <Icon name="upload" size={15} /> Export
           </button>
           <button className="btn btn-primary" onClick={() => setEditing("new")}>
-            <Icon name="add" size={14} /> New connection
+            <Icon name="add" size={15} /> New connection
           </button>
         </div>
-        <div className="field-row" style={{ alignItems: "center" }}>
+
+        <div className="home-toolbar">
           <div style={{ position: "relative", flex: 1, display: "flex" }}>
-            <Icon name="search" size={14} style={{ position: "absolute", left: 8, top: 7, color: "var(--text-faint)" }} />
+            <Icon name="search" size={15} style={{ position: "absolute", left: 10, top: 9, color: "var(--text-faint)" }} />
             <input
               className="input"
-              style={{ paddingLeft: 28, flex: 1 }}
-              placeholder="Search by name, host, database or tag"
+              style={{ paddingLeft: 32, flex: 1, height: 36 }}
+              placeholder="Search by name, host, database — or paste a connection URL"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && isUrl && createFromUrl()}
               aria-label="Search connections"
+              autoComplete="off"
+              spellCheck={false}
             />
           </div>
-          <select className="select" value={sort} onChange={(e) => setSort(e.target.value as SortKey)} aria-label="Sort connections">
-            <option value="manual">Custom order</option>
-            <option value="name">Name</option>
-            <option value="recent">Recently used</option>
-          </select>
+          <div className="segmented" role="group" aria-label="Sort connections">
+            {SORTS.map((s) => (
+              <button key={s.key} aria-pressed={sort === s.key} onClick={() => setSort(s.key)}>
+                {s.label}
+              </button>
+            ))}
+          </div>
         </div>
+
+        {isUrl && (
+          <button className="url-row" onClick={createFromUrl}>
+            <Icon name="add" size={16} />
+            <span>Create connection from this URL…</span>
+          </button>
+        )}
 
         {connections.length === 0 && (
           <div className="empty" style={{ height: "auto", padding: 48 }}>
-            <p>Add a PostgreSQL, MySQL, MariaDB, SQLite or DuckDB connection to get started.</p>
+            <p>Add a PostgreSQL, MySQL, MariaDB, SQLite, DuckDB or Redis connection to get started.</p>
             <p className="hint">Connections, history and saved queries stay on this computer. Passwords go to your system keychain.</p>
             <button className="btn btn-primary" onClick={() => setEditing("new")}>
               New connection
@@ -121,48 +165,74 @@ export function Home({ appInfo, onConnect, connecting }: Props) {
           </div>
         )}
 
-        {groups.map(([group, items]) => (
-          <section key={group || "_"} className="conn-group" aria-label={group || "Ungrouped"}>
-            {(group || groups.length > 1) && <h3>{group || "Ungrouped"}</h3>}
-            <div className="conn-list">
-              {items.map(({ profile: p, lastUsedAt }) => (
-                <div
-                  key={p.id}
-                  className="conn-row"
-                  role="button"
-                  tabIndex={0}
-                  style={{ ["--env-color" as string]: envColorVar(p.environment) }}
-                  onClick={() => onConnect(p)}
-                  onKeyDown={(e) => e.key === "Enter" && onConnect(p)}
-                  onContextMenu={(e) =>
-                    menu.open(e, [
-                      { label: "Connect", onSelect: () => onConnect(p) },
-                      { label: "Edit…", onSelect: () => setEditing(p) },
-                      { label: "Duplicate", onSelect: () => void duplicate(p.id).catch((err) => notifyError(err)) },
-                      { label: "Export…", onSelect: () => void exportProfiles([p.id]) },
-                      "separator",
-                      { label: "Delete…", danger: true, onSelect: () => void onDelete(p) },
-                    ])
-                  }
-                  aria-label={`Connect to ${p.name}`}
-                >
-                  <span className="stripe" />
-                  <div style={{ padding: "8px 0", minWidth: 0 }}>
-                    <div className="title">{p.name}</div>
-                    <div className="sub" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {p.driver === "sqlite" || p.driver === "duckdb" ? p.filePath : `${p.user ? `${p.user}@` : ""}${p.host}:${p.port ?? ""}/${p.database}`}
+        {groups.map(([env, items]) => (
+          <section key={env} className="conn-group" aria-label={envLabel(env)}>
+            <h2 className="conn-group-head" style={envStyle(env)}>
+              <span className="env-dot" />
+              {envLabel(env)}
+              <span className="count">{items.length}</span>
+            </h2>
+            <div className="conn-cards">
+              {items.map(({ profile: p, lastUsedAt }) => {
+                const facts = [p.group?.trim() || "No group", p.ssh ? "SSH tunnel" : null, p.safetyMode === "read_only" ? "Opens read-only" : null].filter(
+                  Boolean,
+                );
+                return (
+                  <div
+                    key={p.id}
+                    className="conn-card"
+                    role="button"
+                    tabIndex={0}
+                    style={envStyle(p.environment)}
+                    onClick={() => onConnect(p)}
+                    onKeyDown={(e) => e.key === "Enter" && e.target === e.currentTarget && onConnect(p)}
+                    onContextMenu={(e) =>
+                      menu.open(e, [
+                        { label: "Connect", onSelect: () => onConnect(p) },
+                        { label: "Edit…", onSelect: () => setEditing(p) },
+                        { label: "Duplicate", onSelect: () => void duplicate(p.id).catch((err) => notifyError(err)) },
+                        { label: "Export…", onSelect: () => void exportProfiles([p.id]) },
+                        "separator",
+                        { label: "Delete…", danger: true, onSelect: () => void onDelete(p) },
+                      ])
+                    }
+                    aria-label={`Connect to ${p.name}`}
+                  >
+                    <div className="conn-card-top">
+                      <span className="driver-mark" title={driverLabel(p.driver)}>
+                        {driverShort(p.driver)}
+                      </span>
+                      <div className="conn-card-title">
+                        <strong>{p.name}</strong>
+                        <span>
+                          {driverLabel(p.driver)}
+                          {lastUsedAt && ` · ${new Date(lastUsedAt).toLocaleDateString()}`}
+                        </span>
+                      </div>
+                      <EnvBadge env={p.environment} />
+                    </div>
+                    <div className="target">{target(p)}</div>
+                    <div className="conn-card-foot">
+                      <span className="facts">{facts.join(" · ")}</span>
+                      {connecting === p.id && <span className="spinner" aria-label="Connecting" />}
+                      <button
+                        className="btn btn-ghost btn-icon"
+                        aria-label={`Edit ${p.name}`}
+                        title="Edit"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditing(p);
+                        }}
+                      >
+                        <Icon name="edit" size={15} />
+                      </button>
+                      <span className="connect-link">
+                        Connect <Icon name="chevron_right" size={16} />
+                      </span>
                     </div>
                   </div>
-                  <div className="field-row" style={{ alignItems: "center", gap: 8 }}>
-                    {connecting === p.id && <div className="spinner" aria-label="Connecting" />}
-                    {lastUsedAt && <span className="hint">{new Date(lastUsedAt).toLocaleDateString()}</span>}
-                    <EnvBadge env={p.environment} />
-                  </div>
-                  <span className="driver-mark" title={driverLabel(p.driver)}>
-                    {driverShort(p.driver)}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </section>
         ))}
@@ -177,9 +247,10 @@ export function Home({ appInfo, onConnect, connecting }: Props) {
         <ConnectionForm
           appInfo={appInfo}
           initial={editing === "new" ? undefined : editing}
-          onClose={() => setEditing(null)}
+          initialUrl={editing === "new" ? (pendingUrl ?? undefined) : undefined}
+          onClose={closeForm}
           onSaved={(profile, connect) => {
-            setEditing(null);
+            closeForm();
             if (connect) onConnect(profile);
           }}
         />

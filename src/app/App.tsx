@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AppInfo, ConnectionProfile, ObjectKind } from "../types/backend";
 import { api } from "../lib/ipc";
@@ -10,6 +10,8 @@ import { useWorkspaces, type Tab } from "../stores/workspaces";
 import { confirmAction, notifyError, useUi } from "../stores/ui";
 import { Overlays } from "../components/Overlays";
 import { Home } from "../features/connections/Home";
+import { ConnectingDialog } from "../features/connections/ConnectingDialog";
+import { exclusive } from "../lib/exclusive";
 import { connectRedisWithPrompt, connectWithPrompt } from "../features/connections/connectFlow";
 import { OpenAnything } from "../features/command-palette/OpenAnything";
 import { SettingsDialog } from "../features/settings/SettingsDialog";
@@ -24,6 +26,7 @@ import { loadSaved, scheduleSave } from "./restore";
 export function App() {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [connecting, setConnecting] = useState<string | null>(null);
+  const [connectingHidden, setConnectingHidden] = useState(false);
   const workspaces = useWorkspaces((s) => s.workspaces);
   const activeId = useWorkspaces((s) => s.activeId);
   const paletteOpen = useUi((s) => s.paletteOpen);
@@ -37,28 +40,40 @@ export function App() {
   // never overwrites the saved session.
   const [restoreDone, setRestoreDone] = useState(false);
 
-  const connect = useCallback(async (profile: ConnectionProfile) => {
-    const existing = useWorkspaces.getState().workspaces.find((w) => w.profile.id === profile.id);
-    if (existing) {
-      useWorkspaces.getState().activate(existing.id);
-      return existing.id;
-    }
-    setConnecting(profile.id);
-    try {
-      if (profile.driver === "redis") {
-        const r = await connectRedisWithPrompt(profile);
-        return r ? useWorkspaces.getState().openRedis(profile, r.sessionId, r.info) : null;
+  // One connect at a time: the connecting overlay can be hidden, so cards stay clickable meanwhile.
+  const openConnection = useMemo(
+    () =>
+      exclusive(async (profile: ConnectionProfile) => {
+        setConnectingHidden(false);
+        setConnecting(profile.id);
+        try {
+          if (profile.driver === "redis") {
+            const r = await connectRedisWithPrompt(profile);
+            return r ? useWorkspaces.getState().openRedis(profile, r.sessionId, r.info) : null;
+          }
+          const session = await connectWithPrompt(profile);
+          if (!session) return null;
+          return await useWorkspaces.getState().open(profile, session);
+        } catch (e) {
+          notifyError(e, `Could not connect to ${profile.name}`);
+          return null;
+        } finally {
+          setConnecting(null);
+        }
+      }),
+    [],
+  );
+  const connect = useCallback(
+    async (profile: ConnectionProfile) => {
+      const existing = useWorkspaces.getState().workspaces.find((w) => w.profile.id === profile.id);
+      if (existing) {
+        useWorkspaces.getState().activate(existing.id);
+        return existing.id;
       }
-      const session = await connectWithPrompt(profile);
-      if (!session) return null;
-      return await useWorkspaces.getState().open(profile, session);
-    } catch (e) {
-      notifyError(e, `Could not connect to ${profile.name}`);
-      return null;
-    } finally {
-      setConnecting(null);
-    }
-  }, []);
+      return (await openConnection(profile)) ?? null;
+    },
+    [openConnection],
+  );
 
   // Startup: settings, app info, connections, then optional workspace restore.
   useEffect(() => {
@@ -114,6 +129,8 @@ export function App() {
   }, []);
 
   const active = workspaces.find((w) => w.id === activeId);
+  const hideConnecting = useCallback(() => setConnectingHidden(true), []);
+  const connectingProfile = connecting ? useConnections.getState().byId(connecting) : undefined;
 
   const closeWorkspace = async (id: string) => {
     const ws = useWorkspaces.getState().workspaces.find((w) => w.id === id);
@@ -181,6 +198,7 @@ export function App() {
       <StatusBar ws={active} version={appInfo?.version} />
       {paletteOpen && <OpenAnything onConnect={(p) => void connect(p)} />}
       {settingsOpen && <SettingsDialog appInfo={appInfo} onClose={() => useUi.getState().setSettingsOpen(false)} />}
+      {connectingProfile && !connectingHidden && <ConnectingDialog profile={connectingProfile} onHide={hideConnecting} />}
       <Overlays />
       {isMainWindow && <FirstRunUpdatePrompt />}
     </div>
