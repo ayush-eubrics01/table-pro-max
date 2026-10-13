@@ -2,7 +2,8 @@
 
 Table Pro Max is a Tauri 2 desktop application. All database work happens in Rust; the
 React frontend renders state and sends typed commands over Tauri IPC. There is no server
-component and no network traffic other than to the databases the user connects to.
+component. Network traffic goes to the databases the user connects to, plus two optional
+destinations: the AI service the user configures, and GitHub for update checks the user allows.
 
 ```
 ┌──────────────────────────── webview (React + TypeScript) ────────────────────────────┐
@@ -11,7 +12,7 @@ component and no network traffic other than to the databases the user connects t
 └───────────────────────────────┬──────────────────────────────────────────────────────┘
                                 │  invoke("command", args) → Result<T, AppError>
 ┌───────────────────────────────▼──────── src-tauri (crate table-pro-max) ─────────────┐
-│ commands/{connections, query, library} · state.rs (AppState, password resolution)   │
+│ commands/{connections, query, library, ai, update} · state.rs (AppState, secrets)    │
 │ logging.rs (redacting file logger) · capabilities/default.json (minimal permissions)│
 └───────────────────────────────┬──────────────────────────────────────────────────────┘
                                 │  plain Rust calls
@@ -30,6 +31,7 @@ component and no network traffic other than to the databases the user connects t
 │ transfer.rs    streaming import/export (CSV, JSON, JSON Lines, SQL, XLSX)            │
 │ redis_kv.rs    Redis key browser and console with command classification            │
 │ ai.rs          optional AI: prompt builder, Anthropic / OpenAI-compatible HTTPS      │
+│ updates.rs     update-check rules: consent, daily interval, versions, install kinds  │
 │ config.rs      ConnectionProfile, URL parsing · dialect.rs quoting · redact.rs       │
 └──────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -126,6 +128,19 @@ system and user message. The UI shows that output (`ai_preview`) and sends it ba
 model, loads the key from the credential store, and posts it with `reqwest` (rustls + ring).
 The UI renders answers as text. The first SQL block can be inserted into the editor; it is never
 executed. In-flight requests are cancelled through a `CancellationToken`.
+
+## In-app updates
+
+`commands/update.rs` wraps `tauri-plugin-updater`. `update_check(manual)` refuses automatic
+checks unless `updates.auto` is `"on"` and a day has passed (`updates::auto_check_due`), then
+reads `latest.json` from the latest GitHub release and keeps the found `Update` in `AppState`.
+`update_install` downloads it with progress events (`update-progress`), cancellable through a
+`CancellationToken`; the plugin verifies the minisign signature and the signed version before
+returning the bytes. It then installs (AppImage replaced in place; `.deb`/`.rpm` through
+`pkexec`; NSIS/MSI in passive mode; the macOS `.app` replaced) and restarts. The frontend
+(`features/updates/`) asks for consent once, shows the banner, warns about uncommitted grid
+edits (`stores/pendingEdits.ts`) and saves the workspace before installing. The release
+workflow signs the updater files and writes the manifest with `scripts/updater-manifest.mjs`.
 
 ## Import and export
 

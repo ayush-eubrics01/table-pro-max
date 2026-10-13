@@ -25,8 +25,9 @@ Rust core. Read `docs/ARCHITECTURE.md` and `docs/FEATURE_MATRIX.md` before chang
 
 ## Rules that matter here
 - Never add feature gates, license checks, telemetry or network calls other than to user
-  databases and the user-configured AI endpoint (`ai.rs`; off by default, every request
-  previewed, never auto-executes SQL).
+  databases, the user-configured AI endpoint (`ai.rs`; off by default, every request
+  previewed, never auto-executes SQL) and the update check (`commands/update.rs`; asks before
+  checking automatically, installs only signed updates after a click).
 - Never store or log passwords. Profiles hold no secrets. Errors go through `AppError`
   (redacted at construction). Use `add_context`, not `with_detail`, to annotate existing
   errors.

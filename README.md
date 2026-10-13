@@ -6,7 +6,8 @@ DuckDB and Redis**. It is built with Rust and Tauri for Linux, Windows and macOS
 - **Free, with no catches.** No account, no license key, no premium tier, no limits on tabs,
   filters or connections.
 - **Private.** The app talks only to your databases, plus the AI service you configure if you
-  turn the optional assistant on (every request is shown to you before it is sent). No telemetry. Connections, history and
+  turn the optional assistant on (every request is shown to you before it is sent), and GitHub
+  for update checks if you allow them. No telemetry. Connections, history and
   saved queries stay on your machine, and passwords go to your system keychain.
 - **Safe editing.** Grid edits stay pending until you review the generated SQL and commit them
   in one transaction. Destructive statements ask first. Production connections are
@@ -26,6 +27,13 @@ The builds are not code-signed yet, so the OS warns on first launch:
 - **macOS:** Gatekeeper may say the app "is damaged" or "cannot be verified". After copying it to
   Applications, run `xattr -dr com.apple.quarantine "/Applications/Table Pro Max.app"`.
 - **Linux AppImage:** `chmod +x` the file, then run it.
+
+### Updates
+On first launch the app asks whether it may check GitHub for new versions once a day. When one
+is published, a banner shows what's new; **Update now** downloads it, checks it against the
+project's signing key, installs it and restarts. Nothing is downloaded or installed without
+that click. On `.deb` and `.rpm` installs your system asks for your password, as it does for
+other software updates. You can change the choice, or check by hand, in Settings › Updates.
 
 ## Run from source
 

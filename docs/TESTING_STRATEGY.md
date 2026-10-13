@@ -8,6 +8,7 @@
 | Rust integration | `scripts/test-db.sh up` then `eval "$(scripts/test-db.sh env)"` and `cargo test -p tpm-core --test integration` | One shared scenario per driver against real servers (below) |
 | Frontend unit + component | `npm test` | Pending-change model, filter model, fuzzy ranking, workspace store (tab isolation, reopen, reorder, restore snapshot), TableView edit → review → commit and discard with mocked IPC, read-only grids, FilterBuilder (type-aware operators, nesting, 40+ conditions), ConnectionForm (URL import, secrets kept out of profiles, keychain fallback, TLS warning) |
 | Rust HTTP (AI) | `cargo test -p tpm-core --test ai_http` (add `TPM_AI_LIVE_TLS=1` for one live TLS check against api.anthropic.com with an invalid key) | AI client against a fake OpenAI-compatible server on 127.0.0.1: request body equals the preview, bearer auth, 404 mapping, cancel within 200 ms, connection refused |
+| Updates | `cargo test -p tpm-core updates::`, `cargo test -p table-pro-max --lib update` (needs the WebKitGTK toolchain), `npx vitest run src/features/updates scripts` | Consent and daily-interval rules (including a clock that moved backwards), plugin error mapping, install-kind detection, consent dialog, banner (notes as text, pending-edit warning, one install per click, Download fallback), manifest generation for every platform and for pre-release versions |
 | Static checks | `cargo clippy --workspace --all-targets`, `cargo fmt --check`, `npm run typecheck`, `npm run lint` | |
 | Manual end-to-end (Linux) | see "Driving the real app" | The real Tauri app against a disposable database |
 
@@ -55,6 +56,24 @@ with full rollback, successful commit checked in the DB, query tab run, destruct
 confirmation (DB unchanged), EXPLAIN plan view, table export to CSV through the native save
 dialog, CSV import into a new table, workspace restore after restart, production styling,
 MySQL edit/commit, SQLite browse with binary cells, and filters.
+
+## In-app update end to end (Linux, manual)
+1. Generate a throwaway key: `npx tauri signer generate --ci -p <pw> -w <dir>/test.key`. Never use
+   the real key.
+2. Build two AppImages with it, passing a config override per version:
+   `{"version":"0.1.0","bundle":{"createUpdaterArtifacts":true,"targets":["appimage","deb"]},
+   "plugins":{"updater":{"pubkey":"<test.key.pub>","endpoints":["http://127.0.0.1:8765/latest.json"],
+   "dangerousInsecureTransportProtocol":true}}}` and run
+   `TAURI_SIGNING_PRIVATE_KEY="$(cat test.key)" TAURI_SIGNING_PRIVATE_KEY_PASSWORD=<pw> npx tauri build --config <file>`.
+   The insecure flag exists only in these throwaway builds; `release.yml` refuses it.
+3. Serve a `latest.json` for 0.1.1 and the 0.1.1 AppImage with `python3 -m http.server 8765 --bind 127.0.0.1`.
+4. Run the 0.1.0 AppImage isolated (as in "Driving the real app", plus `APPIMAGE_EXTRACT_AND_RUN=1`
+   and `TPM_UPDATE_ENDPOINT=http://127.0.0.1:8765/latest.json`). Check that the consent dialog
+   comes before any request, then follow the banner through Update now; the AppImage hash must
+   become the 0.1.1 hash and Settings › Updates must show 0.1.1 after the restart.
+5. Repeat with one byte of the served file changed, then with the manifest announcing a
+   different version: both must be refused and the file must stay unchanged.
+6. Delete the throwaway key and the test bundles (`target/release/bundle`).
 
 ## Benchmark (`crates/tpm-core/examples/bench.rs`)
 Repeatable large-result and large-import check against the disposable databases:

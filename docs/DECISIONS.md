@@ -95,3 +95,16 @@ private-key operation per login (the authentication signature); the attack needs
 private-key operations, so it is not practical here. Host key verification uses only
 public-key operations. The advisory is ignored in `.cargo/audit.toml` with this reason; prefer
 Ed25519 user keys. Revisit when `rsa` ships a constant-time release.
+
+## D15. In-app updates through tauri-plugin-updater
+Users want new versions without visiting GitHub. The app uses the official Tauri updater
+plugin (2.13, rustls + ring, no OpenSSL), called only from our Rust commands so the webview
+gets no plugin permissions. The manifest is `latest.json` attached to each GitHub release and
+read from `releases/latest`, so publishing a draft is what pushes an update, and suffixed tags
+(`-rc.N`) stay pre-releases that are never offered. The app asks once before checking
+automatically (at most daily); installing always needs a click on "Update now". Updates are
+verified with a minisign key held by the maintainer, `requireSignedVersion` binds each
+signature to its version, and downgrades are refused. Rejected: our own updater (more code to
+get wrong), silent background downloads (conflicts with the privacy promise), package managers
+only (most users install from the release page). Consequences: the network rule now names
+the update check, and the signing key must be backed up and rotated if it leaks (RELEASING.md).
