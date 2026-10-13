@@ -82,4 +82,5 @@ Network latency to a remote server will dominate these numbers in real use.
 * QueryTab component tests (CodeMirror in jsdom).
 * TLS integration fixture (self-signed CA) for all network drivers.
 * Grid scrolling frame-time measurement in the webview.
-* Windows and macOS CI runs (credential stores, builds).
+* Windows and macOS: CI already builds the installers; still to do are launch tests and
+  credential-store tests on those runners.
