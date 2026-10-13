@@ -29,6 +29,24 @@ Rust core. Read `docs/ARCHITECTURE.md` and `docs/FEATURE_MATRIX.md` before chang
 - PR titles become the commit on `main`: `type: what changed`. Never use `[skip ci]`.
 - Versions are set only with `node scripts/bump-version.mjs X.Y.Z`.
 
+## Releasing a version (when asked to "release X.Y.Z")
+Full detail: `CONTRIBUTING.md` (Releasing) and `docs/RELEASING.md` (checklist, signing key).
+1. Branch `chore/release-X.Y.Z` from `main`, run `node scripts/bump-version.mjs X.Y.Z`, write
+   `docs/releases/vX.Y.Z.md` (what changed, what is unverified, anything users must do), open a
+   PR titled `chore: release X.Y.Z`, squash-merge after **CI passed**.
+2. On the merge commit: `git tag -a vX.Y.Z -m "Table Pro Max X.Y.Z" && git push origin vX.Y.Z`.
+   The tagged commit's message must not contain `[skip ci]`.
+3. `release.yml` builds and signs Linux, Windows and macOS and creates a **draft** release. Check
+   it has every installer, a `.sig` per updater file, `latest.json` and `SHA256SUMS`.
+4. The maintainer publishes the draft (ask; never publish without approval). Publishing a plain
+   version offers it to every app that allows update checks.
+- Test build first: bump to and tag `vX.Y.Z-rc.N`. It is a pre-release and never offered as an
+  update.
+- Urgent fix while `main` has unreleased work: `git switch -c release/X.Y vX.Y.0`, fix and bump
+  to `X.Y.(Z+1)` in a PR into `release/X.Y`, tag there, and land the same fix on `main`.
+- Versions: `MAJOR.MINOR.PATCH`; below 1.0, raise the middle number for features, the last for
+  fixes.
+
 ## Rules that matter here
 - Never add feature gates, license checks, telemetry or network calls other than to user
   databases, the user-configured AI endpoint (`ai.rs`; off by default, every request
