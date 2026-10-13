@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Copy, CornerDownLeft, Sparkles, X } from "lucide-react";
+import { Icon } from "../../components/Icon";
 import type { AiAnswer, AiPrompt, AiTask } from "../../types/backend";
 import { api, toError } from "../../lib/ipc";
 import { uid } from "../../lib/text";
@@ -104,10 +104,10 @@ export function AiPanel({ dialect, getSql, lastError, referencedTables, allTable
   return (
     <aside className="ai-panel" aria-label="AI assistant">
       <div className="ai-panel-head">
-        <Sparkles size={14} aria-hidden /> AI assistant
+        <Icon name="star_shine" size={14} aria-hidden /> AI assistant
         <span className="grow" />
         <button className="btn btn-ghost btn-icon" onClick={onClose} aria-label="Close AI assistant">
-          <X size={14} />
+          <Icon name="close" size={14} />
         </button>
       </div>
       <div className="ai-panel-body">
@@ -240,10 +240,10 @@ function Answer({ answer, onInsert }: { answer: AiAnswer; onInsert: (sql: string
             <pre>{part.text}</pre>
             <div className="row" style={{ marginBottom: 8 }}>
               <button className="btn" onClick={() => onInsert(part.text)} title="Insert at the cursor, replacing the selection. Nothing is run.">
-                <CornerDownLeft size={14} /> Insert into editor
+                <Icon name="keyboard_return" size={14} /> Insert into editor
               </button>
               <button className="btn btn-ghost" onClick={() => void copy(part.text)}>
-                <Copy size={14} /> Copy
+                <Icon name="content_copy" size={14} /> Copy
               </button>
             </div>
           </div>

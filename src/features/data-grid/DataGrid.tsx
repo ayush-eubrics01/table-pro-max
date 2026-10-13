@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowDown, ArrowUp, KeyRound } from "lucide-react";
+import { Icon } from "../../components/Icon";
 import type { Cell, SortSpec } from "../../types/backend";
 import { cellDisplay, isBinary, isNumericType, toTsv } from "../../lib/cells";
 import { ContextMenu, useContextMenu, type MenuEntry } from "../../components/Menu";
@@ -456,10 +456,10 @@ export function DataGrid(props: DataGridProps) {
                   }}
                   onContextMenu={(e) => menu.open(e, headerMenu(col))}
                 >
-                  {c.primaryKey && <KeyRound size={12} aria-label="Primary key" />}
+                  {c.primaryKey && <Icon name="key" size={12} label="Primary key" />}
                   <span className="name">{c.name}</span>
                   <span className="type">{c.typeName}</span>
-                  {s && (s.descending ? <ArrowDown size={12} /> : <ArrowUp size={12} />)}
+                  {s && (s.descending ? <Icon name="arrow_downward" size={12} /> : <Icon name="arrow_upward" size={12} />)}
                   <span
                     className="grid-resize"
                     onMouseDown={(e) => onResizeStart(e, col)}

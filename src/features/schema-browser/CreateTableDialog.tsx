@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { Icon } from "../../components/Icon";
 import type { ColumnDef, SessionInfo } from "../../types/backend";
 import { api, toError } from "../../lib/ipc";
 import { Dialog } from "../../components/Dialog";
@@ -105,7 +105,7 @@ export function CreateTableDialog({
                 </td>
                 <td>
                   <button className="btn btn-ghost btn-icon" aria-label="Remove column" onClick={() => setColumns((x) => x.filter((_, k) => k !== i))} disabled={columns.length === 1}>
-                    <Trash2 size={13} />
+                    <Icon name="delete" size={13} />
                   </button>
                 </td>
               </tr>
@@ -114,7 +114,7 @@ export function CreateTableDialog({
         </table>
         <div>
           <button className="btn" onClick={() => setColumns((c) => [...c, { name: "", dataType: types[2] ?? "text", nullable: true, default: null, primaryKey: false }])}>
-            <Plus size={14} /> Add column
+            <Icon name="add" size={14} /> Add column
           </button>
         </div>
         {error && <div className="notice notice-error">{error}</div>}

@@ -1,18 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  ChevronLeft,
-  ChevronRight,
-  Copy,
-  Filter,
-  PanelRight,
-  Plus,
-  RefreshCw,
-  Trash2,
-  Undo2,
-  Lock,
-  Download,
-  Upload,
-} from "lucide-react";
+import { Icon } from "../../components/Icon";
 import type { BrowseResult, Cell, SessionInfo, SortSpec, TableStructure } from "../../types/backend";
 import { api, toError, type BackendError } from "../../lib/ipc";
 import { cellCopy, isBinary, toTsv } from "../../lib/cells";
@@ -310,21 +297,21 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
               }}
               title="Filter rows (Ctrl+F)"
             >
-              <Filter size={14} /> Filter{countConditions(filter) > 0 ? ` (${countConditions(filter)})` : ""}
+              <Icon name="filter_list" size={14} /> Filter{countConditions(filter) > 0 ? ` (${countConditions(filter)})` : ""}
             </button>
             <button className="btn btn-ghost btn-icon" onClick={() => guard(() => void load())} aria-label="Reload" title="Reload (F5)">
-              <RefreshCw size={14} className={loading ? "spin" : undefined} />
+              <Icon name="refresh" size={14} className={loading ? "spin" : undefined} />
             </button>
             {readOnlyReason ? (
               <span className="meta" title={readOnlyReason}>
-                <Lock size={12} /> {readOnlyReason}
+                <Icon name="lock" size={12} /> {readOnlyReason}
               </span>
             ) : null}
             {canInsert && (
               <>
                 <span className="sep" />
                 <button className="btn btn-ghost" onClick={() => addRow()} title="Insert row">
-                  <Plus size={14} /> Row
+                  <Icon name="add" size={14} /> Row
                 </button>
                 <button
                   className="btn btn-ghost btn-icon"
@@ -333,7 +320,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
                   disabled={selection.rows.length === 0}
                   onClick={() => selection.rows[0] !== undefined && addRow(getRow(selection.rows[0]))}
                 >
-                  <Copy size={14} />
+                  <Icon name="content_copy" size={14} />
                 </button>
                 <button
                   className="btn btn-ghost btn-icon"
@@ -342,7 +329,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
                   disabled={selection.rows.length === 0}
                   onClick={() => deleteSelected()}
                 >
-                  <Trash2 size={14} />
+                  <Icon name="delete" size={14} />
                 </button>
               </>
             )}
@@ -361,11 +348,11 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
                 })
               }
             >
-              <Download size={14} />
+              <Icon name="download" size={14} />
             </button>
             {canInsert && (
               <button className="btn btn-ghost btn-icon" aria-label="Import" title="Import rows from a file" onClick={() => setImporting(true)}>
-                <Upload size={14} />
+                <Icon name="upload" size={14} />
               </button>
             )}
             <span className="grow" />
@@ -375,7 +362,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
                   {pluralize(nPending, "pending change")}
                 </span>
                 <button className="btn" onClick={() => setPending(EMPTY_PENDING)}>
-                  <Undo2 size={14} /> Discard
+                  <Icon name="undo" size={14} /> Discard
                 </button>
                 <button className="btn btn-primary" onClick={openReview}>
                   Review and commit
@@ -389,7 +376,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
               title="Row details"
               onClick={() => setDetailOpen(!detailOpen)}
             >
-              <PanelRight size={14} />
+              <Icon name="right_panel_open" size={14} />
             </button>
           </>
         )}
@@ -459,14 +446,14 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
               {!page && !error && <div className="empty">{loading ? <div className="spinner" /> : null}</div>}
               <div className="grid-footer">
                 <button className="btn btn-ghost btn-icon" aria-label="Previous page" disabled={offset === 0 || loading} onClick={() => go(Math.max(0, offset - pageSize))}>
-                  <ChevronLeft size={14} />
+                  <Icon name="chevron_left" size={14} />
                 </button>
                 <span>
                   {rows.length === 0 ? "No rows" : `Rows ${formatCount(firstShown)}–${formatCount(lastShown)}`}
                   {total !== null ? ` of ${formatCount(total)}` : ""}
                 </span>
                 <button className="btn btn-ghost btn-icon" aria-label="Next page" disabled={!page?.hasMore || loading} onClick={() => go(offset + pageSize)}>
-                  <ChevronRight size={14} />
+                  <Icon name="chevron_right" size={14} />
                 </button>
                 <select
                   className="select"

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Copy } from "lucide-react";
+import { Icon } from "../../components/Icon";
 import type { ObjectKind, SessionInfo } from "../../types/backend";
 import { api, toError, type BackendError } from "../../lib/ipc";
 import { notify } from "../../stores/ui";
@@ -45,7 +45,7 @@ export function DefinitionView({
                 notify("Definition copied", "success");
               }}
             >
-              <Copy size={14} /> Copy SQL
+              <Icon name="content_copy" size={14} /> Copy SQL
             </button>
           </div>
           <pre className="code-block">{sql}</pre>

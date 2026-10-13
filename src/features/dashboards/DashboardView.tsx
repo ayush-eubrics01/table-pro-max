@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pencil, Plus, RefreshCw, Table2, Trash2, ArrowUp, ArrowDown, BarChart3 } from "lucide-react";
+import { Icon } from "../../components/Icon";
 import type { Cell, ColumnMeta, DashboardRecord, SessionInfo, WidgetDef } from "../../types/backend";
 import { api, toError } from "../../lib/ipc";
 import { uid } from "../../lib/text";
@@ -154,7 +154,7 @@ export function DashboardView({ ws, tab, active }: { ws: Workspace; tab: Dashboa
             }
           }}
         >
-          <Pencil size={13} />
+          <Icon name="edit" size={13} />
         </button>
         <span className="sep" />
         <label className="meta" htmlFor={`from-${tab.id}`}>
@@ -174,19 +174,19 @@ export function DashboardView({ ws, tab, active }: { ws: Workspace; tab: Dashboa
           ))}
         </select>
         <button className="btn btn-ghost btn-icon" aria-label="Refresh all widgets" title="Refresh" onClick={() => void refresh()} disabled={!session}>
-          <RefreshCw size={14} />
+          <Icon name="refresh" size={14} />
         </button>
         <span className="grow" />
         <span className="meta">Read-only session</span>
         <button className="btn btn-primary" onClick={() => setEditing("new")}>
-          <Plus size={14} /> Widget
+          <Icon name="add" size={14} /> Widget
         </button>
       </div>
 
       <div className="dashboard">
         {def.widgets.length === 0 && (
           <div className="empty" style={{ gridColumn: "1 / -1", height: 320 }}>
-            <BarChart3 size={28} />
+            <Icon name="bar_chart" size={28} />
             <p>Add a widget: a number, a table, or a chart from a SELECT query.</p>
             <p className="hint">
               Queries run read-only. Use <span className="kbd">{"{{from}}"}</span> and <span className="kbd">{"{{to}}"}</span> for the date range.
@@ -205,20 +205,20 @@ export function DashboardView({ ws, tab, active }: { ws: Workspace; tab: Dashboa
                 {st.at && <span className="hint">{st.at.toLocaleTimeString()}</span>}
                 {w.type !== "table" && w.type !== "kpi" && (
                   <button className="btn btn-ghost btn-icon" aria-pressed={!!tableView[w.id]} aria-label="Show as table" title="Show as table" onClick={() => setTableView({ ...tableView, [w.id]: !tableView[w.id] })}>
-                    <Table2 size={13} />
+                    <Icon name="table" size={13} />
                   </button>
                 )}
                 <button className="btn btn-ghost btn-icon" aria-label="Refresh widget" onClick={() => void refresh(w.id)}>
-                  <RefreshCw size={13} />
+                  <Icon name="refresh" size={13} />
                 </button>
                 <button className="btn btn-ghost btn-icon" aria-label="Move earlier" disabled={idx === 0} onClick={() => moveWidget(w.id, -1)}>
-                  <ArrowUp size={13} />
+                  <Icon name="arrow_upward" size={13} />
                 </button>
                 <button className="btn btn-ghost btn-icon" aria-label="Move later" disabled={idx === def.widgets.length - 1} onClick={() => moveWidget(w.id, 1)}>
-                  <ArrowDown size={13} />
+                  <Icon name="arrow_downward" size={13} />
                 </button>
                 <button className="btn btn-ghost btn-icon" aria-label="Edit widget" onClick={() => setEditing(w)}>
-                  <Pencil size={13} />
+                  <Icon name="edit" size={13} />
                 </button>
                 <button
                   className="btn btn-ghost btn-icon"
@@ -228,7 +228,7 @@ export function DashboardView({ ws, tab, active }: { ws: Workspace; tab: Dashboa
                       setDef({ widgets: def.widgets.filter((x) => x.id !== w.id) });
                   }}
                 >
-                  <Trash2 size={13} />
+                  <Icon name="delete" size={13} />
                 </button>
               </header>
               <div className="widget-body">

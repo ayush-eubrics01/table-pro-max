@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Play, PlayCircle, Square, Wand2, Save, History, Gauge, Lock, FolderOpen, FileDown, FileCode2, Sparkles } from "lucide-react";
+import { Icon } from "../../components/Icon";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { format as formatSql } from "sql-formatter";
@@ -362,14 +362,14 @@ export function QueryTab({ ws, tab, active }: Props) {
     <div className="tab-panel">
       <div className="toolbar" role="toolbar" aria-label="Query tools">
         <button className="btn btn-primary" onClick={() => run("current")} disabled={!!running} title="Run current statement or selection (Ctrl+Enter)">
-          <Play size={14} /> Run
+          <Icon name="play_arrow" size={14} /> Run
         </button>
         <button className="btn" onClick={() => run("all")} disabled={!!running} title="Run all statements (Ctrl+Shift+Enter)">
-          <PlayCircle size={14} /> Run all
+          <Icon name="play_circle" size={14} /> Run all
         </button>
         {running && (
           <button className="btn btn-danger" onClick={cancel} title="Cancel the running statement">
-            <Square size={12} /> Cancel
+            <Icon name="stop" size={12} /> Cancel
           </button>
         )}
         {running && <span className="meta">Running… {running.done > 0 ? `${running.done} done` : ""}</span>}
@@ -379,14 +379,14 @@ export function QueryTab({ ws, tab, active }: Props) {
               {fileTask.name}: {fileProgress} statements…
             </span>
             <button className="btn btn-danger" onClick={() => api.cancelQuery(fileTask.id)}>
-              <Square size={12} /> Stop
+              <Icon name="stop" size={12} /> Stop
             </button>
           </>
         )}
         <span className="sep" />
         {info.capabilities.explain && (
           <button className="btn btn-ghost" onClick={() => runExplain(false)} title="Explain plan (Ctrl+E)">
-            <Gauge size={14} /> Explain
+            <Icon name="speed" size={14} /> Explain
           </button>
         )}
         {info.capabilities.explainAnalyze && (
@@ -395,22 +395,22 @@ export function QueryTab({ ws, tab, active }: Props) {
           </button>
         )}
         <button className="btn btn-ghost btn-icon" onClick={format} aria-label="Format SQL" title="Format (Ctrl+Shift+F)">
-          <Wand2 size={14} />
+          <Icon name="format_align_left" size={14} />
         </button>
         <button className="btn btn-ghost btn-icon" onClick={save} aria-label="Save query" title="Save query (Ctrl+S)">
-          <Save size={14} />
+          <Icon name="save" size={14} />
         </button>
         <button className="btn btn-ghost btn-icon" onClick={openFile} aria-label="Open SQL file" title="Open a .sql file in this tab">
-          <FolderOpen size={14} />
+          <Icon name="folder_open" size={14} />
         </button>
         <button className="btn btn-ghost btn-icon" onClick={saveFile} aria-label="Save to file" title="Save the editor to a .sql file">
-          <FileDown size={14} />
+          <Icon name="file_save" size={14} />
         </button>
         <button className="btn btn-ghost btn-icon" onClick={runFile} aria-label="Run SQL file" title="Run a .sql file (e.g. a dump)" disabled={!!fileTask}>
-          <FileCode2 size={14} />
+          <Icon name="code_blocks" size={14} />
         </button>
         <button className="btn btn-ghost btn-icon" aria-pressed={historyOpen} onClick={() => setHistoryOpen(!historyOpen)} aria-label="Query history" title="History">
-          <History size={14} />
+          <Icon name="history" size={14} />
         </button>
         {aiEnabled && (
           <button
@@ -419,13 +419,13 @@ export function QueryTab({ ws, tab, active }: Props) {
             onClick={() => setAi(ai ? null : { task: lastError ? "explain_error" : "explain" })}
             title="Explain, fix, improve or write SQL with the AI service set up in Settings. Nothing is sent until you review the request."
           >
-            <Sparkles size={14} /> Ask AI
+            <Icon name="star_shine" size={14} /> Ask AI
           </button>
         )}
         <span className="grow" />
         {info.readOnly && (
           <span className="meta">
-            <Lock size={12} /> Read-only
+            <Icon name="lock" size={12} /> Read-only
           </span>
         )}
         <span className="meta mono" title="Statements in this tab run here">

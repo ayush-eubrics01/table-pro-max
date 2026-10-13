@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, Eye, FunctionSquare, Hash, Layers, RefreshCw, Table2, Plus, FileCode2, Upload, BarChart3 } from "lucide-react";
+import { Icon } from "../../components/Icon";
 import { createDashboard } from "../dashboards/DashboardView";
 import { uid } from "../../lib/text";
 import type { DashboardRecord, DbObject, ObjectKind, SavedQuery } from "../../types/backend";
@@ -24,16 +24,16 @@ const GROUPS: { kinds: ObjectKind[]; label: string }[] = [
 function KindIcon({ kind }: { kind: ObjectKind }) {
   switch (kind) {
     case "view":
-      return <Eye size={13} />;
+      return <Icon name="visibility" size={13} />;
     case "materialized_view":
-      return <Layers size={13} />;
+      return <Icon name="layers" size={13} />;
     case "function":
     case "procedure":
-      return <FunctionSquare size={13} />;
+      return <Icon name="function" size={13} />;
     case "sequence":
-      return <Hash size={13} />;
+      return <Icon name="tag" size={13} />;
     default:
-      return <Table2 size={13} />;
+      return <Icon name="table" size={13} />;
   }
 }
 
@@ -140,15 +140,15 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
             ))}
           </select>
           <button className="btn btn-ghost btn-icon" aria-label="Refresh objects" title="Refresh" onClick={refresh}>
-            <RefreshCw size={14} className={loading ? "spin" : undefined} />
+            <Icon name="refresh" size={14} className={loading ? "spin" : undefined} />
           </button>
           {!ws.session.readOnly && (
             <>
               <button className="btn btn-ghost btn-icon" aria-label="New table" title="New table" onClick={() => setCreating(true)}>
-                <Plus size={14} />
+                <Icon name="add" size={14} />
               </button>
               <button className="btn btn-ghost btn-icon" aria-label="Import data" title="Import a CSV or JSON file" onClick={() => setImportInto(null)}>
-                <Upload size={14} />
+                <Icon name="upload" size={14} />
               </button>
             </>
           )}
@@ -164,7 +164,7 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
           return (
             <div key={g.label} role="group">
               <button className="tree-group" aria-expanded={!isCollapsed} onClick={() => setCollapsed({ ...collapsed, [g.label]: !isCollapsed })}>
-                {isCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                {isCollapsed ? <Icon name="chevron_right" size={13} /> : <Icon name="keyboard_arrow_down" size={13} />}
                 {g.label} <span className="meta">{items.length}</span>
               </button>
               {!isCollapsed &&
@@ -190,12 +190,12 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
         <div role="group">
           <div className="tree-group" style={{ cursor: "default" }}>
             <button className="tree-group" style={{ padding: 0, width: "auto" }} aria-expanded={!collapsed.dash} onClick={() => setCollapsed({ ...collapsed, dash: !collapsed.dash })}>
-              {collapsed.dash ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+              {collapsed.dash ? <Icon name="chevron_right" size={13} /> : <Icon name="keyboard_arrow_down" size={13} />}
               Dashboards <span className="meta">{dashboards.length}</span>
             </button>
             <span style={{ flex: 1 }} />
             <button className="btn btn-ghost btn-icon" style={{ height: 18, width: 18 }} aria-label="New dashboard" title="New dashboard" onClick={() => void createDashboard(ws).catch((e) => notifyError(e))}>
-              <Plus size={12} />
+              <Icon name="add" size={12} />
             </button>
           </div>
           {!collapsed.dash &&
@@ -218,7 +218,7 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
                   ])
                 }
               >
-                <BarChart3 size={13} />
+                <Icon name="bar_chart" size={13} />
                 <span className="name">{d.name}</span>
               </button>
             ))}
@@ -226,7 +226,7 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
         {saved.length > 0 && (
           <div role="group">
             <button className="tree-group" aria-expanded={!collapsed.saved} onClick={() => setCollapsed({ ...collapsed, saved: !collapsed.saved })}>
-              {collapsed.saved ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+              {collapsed.saved ? <Icon name="chevron_right" size={13} /> : <Icon name="keyboard_arrow_down" size={13} />}
               Saved queries <span className="meta">{saved.length}</span>
             </button>
             {!collapsed.saved &&
@@ -250,7 +250,7 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
                     ])
                   }
                 >
-                  <FileCode2 size={13} />
+                  <Icon name="code_blocks" size={13} />
                   <span className="name">{s.name}</span>
                 </button>
               ))}

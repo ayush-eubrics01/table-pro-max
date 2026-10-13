@@ -30,4 +30,10 @@ describe("bundled assets", () => {
     const sources = [read("index.html"), ...files("src").filter((f) => /\.(css|tsx?|html)$/.test(f)).map(read)];
     for (const s of sources) expect(s).not.toMatch(/fonts\.googleapis|fonts\.gstatic|@import\s+url\(\s*["']?https?:/);
   });
+
+  it("uses the bundled Icon component, not lucide-react", () => {
+    expect(deps["lucide-react"]).toBeUndefined();
+    const offenders = files("src").filter((f) => /\.tsx?$/.test(f) && read(f).includes("lucide-react"));
+    expect(offenders).toEqual([]);
+  });
 });

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Plus, Trash2, Braces, Code } from "lucide-react";
+import { Icon } from "../../components/Icon";
 import type { ColumnInfo, FilterNode, FilterPreset } from "../../types/backend";
 import { api } from "../../lib/ipc";
 import { uid } from "../../lib/text";
@@ -155,18 +155,18 @@ function GroupEditor({
         </label>
         {firstCol && (
           <button className="btn btn-ghost" onClick={() => add(newCondition(firstCol))}>
-            <Plus size={14} /> Condition
+            <Icon name="add" size={14} /> Condition
           </button>
         )}
         <button className="btn btn-ghost" onClick={() => add(emptyGroup())}>
-          <Braces size={14} /> Group
+          <Icon name="data_object" size={14} /> Group
         </button>
         <button className="btn btn-ghost" onClick={() => add({ type: "raw", sql: "", enabled: true })}>
-          <Code size={14} /> SQL
+          <Icon name="code" size={14} /> SQL
         </button>
         {!isRoot && (
           <button className="btn btn-ghost btn-icon" aria-label="Remove group" onClick={() => update(() => null)}>
-            <Trash2 size={14} />
+            <Icon name="delete" size={14} />
           </button>
         )}
       </div>
@@ -194,7 +194,7 @@ function GroupEditor({
               aria-label="Remove condition"
               onClick={() => onChange(updateAt(root, [...path, i], () => null))}
             >
-              <Trash2 size={14} />
+              <Icon name="delete" size={14} />
             </button>
           </div>
         ) : (
@@ -308,7 +308,7 @@ function ConditionEditor({
         />
       )}
       <button className="btn btn-ghost btn-icon" aria-label="Remove condition" onClick={() => onChange(null)}>
-        <Trash2 size={14} />
+        <Icon name="delete" size={14} />
       </button>
     </div>
   );

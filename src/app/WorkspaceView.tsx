@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Code2, Eye, FileCode2, Plus, Table2, X, Lock, BarChart3 } from "lucide-react";
+import { Icon } from "../components/Icon";
 import { useWorkspaces, type Tab, type Workspace } from "../stores/workspaces";
 import { usePendingEdits } from "../stores/pendingEdits";
 import { Sidebar } from "../features/database-explorer/Sidebar";
@@ -14,10 +14,10 @@ import { confirmAction, notifyError } from "../stores/ui";
 import { connectWithPrompt, reconnectWithPrompt } from "../features/connections/connectFlow";
 
 function TabIcon({ tab }: { tab: Tab }) {
-  if (tab.kind === "query") return <Code2 size={13} />;
-  if (tab.kind === "definition") return <FileCode2 size={13} />;
-  if (tab.kind === "dashboard") return <BarChart3 size={13} />;
-  return tab.objectKind === "table" ? <Table2 size={13} /> : <Eye size={13} />;
+  if (tab.kind === "query") return <Icon name="terminal" size={13} />;
+  if (tab.kind === "definition") return <Icon name="code_blocks" size={13} />;
+  if (tab.kind === "dashboard") return <Icon name="bar_chart" size={13} />;
+  return tab.objectKind === "table" ? <Icon name="table" size={13} /> : <Icon name="visibility" size={13} />;
 }
 
 export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean }) {
@@ -135,12 +135,12 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
                   void requestClose(t);
                 }}
               >
-                <X size={12} />
+                <Icon name="close" size={12} />
               </button>
             </div>
           ))}
           <button className="tab-add" aria-label="New query tab" title="New query (Ctrl+T)" onClick={() => openQuery(ws.id)}>
-            <Plus size={14} />
+            <Icon name="add" size={14} />
           </button>
         </div>
         {ws.tabs.length === 0 && (
@@ -206,7 +206,7 @@ export function StatusBar({ ws }: { ws: Workspace | undefined }) {
       <span className="grow" />
       {s.readOnly && (
         <span>
-          <Lock size={11} /> read-only
+          <Icon name="lock" size={11} /> read-only
         </span>
       )}
       <span title="Query safety mode">{safetyLabel(s.safetyMode)}</span>

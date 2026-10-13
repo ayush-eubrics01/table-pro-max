@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Plus, Search, Download, Upload } from "lucide-react";
+import { Icon } from "../../components/Icon";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { api } from "../../lib/ipc";
 import type { AppInfo, ConnectionProfile, StoredConnection } from "../../types/backend";
@@ -83,18 +83,18 @@ export function Home({ appInfo, onConnect, connecting }: Props) {
         <div className="home-head">
           <h1>Connections</h1>
           <button className="btn btn-ghost" onClick={importProfiles} title="Import connections from a file">
-            <Upload size={14} /> Import
+            <Icon name="upload" size={14} /> Import
           </button>
           <button className="btn btn-ghost" onClick={() => exportProfiles(null)} disabled={connections.length === 0} title="Export connections (without passwords)">
-            <Download size={14} /> Export
+            <Icon name="download" size={14} /> Export
           </button>
           <button className="btn btn-primary" onClick={() => setEditing("new")}>
-            <Plus size={14} /> New connection
+            <Icon name="add" size={14} /> New connection
           </button>
         </div>
         <div className="field-row" style={{ alignItems: "center" }}>
           <div style={{ position: "relative", flex: 1, display: "flex" }}>
-            <Search size={14} style={{ position: "absolute", left: 8, top: 7, color: "var(--text-faint)" }} />
+            <Icon name="search" size={14} style={{ position: "absolute", left: 8, top: 7, color: "var(--text-faint)" }} />
             <input
               className="input"
               style={{ paddingLeft: 28, flex: 1 }}

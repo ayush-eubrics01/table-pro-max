@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Code2, Database, Eye, FileCode2, FunctionSquare, Table2 } from "lucide-react";
+import { Icon } from "../../components/Icon";
 import type { ConnectionProfile, DbObject, SavedQuery } from "../../types/backend";
 import { api } from "../../lib/ipc";
 import { useConnections } from "../../stores/connections";
@@ -89,10 +89,10 @@ export function OpenAnything({ onConnect }: { onConnect: (p: ConnectionProfile) 
   };
 
   const icon = (i: Item) => {
-    if (i.kind === "object") return i.obj.kind === "view" || i.obj.kind === "materialized_view" ? <Eye size={14} /> : i.obj.kind === "function" || i.obj.kind === "procedure" ? <FunctionSquare size={14} /> : <Table2 size={14} />;
-    if (i.kind === "connection" || i.kind === "schema") return <Database size={14} />;
-    if (i.kind === "saved") return <FileCode2 size={14} />;
-    return <Code2 size={14} />;
+    if (i.kind === "object") return i.obj.kind === "view" || i.obj.kind === "materialized_view" ? <Icon name="visibility" size={14} /> : i.obj.kind === "function" || i.obj.kind === "procedure" ? <Icon name="function" size={14} /> : <Icon name="table" size={14} />;
+    if (i.kind === "connection" || i.kind === "schema") return <Icon name="database" size={14} />;
+    if (i.kind === "saved") return <Icon name="code_blocks" size={14} />;
+    return <Icon name="terminal" size={14} />;
   };
 
   return (
