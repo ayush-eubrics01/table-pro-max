@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Icon } from "../components/Icon";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AppInfo, ConnectionProfile, ObjectKind } from "../types/backend";
 import { api } from "../lib/ipc";
-import { envColorVar } from "../lib/env";
 import { uid } from "../lib/text";
 import { useConnections } from "../stores/connections";
 import { useSettings } from "../stores/settings";
@@ -18,6 +16,8 @@ import { FirstRunUpdatePrompt } from "../features/updates/FirstRunUpdatePrompt";
 import { UpdateBanner } from "../features/updates/UpdateBanner";
 import { useUpdates } from "../features/updates/store";
 import { StatusBar, WorkspaceView } from "./WorkspaceView";
+import { TitleBar } from "./TitleBar";
+import { isMacPlatform } from "./WindowControls";
 import { loadSaved, scheduleSave } from "./restore";
 
 export function App() {
@@ -31,6 +31,7 @@ export function App() {
   const restored = useRef(false);
   // Only the main window restores and saves the workspace; extra windows start fresh.
   const isMainWindow = useRef(getWindowLabel() === "main").current;
+  const isMac = useRef(isMacPlatform()).current;
   // Saving starts only after restore finishes, so a half-restored (or empty) workspace
   // never overwrites the saved session.
   const [restoreDone, setRestoreDone] = useState(false);
@@ -165,50 +166,7 @@ export function App() {
 
   return (
     <div className="shell">
-      <nav className="conn-strip" role="tablist" aria-label="Open connections">
-        <button className="conn-strip-tab" role="tab" aria-selected={activeId === null} onClick={() => useWorkspaces.getState().activate(null)}>
-          <Icon name="grid_view" size={14} />
-          <span className="label">Connections</span>
-        </button>
-        {workspaces.map((w) => (
-          <div
-            key={w.id}
-            className="conn-strip-tab"
-            role="tab"
-            tabIndex={0}
-            aria-selected={activeId === w.id}
-            style={{ ["--env-color" as string]: envColorVar(w.session.environment) }}
-            onClick={() => useWorkspaces.getState().activate(w.id)}
-            onKeyDown={(e) => e.key === "Enter" && useWorkspaces.getState().activate(w.id)}
-            title={w.session.target}
-          >
-            {w.health === "down" ? <Icon name="link_off" size={13} label="Connection lost" color="var(--danger)" /> : <span className="env-dot" />}
-            <span className="label">{w.profile.name}</span>
-            <button
-              className="tab-close"
-              aria-label={`Disconnect ${w.profile.name}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                void closeWorkspace(w.id);
-              }}
-            >
-              <Icon name="close" size={12} />
-            </button>
-          </div>
-        ))}
-        <span style={{ flex: 1 }} />
-        <button
-          className="conn-strip-tab"
-          aria-label="New window"
-          title="New window (Ctrl+Shift+N)"
-          onClick={() => void api.openWindow().catch((err) => notifyError(err, "Could not open a window"))}
-        >
-          <Icon name="new_window" size={14} />
-        </button>
-        <button className="conn-strip-tab" aria-label="Settings" title="Settings (Ctrl+,)" onClick={() => useUi.getState().setSettingsOpen(true)}>
-          <Icon name="settings" size={14} />
-        </button>
-      </nav>
+      <TitleBar mac={isMac} onCloseWorkspace={(id) => void closeWorkspace(id)} />
 
       <div style={{ minHeight: 0, display: "flex", flexDirection: "column" }}>
         {isMainWindow && <UpdateBanner />}
