@@ -50,6 +50,15 @@ const renderView = () =>
     </>,
   );
 
+/** Rows and the table structure load separately; editing starts only once both are in. */
+async function openEditor(text: string) {
+  const cell = await screen.findByText(text);
+  return waitFor(() => {
+    fireEvent.doubleClick(cell.closest(".grid-cell")!);
+    return screen.getByLabelText("Edit email");
+  });
+}
+
 describe("TableView", () => {
   it("loads rows with NULL shown distinctly", async () => {
     renderView();
@@ -61,9 +70,7 @@ describe("TableView", () => {
 
   it("keeps edits pending until reviewed, then commits a parameterised change set", async () => {
     renderView();
-    const cell = await screen.findByText("ada@example.com");
-    fireEvent.doubleClick(cell.closest(".grid-cell")!);
-    const editor = await screen.findByLabelText("Edit email");
+    const editor = await openEditor("ada@example.com");
     fireEvent.change(editor, { target: { value: "new@example.com" } });
     fireEvent.keyDown(editor, { key: "Enter" });
 
@@ -90,9 +97,7 @@ describe("TableView", () => {
 
   it("discard drops pending edits without touching the database", async () => {
     renderView();
-    const cell = await screen.findByText("grace@example.com");
-    fireEvent.doubleClick(cell.closest(".grid-cell")!);
-    const editor = await screen.findByLabelText("Edit email");
+    const editor = await openEditor("grace@example.com");
     fireEvent.change(editor, { target: { value: "x" } });
     fireEvent.keyDown(editor, { key: "Enter" });
     fireEvent.click(await screen.findByRole("button", { name: /Discard/ }));
