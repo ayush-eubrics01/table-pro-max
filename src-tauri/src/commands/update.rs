@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 use tokio_util::sync::CancellationToken;
@@ -23,6 +23,8 @@ pub struct UpdateStatus {
     pub last_check: i64,
     pub install_kind: InstallKind,
     pub can_install: bool,
+    /// Windows that an update restart will close.
+    pub open_windows: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -123,6 +125,7 @@ pub fn update_status(app: AppHandle, state: State<'_, AppState>) -> Result<Updat
         last_check: settings.last_check_ms,
         install_kind: kind,
         can_install: kind.can_install(),
+        open_windows: app.webview_windows().len(),
     })
 }
 

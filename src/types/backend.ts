@@ -546,6 +546,8 @@ export interface UpdateStatus {
   lastCheck: number;
   installKind: InstallKind;
   canInstall: boolean;
+  /** App windows open right now; all of them close when an update restarts the app. */
+  openWindows: number;
 }
 
 export interface AvailableUpdate {
