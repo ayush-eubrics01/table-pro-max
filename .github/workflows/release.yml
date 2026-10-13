@@ -68,23 +68,24 @@ jobs:
         run: |
           v="${{ needs.check.outputs.version }}"
           b=target/release/bundle
-          mkdir dist
+          out=release-assets  # not dist/: that is the Vite build output
+          mkdir "$out"
           case "$RUNNER_OS" in
             Linux)
-              cp "$b/deb/Table Pro Max_${v}_amd64.deb"           "dist/table-pro-max_${v}_amd64.deb"
-              cp "$b/rpm/Table Pro Max-${v}-1.x86_64.rpm"         "dist/table-pro-max-${v}-1.x86_64.rpm"
-              cp "$b/appimage/Table Pro Max_${v}_amd64.AppImage"  "dist/table-pro-max_${v}_amd64.AppImage" ;;
+              cp "$b/deb/Table Pro Max_${v}_amd64.deb"           "$out/table-pro-max_${v}_amd64.deb"
+              cp "$b/rpm/Table Pro Max-${v}-1.x86_64.rpm"         "$out/table-pro-max-${v}-1.x86_64.rpm"
+              cp "$b/appimage/Table Pro Max_${v}_amd64.AppImage"  "$out/table-pro-max_${v}_amd64.AppImage" ;;
             Windows)
-              cp "$b/msi/Table Pro Max_${v}_x64_en-US.msi"        "dist/table-pro-max_${v}_x64_en-US.msi"
-              cp "$b/nsis/Table Pro Max_${v}_x64-setup.exe"       "dist/table-pro-max_${v}_x64-setup.exe" ;;
+              cp "$b/msi/Table Pro Max_${v}_x64_en-US.msi"        "$out/table-pro-max_${v}_x64_en-US.msi"
+              cp "$b/nsis/Table Pro Max_${v}_x64-setup.exe"       "$out/table-pro-max_${v}_x64-setup.exe" ;;
             macOS)
-              cp "$b/dmg/Table Pro Max_${v}_aarch64.dmg"          "dist/table-pro-max_${v}_aarch64.dmg" ;;
+              cp "$b/dmg/Table Pro Max_${v}_aarch64.dmg"          "$out/table-pro-max_${v}_aarch64.dmg" ;;
           esac
-          ls -l dist
+          ls -l "$out"
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.platform }}
-          path: dist/
+          path: release-assets/
           if-no-files-found: error
 
   draft:
@@ -97,11 +98,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          path: dist
+          path: release-assets
           pattern: release-*
           merge-multiple: true
       - name: Checksums
-        working-directory: dist
+        working-directory: release-assets
         run: |
           sha256sum -- * > "$RUNNER_TEMP/SHA256SUMS"
           mv "$RUNNER_TEMP/SHA256SUMS" .
@@ -115,5 +116,5 @@ jobs:
           [ -f "$notes" ] || { echo "::error::Missing release notes $notes"; exit 1; }
           pre=""
           case "$v" in 0.*|*-*) pre="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" dist/* --draft $pre --verify-tag \
+          gh release create "$GITHUB_REF_NAME" release-assets/* --draft $pre --verify-tag \
             --title "Table Pro Max $v" --notes-file "$notes"
