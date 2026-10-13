@@ -21,5 +21,6 @@ pub mod split;
 pub mod ssh;
 pub mod storage;
 pub mod transfer;
+pub mod updates;
 
 pub use error::{AppError, ErrorKind, Result};
