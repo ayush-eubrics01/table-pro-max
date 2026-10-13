@@ -9,6 +9,8 @@ import { resolveConnectError } from "./connectFlow";
 
 interface Props {
   initial?: ConnectionProfile;
+  /** A connection URL to parse into the form as soon as it opens (from the home screen). */
+  initialUrl?: string;
   appInfo: AppInfo | null;
   onClose: () => void;
   onSaved: (profile: ConnectionProfile, connect: boolean) => void;
