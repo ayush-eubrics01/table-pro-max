@@ -38,6 +38,11 @@ pre,
   font-family: var(--font-code);
 }
 
+.icon {
+  flex: none;
+  vertical-align: middle;
+}
+
 :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
