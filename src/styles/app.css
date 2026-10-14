@@ -1252,6 +1252,26 @@ pre,
 .grid-cell.binary > span {
   color: var(--text-muted);
 }
+.grid-cell .fk-jump {
+  visibility: hidden;
+  margin-left: auto;
+  flex: none;
+  display: inline-flex;
+  padding: 1px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.grid-cell:hover .fk-jump,
+.grid-cell.active .fk-jump {
+  visibility: visible;
+}
+.grid-cell .fk-jump:hover {
+  color: var(--accent-text);
+  background: var(--selection);
+}
 .grid-cell.not-loaded .not-loaded-label {
   color: var(--text-faint);
   font-style: italic;

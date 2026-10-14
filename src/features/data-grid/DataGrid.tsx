@@ -68,6 +68,8 @@ export interface DataGridProps {
   loadFull?: (cells: CellPos[]) => Promise<Cell[]>;
   /** Extra items for a column header's menu. */
   headerItems?: (col: number) => MenuEntry[];
+  /** A link from this cell to the row it references (foreign keys); the arrow opens it. */
+  cellLink?: (row: number, col: number) => { label: string; open: () => void } | null;
   /** A cell whose value is being fetched. */
   isLoading?: (row: number, col: number) => boolean;
   /** Text longer than this shows as a preview with its size, and opens in an editor. */
@@ -111,6 +113,7 @@ export function DataGrid(props: DataGridProps) {
     loadFull,
     headerItems,
     isLoading,
+    cellLink,
     largeValueChars = 256,
     ref,
     ariaLabel,
@@ -309,6 +312,14 @@ export function DataGrid(props: DataGridProps) {
       e.preventDefault();
       copySelection(e.shiftKey);
       return;
+    }
+    if (mod && e.key === "Enter" && focus && focus.col >= 0) {
+      const link = cellLink?.(focus.row, focus.col);
+      if (link) {
+        e.preventDefault();
+        link.open();
+        return;
+      }
     }
     if (mod && e.key.toLowerCase() === "a") {
       e.preventDefault();
@@ -668,6 +679,27 @@ export function DataGrid(props: DataGridProps) {
                           <span className={tone === "enum" ? "tag" : undefined}>{v === undefined ? "…" : cellDisplay(v)}</span>
                         )
                       )}
+                      {!isEditing &&
+                        (() => {
+                          const link = cellLink?.(ri.index, col);
+                          return link ? (
+                            <button
+                              type="button"
+                              className="fk-jump"
+                              aria-label={link.label}
+                              title={link.label}
+                              tabIndex={-1}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onDoubleClick={(e) => e.stopPropagation()}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                link.open();
+                              }}
+                            >
+                              <Icon name="open_in_new" size={12} />
+                            </button>
+                          ) : null;
+                        })()}
                     </div>
                   );
                 })}
