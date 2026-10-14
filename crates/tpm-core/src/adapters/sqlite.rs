@@ -315,6 +315,23 @@ impl Session for SqliteSession {
                 }
             }
 
+            // `REFERENCES parent` without a column list means the parent's primary key; the pragma
+            // reports those columns as NULL.
+            for (_, fk) in foreign_keys.iter_mut() {
+                if fk.ref_columns.iter().any(|c| c.is_empty()) {
+                    let pk = run_query(
+                        c,
+                        "SELECT name FROM pragma_table_info(?1, ?2) WHERE pk > 0 ORDER BY pk",
+                        &[p(&fk.ref_table), p(&schema)],
+                        usize::MAX,
+                    )?;
+                    let names: Vec<String> = pk.rows.iter().map(|r| TextRow(r).str(0)).collect();
+                    if names.len() == fk.columns.len() {
+                        fk.ref_columns = names;
+                    }
+                }
+            }
+
             let triggers = run_query(
                 c,
                 &format!("SELECT name, sql FROM {master} WHERE type = 'trigger' AND tbl_name = ?1 ORDER BY name"),

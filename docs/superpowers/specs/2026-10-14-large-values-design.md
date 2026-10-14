@@ -56,7 +56,7 @@ beyond those already made and cached).
 
 - Domains and custom types that the adapter can't classify are **loaded**: the risk is only
   slowness, never a wrong value.
-- **Primary-key columns are never deferred**, whatever their type: they are needed to fetch the
+- **Primary-key and foreign-key columns are never deferred** (amended with the FK jump), whatever their type: they are needed to fetch the
   rest.
 - **Overrides** take precedence over the defaults. They live in a new metadata table
   `column_fetch (connection_id, schema, table, column, mode)`, where `mode` is `load` or `defer`.

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { api, toError } from "../lib/ipc";
 import { uid } from "../lib/text";
-import type { ConnectionProfile, DbObject, ObjectKind, RedisInfo, SessionInfo } from "../types/backend";
+import type { ConnectionProfile, DbObject, FilterNode, ObjectKind, RedisInfo, SessionInfo } from "../types/backend";
 
 export interface TableTab {
   kind: "table";
@@ -10,6 +10,8 @@ export interface TableTab {
   name: string;
   objectKind: ObjectKind;
   title: string;
+  /** A followed reference opens filtered to one row; kept with the session. */
+  filter?: Extract<FilterNode, { type: "group" }>;
 }
 
 export interface QueryTab {
@@ -71,7 +73,7 @@ interface WorkspacesState {
   loadObjects: (id: string, schema: string, force?: boolean) => Promise<DbObject[]>;
   loadColumns: (id: string, schema: string, table: string) => Promise<void>;
   openTab: (wsId: string, tab: Tab) => void;
-  openTable: (wsId: string, obj: Pick<DbObject, "schema" | "name" | "kind">) => void;
+  openTable: (wsId: string, obj: Pick<DbObject, "schema" | "name" | "kind">, opts?: { filter?: Extract<FilterNode, { type: "group" }> }) => void;
   openQuery: (wsId: string, init?: Partial<QueryTab>) => string;
   updateTab: (wsId: string, tabId: string, patch: Partial<Tab>) => void;
   closeTab: (wsId: string, tabId: string) => void;
@@ -211,22 +213,27 @@ export const useWorkspaces = create<WorkspacesState>((set, get) => {
 
     openTab: (wsId, tab) =>
       patchWs(wsId, (w) => {
-        const existing = w.tabs.find((t) => {
-          if (t.kind === "dashboard" && tab.kind === "dashboard") return t.dashboardId === tab.dashboardId;
-          return (
-            t.kind !== "query" &&
-            t.kind !== "dashboard" &&
-            t.kind === tab.kind &&
-            "schema" in tab &&
-            t.schema === tab.schema &&
-            t.name === tab.name
-          );
-        });
+        // A filtered tab (a followed reference) is always new, and plain opens never land on one.
+        const filtered = (t: Tab) => t.kind === "table" && !!t.filter;
+        const existing = filtered(tab)
+          ? undefined
+          : w.tabs.find((t) => {
+              if (filtered(t)) return false;
+              if (t.kind === "dashboard" && tab.kind === "dashboard") return t.dashboardId === tab.dashboardId;
+              return (
+                t.kind !== "query" &&
+                t.kind !== "dashboard" &&
+                t.kind === tab.kind &&
+                "schema" in tab &&
+                t.schema === tab.schema &&
+                t.name === tab.name
+              );
+            });
         if (existing) return { ...w, activeTabId: existing.id };
         return { ...w, tabs: [...w.tabs, tab], activeTabId: tab.id };
       }),
 
-    openTable: (wsId, obj) => {
+    openTable: (wsId, obj, opts) => {
       const isRoutine = obj.kind === "function" || obj.kind === "procedure" || obj.kind === "sequence";
       get().openTab(wsId, {
         kind: isRoutine ? "definition" : "table",
@@ -235,6 +242,7 @@ export const useWorkspaces = create<WorkspacesState>((set, get) => {
         name: obj.name,
         objectKind: obj.kind,
         title: obj.name,
+        ...(opts?.filter && !isRoutine ? { filter: opts.filter } : {}),
       });
     },
 

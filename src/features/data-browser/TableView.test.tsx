@@ -391,3 +391,59 @@ describe("large values in opened tables", () => {
     expect(await screen.findByText(/connection lost/)).toBeInTheDocument();
   });
 });
+
+describe("following references", () => {
+  const ordersStructure: TableStructure = {
+    ...usersStructure,
+    name: "orders",
+    columns: [
+      { name: "id", dataType: "integer", nullable: false, default: null, primaryKey: 1, autoIncrement: false, comment: null },
+      { name: "customer_id", dataType: "integer", nullable: true, default: null, primaryKey: null, autoIncrement: false, comment: null },
+    ],
+    foreignKeys: [{ name: "fk", columns: ["customer_id"], refSchema: "public", refTable: "customers", refColumns: ["id"], onUpdate: "", onDelete: "" }],
+  };
+  beforeEach(() => {
+    mockIPC((cmd) => {
+      if (cmd === "table_structure") return ordersStructure;
+      if (cmd === "browse_table") return { columns: [], rows: [["1", "42"], ["2", null]], sql: "SELECT …", durationMs: 1, hasMore: false };
+      if (cmd === "list_column_fetch" || cmd === "list_filter_presets") return [];
+      return null;
+    });
+  });
+
+  it("opens the referenced row in a new tab from the arrow, the keyboard and the menu", async () => {
+    const opened: unknown[] = [];
+    render(<TableView session={session} schema="public" table="orders" onReconnect={async () => {}} onOpenTable={(...a) => opened.push(a)} />);
+    const arrow = await screen.findByRole("button", { name: "Open customers where id = 42" });
+    expect(screen.getAllByRole("button", { name: /^Open customers/ })).toHaveLength(1); // none for the NULL row
+    fireEvent.click(arrow);
+    const filter = { type: "group", logic: "and", children: [{ type: "condition", column: "id", op: "eq", value: "42", enabled: true }] };
+    expect(opened[0]).toEqual(["public", "customers", filter]);
+    fireEvent.mouseDown(screen.getByText("42").closest(".grid-cell")!);
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "Enter", ctrlKey: true });
+    expect(opened).toHaveLength(2);
+    fireEvent.contextMenu(screen.getByText("42").closest(".grid-cell")!);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Open referenced row" }));
+    expect(opened).toHaveLength(3);
+  });
+
+  it("follows the value the grid shows, including a pending edit", async () => {
+    const opened: unknown[][] = [];
+    render(<TableView session={session} schema="public" table="orders" onReconnect={async () => {}} onOpenTable={(...a) => opened.push(a)} />);
+    const cell = (await screen.findByText("42")).closest(".grid-cell")!;
+    fireEvent.doubleClick(cell);
+    const editor = screen.getByLabelText("Edit customer_id");
+    fireEvent.change(editor, { target: { value: "77" } });
+    fireEvent.keyDown(editor, { key: "Enter" });
+    fireEvent.click(await screen.findByRole("button", { name: "Open customers where id = 77" }));
+    expect((opened[0]![2] as { children: { value: string }[] }).children[0]!.value).toBe("77");
+  });
+
+  it("does not offer load/defer choices for a foreign-key column (they are always loaded)", async () => {
+    render(<TableView session={session} schema="public" table="orders" onReconnect={async () => {}} onOpenTable={() => {}} />);
+    await screen.findByText("42");
+    fireEvent.contextMenu(screen.getByRole("columnheader", { name: /customer_id/ }));
+    await screen.findByRole("menuitem", { name: "Sort ascending" });
+    expect(screen.queryByRole("menuitem", { name: "Don't load" })).not.toBeInTheDocument();
+  });
+});

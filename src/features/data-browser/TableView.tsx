@@ -8,6 +8,7 @@ import { confirmAction, notify, notifyError } from "../../stores/ui";
 import { useSettings } from "../../stores/settings";
 import { DataGrid, type CellPos, type GridHandle, type GridSelection } from "../data-grid/DataGrid";
 import { ValueEditor } from "../value-editor/ValueEditor";
+import { firstLink, linkFilter, tableLinks } from "./fkLinks";
 import type { MenuEntry } from "../../components/Menu";
 import { FilterBuilder } from "../filters/FilterBuilder";
 import { FilterChips } from "../filters/FilterChips";
@@ -38,6 +39,10 @@ interface Props {
   onDirtyChange?: (dirty: boolean) => void;
   /** Opens SQL (e.g. the definition) in a new query tab without running it. */
   onOpenSql?: (sql: string, title: string) => void;
+  /** The filter this tab starts with (a followed reference). */
+  initialFilter?: GroupNode;
+  /** Opens a table in a new tab filtered to one row (following a foreign key). */
+  onOpenTable?: (schema: string, table: string, filter: GroupNode) => void;
 }
 
 type View = "data" | "structure" | "definition";
@@ -45,7 +50,7 @@ type View = "data" | "structure" | "definition";
 /** Keys per fetch_column call: well under the backend's 1,000 and SQLite's expression depth. */
 const FETCH_CHUNK = 200;
 
-export function TableView({ session, schema, table, onReconnect, onDirtyChange, onOpenSql }: Props) {
+export function TableView({ session, schema, table, onReconnect, onDirtyChange, onOpenSql, initialFilter, onOpenTable }: Props) {
   const pageSizeSetting = useSettings((s) => s.settings["grid.pageSize"]);
   const checkConflicts = useSettings((s) => s.settings["grid.checkConflicts"]);
   const largeValueChars = useSettings((s) => s.settings["grid.largeValueChars"]);
@@ -60,8 +65,8 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
   const [offset, setOffset] = useState(0);
   const [pageSize, setPageSize] = useState(pageSizeSetting);
   const [sort, setSort] = useState<SortSpec[]>([]);
-  const [filter, setFilter] = useState<GroupNode>(emptyGroup());
-  const [draftFilter, setDraftFilter] = useState<GroupNode>(emptyGroup());
+  const [filter, setFilter] = useState<GroupNode>(() => initialFilter ?? emptyGroup());
+  const [draftFilter, setDraftFilter] = useState<GroupNode>(() => initialFilter ?? emptyGroup());
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [pending, setPending] = useState<Pending>(EMPTY_PENDING);
   const [loading, setLoading] = useState(false);
@@ -362,7 +367,9 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
 
   const headerItems = (col: number): MenuEntry[] => {
     const c = columns[col];
-    if (!c || !hasPk || c.primaryKey !== null || !isTable) return [];
+    // Key and foreign-key columns are always loaded (large_values.rs), so there is no choice to offer.
+    const isForeignKey = structure?.foreignKeys.some((f) => f.columns.includes(c?.name ?? "")) ?? false;
+    if (!c || !hasPk || c.primaryKey !== null || isForeignKey || !isTable) return [];
     const current = overrides?.find((o) => o.column === c.name)?.mode ?? null;
     return [
       { label: "Load this column", onSelect: () => loadColumn(col), disabled: !deferredCols.has(c.name) },
@@ -416,9 +423,34 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
     await load();
   };
 
+  // ---- following foreign keys ------------------------------------------------------------
+
+  const fkByColumn = useMemo(() => (structure ? tableLinks(structure) : []), [structure]);
+
+  const cellLink = (row: number, col: number) => {
+    if (!onOpenTable || row >= rows.length) return null; // new rows have nothing to follow yet
+    const hit = firstLink(fkByColumn, col, () => getRow(row));
+    return hit && { label: hit.label, open: () => onOpenTable(hit.link.fk.refSchema, hit.link.fk.refTable, hit.filter) };
+  };
+
   const contextItems = (sel: GridSelection) => {
     const first = sel.rows[0];
+    const active = sel.active;
+    const links = active && active.row < rows.length && onOpenTable ? (fkByColumn[active.col] ?? []) : [];
+    const activeCells = active ? getRow(active.row) : undefined;
+    const refItems = links.flatMap((link) => {
+      const filter = activeCells ? linkFilter(link, activeCells) : null;
+      if (!filter) return [];
+      return [
+        {
+          label: links.length > 1 ? `Open referenced row in ${link.fk.refTable}` : "Open referenced row",
+          onSelect: () => onOpenTable!(link.fk.refSchema, link.fk.refTable, filter),
+        },
+      ];
+    });
     return [
+      ...refItems,
+      ...(refItems.length ? (["separator"] as const) : []),
       {
         label: "Copy as SQL IN list",
         onSelect: () =>
@@ -651,6 +683,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
                   headerItems={headerItems}
                   isLoading={(r, c) => loadingCells.has(`${r}:${c}`)}
                   largeValueChars={largeValueChars}
+                  cellLink={cellLink}
                   rowNumberOffset={offset}
                   bottomInset={nPending > 0 ? 56 : 0}
                 />

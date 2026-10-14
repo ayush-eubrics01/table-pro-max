@@ -3,6 +3,7 @@
 
 import { api } from "../lib/ipc";
 import type { Workspace } from "../stores/workspaces";
+import type { FilterNode } from "../types/backend";
 
 export const WORKSPACE_KEY = "session.v1";
 
@@ -16,6 +17,8 @@ export interface SavedTab {
   schema?: string;
   name?: string;
   objectKind?: string;
+  /** A followed reference's filter (table tabs). */
+  filter?: unknown;
 }
 
 export interface SavedWorkspace {
@@ -42,10 +45,25 @@ export function snapshot(workspaces: Workspace[], activeId: string | null): Save
       tabs: w.tabs.map((t): SavedTab => {
         if (t.kind === "query") return { kind: "query", title: t.title, sql: t.sql, savedQueryId: t.savedQueryId, dirty: t.dirty };
         if (t.kind === "dashboard") return { kind: "dashboard", title: t.title, dashboardId: t.dashboardId };
-        return { kind: t.kind, title: t.title, schema: t.schema, name: t.name, objectKind: t.objectKind };
+        return {
+          kind: t.kind,
+          title: t.title,
+          schema: t.schema,
+          name: t.name,
+          objectKind: t.objectKind,
+          ...(t.kind === "table" && t.filter ? { filter: t.filter } : {}),
+        };
       }),
     })),
   };
+}
+
+/** A saved table-tab filter, if it still has the shape of a filter group (older or damaged data is dropped). */
+export function restoredFilter(x: unknown): Extract<FilterNode, { type: "group" }> | undefined {
+  if (typeof x !== "object" || x === null) return undefined;
+  const g = x as { type?: unknown; logic?: unknown; children?: unknown };
+  if (g.type !== "group" || (g.logic !== "and" && g.logic !== "or") || !Array.isArray(g.children)) return undefined;
+  return x as Extract<FilterNode, { type: "group" }>;
 }
 
 let timer: ReturnType<typeof setTimeout> | undefined;

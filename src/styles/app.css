@@ -1252,6 +1252,35 @@ pre,
 .grid-cell.binary > span {
   color: var(--text-muted);
 }
+/* Overlaid in the cell's corner, so a linked cell's text lays out exactly like any other
+   (numbers stay right-aligned). */
+.grid-cell .fk-jump {
+  visibility: hidden;
+  position: absolute;
+  right: 3px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  padding: 1px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.grid-cell:hover .fk-jump,
+.grid-cell.active .fk-jump {
+  visibility: visible;
+}
+/* Make room for the arrow while it shows, so it never covers the value (e.g. a number's last digits). */
+.grid-cell.has-link:hover,
+.grid-cell.has-link.active {
+  padding-right: 22px;
+}
+.grid-cell .fk-jump:hover {
+  color: var(--accent-text);
+  background: var(--selection);
+}
 .grid-cell.not-loaded .not-loaded-label {
   color: var(--text-faint);
   font-style: italic;

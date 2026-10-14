@@ -21,7 +21,7 @@ import { useUpdates } from "../features/updates/store";
 import { StatusBar, WorkspaceView } from "./WorkspaceView";
 import { TitleBar } from "./TitleBar";
 import { isMacPlatform } from "./WindowControls";
-import { loadSaved, scheduleSave } from "./restore";
+import { loadSaved, restoredFilter, scheduleSave } from "./restore";
 
 export function App() {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
@@ -99,6 +99,16 @@ export function App() {
             if (t.kind === "query")
               return { kind: "query", id: uid(), title: t.title, sql: t.sql ?? "", savedQueryId: t.savedQueryId ?? null, dirty: t.dirty ?? false };
             if (t.kind === "dashboard") return { kind: "dashboard", id: uid(), title: t.title, dashboardId: t.dashboardId ?? "" };
+            if (t.kind === "table")
+              return {
+                kind: "table",
+                id: uid(),
+                title: t.title,
+                schema: t.schema ?? "",
+                name: t.name ?? "",
+                objectKind: (t.objectKind ?? "table") as ObjectKind,
+                ...(restoredFilter(t.filter) ? { filter: restoredFilter(t.filter) } : {}),
+              };
             return { kind: t.kind, id: uid(), title: t.title, schema: t.schema ?? "", name: t.name ?? "", objectKind: (t.objectKind ?? "table") as ObjectKind };
           });
           store.update(wsId, { tabs, activeTabId: tabs[sw.activeIndex]?.id ?? tabs[0]?.id ?? null });

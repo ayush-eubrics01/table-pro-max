@@ -206,3 +206,50 @@ describe("editable results", () => {
     await waitFor(() => expect(v.state.doc.toString().startsWith("z")).toBe(true));
   });
 });
+
+describe("following references in results", () => {
+  it("links a column whose origin is a foreign-key column", async () => {
+    const orders = {
+      schema: "public",
+      name: "orders",
+      kind: "table",
+      columns: [
+        { name: "id", dataType: "integer", nullable: false, default: null, primaryKey: 1, autoIncrement: false, comment: null },
+        { name: "customer_id", dataType: "integer", nullable: true, default: null, primaryKey: null, autoIncrement: false, comment: null },
+      ],
+      indexes: [],
+      constraints: [],
+      triggers: [],
+      foreignKeys: [{ name: "fk", columns: ["customer_id"], refSchema: "public", refTable: "customers", refColumns: ["id"], onUpdate: "", onDelete: "" }],
+    };
+    mockIPC((cmd) => (cmd === "table_structure" ? orders : null));
+    const o = (column: string) => ({ schema: "public", table: "orders", column });
+    const st: StatementResult = {
+      index: 0,
+      sql: "select * from orders",
+      start: 0,
+      end: 20,
+      durationMs: 1,
+      truncated: false,
+      resultId: "r9",
+      totalRows: 1,
+      columns: [
+        { name: "id", typeName: "int4", origin: o("id") },
+        { name: "customer_id", typeName: "int4", origin: o("customer_id") },
+      ],
+      rows: [["1", "42"]],
+    };
+    const opened: unknown[][] = [];
+    render(
+      <ResultsPanel
+        result={{ taskId: "t", statements: [st], cancelled: false, durationMs: 1 }}
+        running={false}
+        dialect="postgres"
+        session={session}
+        onOpenTable={(...a) => opened.push(a)}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Open customers where id = 42" }));
+    expect(opened[0]![1]).toBe("customers");
+  });
+});

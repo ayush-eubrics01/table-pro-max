@@ -4,7 +4,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { WorkspaceView } from "./WorkspaceView";
 import { Overlays } from "../components/Overlays";
 import { useWorkspaces, type Tab, type Workspace } from "../stores/workspaces";
-import { profile, session } from "../test/fixtures";
+import { profile, session, usersStructure } from "../test/fixtures";
 
 const ws = (tab: Tab): Workspace => ({
   id: "ws-1",
@@ -145,5 +145,22 @@ describe("pending query result edits", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Run and discard" }));
     await waitFor(() => expect(runs).toBe(2));
     await waitFor(() => expect(screen.queryByText("1 pending change")).not.toBeInTheDocument());
+  });
+});
+
+describe("followed references", () => {
+  it("a filtered table tab loads with its filter and shows it as a chip", async () => {
+    const calls: { cmd: string; args: Record<string, unknown> }[] = [];
+    mockIPC((cmd, args) => {
+      calls.push({ cmd, args: args as Record<string, unknown> });
+      if (cmd === "table_structure") return usersStructure;
+      if (cmd === "browse_table") return { columns: [], rows: [["42", "a@example.com", null]], sql: "SELECT …", durationMs: 1, hasMore: false };
+      return cmd.startsWith("list_") || cmd.startsWith("search_") ? [] : null;
+    });
+    const filter = { type: "group" as const, logic: "and" as const, children: [{ type: "condition" as const, column: "id", op: "eq" as const, value: "42", enabled: true }] };
+    renderWs(ws({ kind: "table", id: "t1", schema: "public", name: "users", objectKind: "table", title: "users", filter }));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "browse_table")).toBe(true));
+    expect((calls.find((c) => c.cmd === "browse_table")!.args.request as { filter: unknown }).filter).toEqual(filter);
+    expect(await screen.findByRole("button", { name: "Edit filter id = '42'" })).toBeInTheDocument();
   });
 });

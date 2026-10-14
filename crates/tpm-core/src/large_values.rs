@@ -40,7 +40,8 @@ pub fn deferred_columns(driver: Driver, s: &TableStructure, load: &[String], def
     s.columns
         .iter()
         .map(|c| {
-            if c.primary_key.is_some() {
+            // Key columns identify rows (and foreign keys are followed from the grid): always loaded.
+            if c.primary_key.is_some() || s.foreign_keys.iter().any(|fk| fk.columns.contains(&c.name)) {
                 false
             } else if defer.contains(&c.name) {
                 true
@@ -184,6 +185,27 @@ mod tests {
             vec![false, false, true, true],
             "a key column cannot be deferred"
         );
+    }
+
+    #[test]
+    fn foreign_key_columns_are_never_deferred() {
+        // They identify a referenced row (and the grid follows them); deferring would hide the link.
+        let mut s = table(vec![
+            col("id", "integer", Some(1)),
+            col("region", "text", None),
+            col("shop", "integer", None),
+            col("body", "text", None),
+        ]);
+        s.foreign_keys = vec![crate::model::ForeignKeyInfo {
+            name: "fk".into(),
+            columns: vec!["region".into(), "shop".into()],
+            ref_schema: "public".into(),
+            ref_table: "shops".into(),
+            ref_columns: vec!["region".into(), "code".into()],
+            on_update: String::new(),
+            on_delete: String::new(),
+        }];
+        assert_eq!(deferred_columns(Driver::Postgres, &s, &[], &[]), vec![false, false, false, true]);
     }
 
     #[test]

@@ -68,6 +68,8 @@ export interface DataGridProps {
   loadFull?: (cells: CellPos[]) => Promise<Cell[]>;
   /** Extra items for a column header's menu. */
   headerItems?: (col: number) => MenuEntry[];
+  /** A link from this cell to the row it references (foreign keys); the arrow opens it. */
+  cellLink?: (row: number, col: number) => { label: string; open: () => void } | null;
   /** A cell whose value is being fetched. */
   isLoading?: (row: number, col: number) => boolean;
   /** Text longer than this shows as a preview with its size, and opens in an editor. */
@@ -111,6 +113,7 @@ export function DataGrid(props: DataGridProps) {
     loadFull,
     headerItems,
     isLoading,
+    cellLink,
     largeValueChars = 256,
     ref,
     ariaLabel,
@@ -310,6 +313,14 @@ export function DataGrid(props: DataGridProps) {
       copySelection(e.shiftKey);
       return;
     }
+    if (mod && e.key === "Enter" && focus && focus.col >= 0) {
+      const link = cellLink?.(focus.row, focus.col);
+      if (link) {
+        e.preventDefault();
+        link.open();
+        return;
+      }
+    }
     if (mod && e.key.toLowerCase() === "a") {
       e.preventDefault();
       if (rowCount > 0 && visible.length > 0) {
@@ -445,7 +456,10 @@ export function DataGrid(props: DataGridProps) {
   const cellMenu = (): MenuEntry[] => [
     { label: "Copy", shortcut: "Ctrl+C", onSelect: () => copySelection(false) },
     { label: "Copy with column names", shortcut: "Ctrl+Shift+C", onSelect: () => copySelection(true) },
-    ...(contextItems ? (["separator", ...contextItems(selection)] as MenuEntry[]) : []),
+    ...((): MenuEntry[] => {
+      const extra = contextItems?.(selection) ?? [];
+      return extra.length ? ["separator", ...extra] : [];
+    })(),
   ];
 
   const totalWidth = ROWNUM_WIDTH + colVirtualizer.getTotalSize();
@@ -586,6 +600,7 @@ export function DataGrid(props: DataGridProps) {
                   const selected = inSelection(ri.index, col);
                   const active = focus?.row === ri.index && focus.col === col;
                   const tone = cellTone(c.typeName, v);
+                  const link = isEditing ? null : (cellLink?.(ri.index, col) ?? null);
                   const cls = [
                     "grid-cell",
                     v === null ? "null" : "",
@@ -593,6 +608,7 @@ export function DataGrid(props: DataGridProps) {
                     v !== undefined && isNotLoaded(v) ? "not-loaded" : "",
                     v !== undefined && (isPartial(v) || isLargeText(v, largeValueChars)) ? "partial" : "",
                     isLoading?.(ri.index, col) ? "loading" : "",
+                    link ? "has-link" : "",
                     isNumericType(c.typeName) ? "num" : "",
                     selected ? "selected" : "",
                     active ? "active" : "",
@@ -667,6 +683,31 @@ export function DataGrid(props: DataGridProps) {
                         ) : (
                           <span className={tone === "enum" ? "tag" : undefined}>{v === undefined ? "…" : cellDisplay(v)}</span>
                         )
+                      )}
+                      {link && (
+                            <button
+                              type="button"
+                              className="fk-jump"
+                              aria-label={link.label}
+                              title={link.label}
+                              tabIndex={-1}
+                              onMouseDown={(e) => {
+                                // Keep focus on the grid (so Space can't re-press the arrow later),
+                                // and select the cell as a click on it would.
+                                e.preventDefault();
+                                e.stopPropagation();
+                                if (editing) commitEdit();
+                                scrollRef.current?.focus();
+                                select({ row: ri.index, col });
+                              }}
+                              onDoubleClick={(e) => e.stopPropagation()}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                link.open();
+                              }}
+                            >
+                              <Icon name="open_in_new" size={12} />
+                            </button>
                       )}
                     </div>
                   );

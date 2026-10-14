@@ -19,6 +19,7 @@ import { connectWithPrompt } from "../connections/connectFlow";
 import { useJobProgress } from "../import-export/useJobProgress";
 import { AiPanel } from "../ai/AiPanel";
 import { queryTarget } from "./queryTarget";
+import type { GroupNode } from "../filters/filterModel";
 import { isMacPlatform } from "../../app/WindowControls";
 import { shortcut } from "../../lib/shortcut";
 
@@ -40,6 +41,8 @@ interface Props {
   active: boolean;
   /** Reports whether the results hold edits that are not committed. */
   onDirtyChange?: (dirty: boolean) => void;
+  /** Opens a table in a new tab filtered to one row (following a foreign key from a result). */
+  onOpenTable?: (schema: string, table: string, filter: GroupNode) => void;
 }
 
 export function RunButton({ onRun, disabled }: { onRun: () => void; disabled: boolean }) {
@@ -80,7 +83,7 @@ export function QueryToolbarTarget({ target, readOnly, env }: { target: string; 
 }
 
 /** One query tab: its own editor, its own connection session and its own results. */
-export function QueryTab({ ws, tab, active, onDirtyChange }: Props) {
+export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props) {
   const settings = useSettings((s) => s.settings);
   const updateTab = useWorkspaces((s) => s.updateTab);
   const openQuery = useWorkspaces((s) => s.openQuery);
@@ -527,6 +530,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange }: Props) {
               session={session ?? undefined}
               onRunAgain={() => lastRun.current && void run(lastRun.current.mode, false, lastRun.current.target)}
               onDirtyChange={reportDirty}
+              onOpenTable={onOpenTable}
             />
           </div>
         </div>

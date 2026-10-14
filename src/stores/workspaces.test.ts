@@ -77,4 +77,19 @@ describe("workspace store", () => {
     });
     expect(JSON.stringify(snap)).not.toContain("password");
   });
+  it("opens a filtered table tab every time, and plain opens skip filtered tabs", async () => {
+    const id = await useWorkspaces.getState().open(profile, session);
+    const s = useWorkspaces.getState();
+    const f = { type: "group" as const, logic: "and" as const, children: [{ type: "condition" as const, column: "id", op: "eq" as const, value: "42", enabled: true }] };
+    s.openTable(id, { schema: "public", name: "users", kind: "table" }, { filter: f });
+    s.openTable(id, { schema: "public", name: "users", kind: "table" }, { filter: f });
+    let ws = useWorkspaces.getState().workspaces[0]!;
+    expect(ws.tabs).toHaveLength(2);
+    expect(ws.tabs[1]!.kind === "table" && ws.tabs[1]!.filter).toEqual(f);
+    s.openTable(id, { schema: "public", name: "users", kind: "table" });
+    ws = useWorkspaces.getState().workspaces[0]!;
+    expect(ws.tabs).toHaveLength(3); // the plain open did not land on a filtered tab
+    s.openTable(id, { schema: "public", name: "users", kind: "table" });
+    expect(useWorkspaces.getState().workspaces[0]!.tabs).toHaveLength(3); // but it reuses the plain one
+  });
 });

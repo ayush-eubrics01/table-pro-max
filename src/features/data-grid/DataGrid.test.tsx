@@ -96,4 +96,50 @@ describe("DataGrid", () => {
     await act(async () => ref.current!.copySelection(false));
     expect(write).toHaveBeenCalledWith("1\tFULL\t\n2\tshort\t");
   });
+  it("shows a reference arrow on linked cells that opens without editing", () => {
+    const opened: string[] = [];
+    const edits: unknown[] = [];
+    render(
+      <DataGrid
+        ariaLabel="Rows"
+        columns={[{ name: "id", typeName: "integer", primaryKey: true }, { name: "customer_id", typeName: "integer", foreignKey: true }]}
+        rowCount={1}
+        getRow={() => ["1", "42"]}
+        canEdit={() => true}
+        onEdit={(...a) => edits.push(a)}
+        cellLink={(_r, c) => (c === 1 ? { label: "Open customers where id = 42", open: () => opened.push("click") } : null)}
+      />,
+    );
+    const arrow = screen.getByRole("button", { name: "Open customers where id = 42" });
+    expect(screen.getAllByRole("button", { name: /^Open / })).toHaveLength(1);
+    fireEvent.mouseDown(arrow);
+    fireEvent.click(arrow);
+    fireEvent.doubleClick(arrow);
+    expect(opened).toEqual(["click"]);
+    expect(screen.queryByLabelText("Edit customer_id")).not.toBeInTheDocument();
+    expect(edits).toHaveLength(0);
+    // Ctrl/⌘+Enter on the active linked cell.
+    fireEvent.mouseDown(screen.getByText("42").closest(".grid-cell")!);
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "Enter", ctrlKey: true });
+    expect(opened).toEqual(["click", "click"]);
+    expect(screen.queryByLabelText("Edit customer_id")).not.toBeInTheDocument();
+  });
+
+  it("keeps focus on the grid when the arrow is pressed, and adds no separator without extra menu items", async () => {
+    render(
+      <DataGrid
+        ariaLabel="Rows"
+        columns={[{ name: "customer_id", typeName: "integer", foreignKey: true }]}
+        rowCount={1}
+        getRow={() => ["42"]}
+        cellLink={() => ({ label: "Open customers where id = 42", open: () => {} })}
+        contextItems={() => []}
+      />,
+    );
+    const pressed = fireEvent.mouseDown(screen.getByRole("button", { name: "Open customers where id = 42" }));
+    expect(pressed).toBe(false); // default prevented: the arrow never takes focus
+    fireEvent.contextMenu(screen.getByText("42").closest(".grid-cell")!);
+    const menu = await screen.findByRole("menu");
+    expect(menu.querySelector("hr, [role='separator']")).toBeNull();
+  });
 });
