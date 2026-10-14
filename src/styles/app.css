@@ -277,11 +277,27 @@ pre,
 }
 .dialog-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: var(--space-4);
+  gap: var(--space-3);
   padding: 16px 22px;
   border-bottom: 1px solid var(--border-hairline);
+}
+.dialog-titles {
+  flex: 1;
+  min-width: 0;
+}
+.dialog-subtitle {
+  margin-top: 2px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.dialog-tone-icon {
+  margin-top: 2px;
+  color: var(--danger);
+}
+.dialog-danger {
+  border-color: var(--danger);
 }
 .dialog-header h2 {
   font-size: var(--text-lg);

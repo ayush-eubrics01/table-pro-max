@@ -10,6 +10,9 @@ interface DialogProps {
   className?: string;
   /** Element to focus initially; defaults to the first focusable control. */
   initialFocus?: string;
+  subtitle?: ReactNode;
+  /** "danger" marks destructive confirmations: warning icon and danger border. */
+  tone?: "danger";
 }
 
 // Open dialogs, innermost last: only the top one reacts to Escape.
@@ -19,7 +22,7 @@ let pendingRestore: ReturnType<typeof setTimeout> | undefined;
 
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-export function Dialog({ title, onClose, children, footer, wide, className, initialFocus }: DialogProps) {
+export function Dialog({ title, onClose, children, footer, wide, className, initialFocus, subtitle, tone }: DialogProps) {
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const onCloseRef = useRef(onClose);
@@ -70,13 +73,17 @@ export function Dialog({ title, onClose, children, footer, wide, className, init
     <div className="dialog-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div
         ref={ref}
-        className={`dialog ${wide ? "dialog-wide" : ""} ${className ?? ""}`}
+        className={`dialog ${wide ? "dialog-wide" : ""} ${tone === "danger" ? "dialog-danger" : ""} ${className ?? ""}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
       >
         <div className="dialog-header">
-          <h2 id={titleId}>{title}</h2>
+          {tone === "danger" && <Icon name="warning" size={18} className="dialog-tone-icon" />}
+          <div className="dialog-titles">
+            <h2 id={titleId}>{title}</h2>
+            {subtitle && <div className="dialog-subtitle">{subtitle}</div>}
+          </div>
           <button className="btn btn-ghost btn-icon" onClick={onClose} aria-label="Close">
             <Icon name="close" size={16} />
           </button>

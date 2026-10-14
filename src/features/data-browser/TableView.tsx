@@ -58,7 +58,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
   const [total, setTotal] = useState<number | null>(null);
   const [selection, setSelection] = useState<GridSelection>({ rows: [], cols: [], active: null });
   const [detailOpen, setDetailOpen] = useState(false);
-  const [review, setReview] = useState<{ sql: string; atomic: boolean } | null>(null);
+  const [review, setReview] = useState<{ sql: string; atomic: boolean; statements: number } | null>(null);
   const [exportSource, setExportSource] = useState<ExportSource | null>(null);
   const [importing, setImporting] = useState(false);
   const gridRef = useRef<GridHandle>(null);
@@ -211,7 +211,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
     try {
       const set = buildChangeSet(pending, rows, structure.columns, schema, table, checkConflicts);
       const preview = await api.previewChanges(session.sessionId, set);
-      setReview({ sql: preview.sql, atomic: preview.atomic });
+      setReview({ sql: preview.sql, atomic: preview.atomic, statements: preview.statementCount });
     } catch (e) {
       notifyError(e, "Changes cannot be committed");
     }
@@ -529,6 +529,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
           title="Review changes"
           sql={review.sql}
           atomic={review.atomic}
+          statements={review.statements}
           summary={`${pluralize(nPending, "change")} to ${schema}.${table}`}
           commitLabel="Commit changes"
           onCommit={commit}
