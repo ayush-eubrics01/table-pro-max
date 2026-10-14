@@ -25,3 +25,14 @@ describe("QueryToolbarTarget", () => {
     expect(screen.getByText("Read-only")).toBeInTheDocument();
   });
 });
+
+describe("Plan tabs", () => {
+  it("keeps a way back to the results", async () => {
+    const { PlanTabs } = await import("./QueryTab");
+    let back = false;
+    render(createElement(PlanTabs, { onBack: () => (back = true) }));
+    expect(screen.getByRole("tab", { name: "Plan" })).toHaveAttribute("aria-selected", "true");
+    screen.getByRole("tab", { name: "Back to results" }).click();
+    expect(back).toBe(true);
+  });
+});

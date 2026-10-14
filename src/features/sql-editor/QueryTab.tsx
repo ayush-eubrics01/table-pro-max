@@ -40,6 +40,19 @@ interface Props {
 }
 
 /** One query tab: its own editor, its own connection session and its own results. */
+export function PlanTabs({ onBack }: { onBack: () => void }) {
+  return (
+    <div className="results-tabs" role="tablist" aria-label="Plan">
+      <button role="tab" aria-selected="true">
+        Plan
+      </button>
+      <button role="tab" aria-selected="false" onClick={onBack}>
+        Back to results
+      </button>
+    </div>
+  );
+}
+
 export function QueryToolbarTarget({ target, readOnly, env }: { target: string; readOnly: boolean; env: Environment }) {
   return (
     <>
@@ -471,10 +484,7 @@ export function QueryTab({ ws, tab, active }: Props) {
           )}
           {explain ? (
             <div className="results">
-              <div className="results-tabs">
-                <button aria-selected="true">Plan</button>
-                <button onClick={() => setExplain(null)}>Back to results</button>
-              </div>
+              <PlanTabs onBack={() => setExplain(null)} />
               <ExplainView result={explain} />
             </div>
           ) : (
