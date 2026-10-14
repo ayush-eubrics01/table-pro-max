@@ -76,6 +76,30 @@ Every driver implements `tpm_core::adapters::Session` (`crates/tpm-core/src/adap
   A statement that cannot be wrapped runs as is, and the wrapper never runs a statement twice.
 * Read-only sessions run each statement inside `BEGIN TRANSACTION READ ONLY`.
 
+## Column origins (editable query results)
+
+A query result cell can be edited only when the database says which table column it came
+from. No SQL is parsed. A column with no origin (an expression, aggregate, literal or function)
+stays read-only. The rule that decides editability is in `result_edit.rs`.
+
+| Engine | Mechanism | Cost |
+|---|---|---|
+| MySQL / MariaDB | The text-protocol column definitions carry `schema`, `org_table` and `org_name`. An empty `org_table` means no origin. | none |
+| PostgreSQL | `Session::describe_origins` calls `Client::prepare(sql)` (describe only, never executes) and reads each column's `table_oid` and `column_id`. OIDs resolve to names with one catalog query per new table, cached per session. Skipped on read-only sessions; a failed prepare means no origins. | one round-trip per row-returning statement |
+| SQLite | rusqlite feature `column_metadata` (`SQLITE_ENABLE_COLUMN_METADATA`): `column_database_name`, `column_table_name`, `column_origin_name`. Views report their base table. | none |
+| DuckDB | Not available. Query results are read-only; opened tables can still be edited. | none |
+
+Origins name the base table, not the alias or the branch of a `UNION`: in `users a JOIN users b`
+both sides report `users`, and SQLite reports a compound SELECT's origins from one branch and a
+view's columns as its base table's. So `result_sql.rs` also parses the statement, and only ever
+takes editability away: a table named more than once (or not at all), a CTE used twice,
+`UNION`/`INTERSECT`/`EXCEPT`, a statement that does not parse, and (on SQLite and MySQL) a view
+anywhere in the query make the affected result read-only.
+
+Committing edits refuses to run while the tab has an open transaction (its BEGIN/COMMIT would end
+the user's). PostgreSQL and SQLite check this exactly, MariaDB through `@@in_transaction`; MySQL
+checks `@@autocommit`, and the engine also tracks the `BEGIN`/`COMMIT`/`ROLLBACK` the user runs.
+
 ## SQL Server (evaluated, not implemented)
 * `tiberius` (MIT/Apache-2.0) is a maintained async TDS client with rustls support and
   `QueryStream` result streaming. Gaps to handle: no built-in cancel API (would need an

@@ -559,9 +559,204 @@ async fn exercise(t: Target) {
     assert_eq!(err.kind, ErrorKind::Timeout);
     engine.close_session(&dash.session_id).await;
 
+    origins(&engine, &sid, driver).await;
+    edit_results(&engine, &sid, &profile, t.password.as_deref(), driver).await;
+
     // --- cleanup ---
     run(&engine, &sid, "DROP TABLE tpm_it_items; DROP TABLE tpm_it_owners").await;
     engine.close_all().await;
+}
+
+/// Edit query results across two tables in one transaction; refuse on conflict; block where the rule says so.
+async fn edit_results(engine: &Engine, sid: &str, profile: &ConnectionProfile, password: Option<&str>, driver: Driver) {
+    let r = run(
+        engine,
+        sid,
+        "SELECT i.id, i.name, o.id, o.name FROM tpm_it_items i JOIN tpm_it_owners o ON o.id = i.owner_id ORDER BY i.id",
+    )
+    .await;
+    let st = &r.statements[0];
+    let editing = st.editing.clone().expect("editing info");
+    if driver == Driver::Duckdb {
+        assert!(editing.tables.is_empty());
+        assert_eq!(editing.read_only[0].reason, "Query results can't be edited on DuckDB");
+        return;
+    }
+    assert_eq!(editing.tables.len(), 2, "{driver:?}: {editing:?}");
+    assert_eq!(editing.columns, vec![Some(0), Some(0), Some(1), Some(1)]);
+    let row = &st.rows.as_ref().unwrap()[0];
+    let item_id = text(&row[0]).to_string();
+    let item_name = text(&row[1]).to_string();
+    let owner_id = text(&row[2]).to_string();
+    let owner_name = text(&row[3]).to_string();
+    let edit = |col: &str, new: &str, old: &str| ColumnEdit {
+        column: col.into(),
+        value: EditValue::Value { value: Some(new.into()) },
+        original: Some(Some(old.into())),
+    };
+    let schema = editing.tables[0].schema.clone();
+    let sets = vec![
+        ChangeSet {
+            schema: schema.clone(),
+            table: "tpm_it_items".into(),
+            changes: vec![RowChange::Update {
+                key: vec![ColumnValue { column: "id".into(), value: Some(item_id.clone()) }],
+                edits: vec![edit("name", "renamed item", &item_name)],
+            }],
+            check_conflicts: true,
+        },
+        ChangeSet {
+            schema: schema.clone(),
+            table: "tpm_it_owners".into(),
+            changes: vec![RowChange::Update {
+                key: vec![ColumnValue { column: "id".into(), value: Some(owner_id.clone()) }],
+                edits: vec![edit("name", "renamed owner", &owner_name)],
+            }],
+            check_conflicts: true,
+        },
+    ];
+    let preview = engine.preview_change_sets(sid, &sets).await.unwrap();
+    assert_eq!(preview.statement_count, 2);
+    assert_eq!(engine.apply_change_sets(sid, &sets, false).await.unwrap_err().kind, ErrorKind::ConfirmationRequired);
+    assert_eq!(engine.apply_change_sets(sid, &sets, true).await.unwrap(), vec![1, 1]);
+    let after = run(engine, sid, &format!("SELECT name FROM tpm_it_items WHERE id = {item_id}")).await;
+    assert_eq!(text(&after.statements[0].rows.as_ref().unwrap()[0][0]), "renamed item");
+
+    // Conflict: a valid edit followed by a stale one. The stale one fails, and the valid one is rolled back.
+    let one = |table: &str, id: &str, e: ColumnEdit| ChangeSet {
+        schema: schema.clone(),
+        table: table.into(),
+        changes: vec![RowChange::Update {
+            key: vec![ColumnValue { column: "id".into(), value: Some(id.into()) }],
+            edits: vec![e],
+        }],
+        check_conflicts: true,
+    };
+    let stale = [
+        one("tpm_it_items", &item_id, edit("name", "third item", "renamed item")),
+        one("tpm_it_owners", &owner_id, edit("name", "third", "not the current name")),
+    ];
+    let err = engine.apply_change_sets(sid, &stale, true).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Conflict, "{driver:?}");
+    let item = run(engine, sid, &format!("SELECT name FROM tpm_it_items WHERE id = {item_id}")).await;
+    assert_eq!(text(&item.statements[0].rows.as_ref().unwrap()[0][0]), "renamed item", "rolled back ({driver:?})");
+    let owner = run(engine, sid, &format!("SELECT name FROM tpm_it_owners WHERE id = {owner_id}")).await;
+    assert_eq!(text(&owner.statements[0].rows.as_ref().unwrap()[0][0]), "renamed owner", "untouched ({driver:?})");
+
+    // An open transaction in the tab: committing edits would commit or roll back the user's own work.
+    run(engine, sid, "BEGIN").await;
+    run(engine, sid, &format!("UPDATE tpm_it_owners SET name = 'inside txn' WHERE id = {owner_id}")).await;
+    let fresh = vec![ChangeSet {
+        schema: schema.clone(),
+        table: "tpm_it_items".into(),
+        changes: vec![RowChange::Update {
+            key: vec![ColumnValue { column: "id".into(), value: Some(item_id.clone()) }],
+            edits: vec![edit("name", "after txn", "renamed item")],
+        }],
+        check_conflicts: true,
+    }];
+    let inside = run(engine, sid, "SELECT id, name FROM tpm_it_owners").await;
+    assert_eq!(
+        inside.statements[0].editing.clone().unwrap().read_only[0].reason,
+        "Commit or roll back the open transaction to edit results",
+        "{driver:?}"
+    );
+    let err = engine.apply_change_sets(sid, &fresh, true).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PolicyViolation, "{driver:?}: {err:?}");
+    run(engine, sid, "ROLLBACK").await;
+    let owner = run(engine, sid, &format!("SELECT name FROM tpm_it_owners WHERE id = {owner_id}")).await;
+    assert_eq!(
+        text(&owner.statements[0].rows.as_ref().unwrap()[0][0]),
+        "renamed owner",
+        "user's txn untouched ({driver:?})"
+    );
+    assert_eq!(engine.apply_change_sets(sid, &fresh, true).await.unwrap(), vec![1], "{driver:?}");
+
+    // Only reads are described: a write's RETURNING columns get no origins (and no extra round trip).
+    if driver == Driver::Postgres {
+        let r = run(engine, sid, "INSERT INTO tpm_it_owners (id, name) VALUES (777, 'ret') RETURNING id, name").await;
+        let st = &r.statements[0];
+        assert!(st.columns.as_ref().unwrap().iter().all(|c| c.origin.is_none()), "{:?}", st.columns);
+        assert!(st.editing.is_none());
+        run(engine, sid, "DELETE FROM tpm_it_owners WHERE id = 777").await;
+        // Column names are looked up per statement: a rename is followed, never a stale name.
+        run(engine, sid, "SELECT id, name FROM tpm_it_owners").await;
+        run(engine, sid, "ALTER TABLE tpm_it_owners RENAME COLUMN name TO label").await;
+        let r = run(engine, sid, "SELECT id, label FROM tpm_it_owners").await;
+        let origin = r.statements[0].columns.as_ref().unwrap()[1].origin.clone().unwrap();
+        run(engine, sid, "ALTER TABLE tpm_it_owners RENAME COLUMN label TO name").await;
+        assert_eq!(origin.column, "label");
+    }
+
+    // The adapter's own check, without the engine's BEGIN tracking.
+    let mut raw = adapters::connect(profile, password, &ConnectOptions::default()).await.unwrap();
+    assert!(!raw.in_transaction().await.unwrap(), "idle ({driver:?})");
+    raw.execute("BEGIN", 10).await.unwrap();
+    raw.execute("SELECT 1", 10).await.unwrap();
+    // MySQL has no exact check; the engine's tracking of START TRANSACTION covers it (tested above).
+    assert_eq!(raw.in_transaction().await.unwrap(), driver != Driver::Mysql, "after BEGIN ({driver:?})");
+    raw.execute("ROLLBACK", 10).await.unwrap();
+    assert!(!raw.in_transaction().await.unwrap(), "after ROLLBACK ({driver:?})");
+    raw.close().await;
+
+    // Origins name the table, not the alias: shapes where that is ambiguous stay read-only.
+    let editing_of = |r: &tpm_core::engine::ScriptResult| r.statements[0].editing.clone().unwrap();
+    let r = run(
+        engine,
+        sid,
+        "SELECT a.id, a.name, b.name FROM tpm_it_items a LEFT JOIN tpm_it_items b ON b.id = a.owner_id",
+    )
+    .await;
+    let e = editing_of(&r);
+    assert!(e.tables.is_empty(), "self-join with one key ({driver:?}): {e:?}");
+    assert!(
+        e.read_only.iter().any(|x| x.reason.starts_with("tpm_it_items appears more than once")),
+        "{driver:?}: {e:?}"
+    );
+    let r = run(engine, sid, "SELECT id, name FROM tpm_it_items UNION ALL SELECT id, name FROM tpm_it_owners").await;
+    let e = editing_of(&r);
+    assert!(e.tables.is_empty(), "union ({driver:?}): {e:?}");
+    run(engine, sid, "CREATE VIEW tpm_it_items_v AS SELECT id, name FROM tpm_it_items").await;
+    let r =
+        run(engine, sid, "SELECT i.id, i.name, v.name FROM tpm_it_items i JOIN tpm_it_items_v v ON v.id = i.owner_id")
+            .await;
+    let e = editing_of(&r);
+    assert_eq!(e.columns[2], None, "a view's column is never edited as its base table ({driver:?}): {e:?}");
+    let r = run(engine, sid, "SELECT id, name FROM tpm_it_items_v").await;
+    assert!(editing_of(&r).tables.is_empty(), "through a view ({driver:?})");
+    run(engine, sid, "DROP VIEW tpm_it_items_v").await;
+
+    // Missing key: no editable table, and a hint.
+    let nokey = run(engine, sid, "SELECT name FROM tpm_it_owners").await;
+    let e = nokey.statements[0].editing.clone().unwrap();
+    assert!(e.tables.is_empty());
+    assert_eq!(e.read_only[0].reason, "Add id to the SELECT to edit tpm_it_owners");
+
+    // Read-only session: nothing is editable.
+    let mut ro = profile.clone();
+    ro.safety_mode = SafetyMode::ReadOnly;
+    let info = engine.open_session(&ro, password, None, ConnectOptions::default()).await.expect("read-only connect");
+    let r = run(engine, &info.session_id, "SELECT id, name FROM tpm_it_owners").await;
+    assert_eq!(r.statements[0].editing.clone().unwrap().read_only[0].reason, "Read-only connection");
+    assert!(engine.apply_change_sets(&info.session_id, &sets, true).await.is_err());
+    engine.close_session(&info.session_id).await;
+}
+
+/// Each engine reports where result columns come from (DuckDB cannot).
+async fn origins(engine: &Engine, sid: &str, driver: Driver) {
+    let r = run(engine, sid, "SELECT i.id, i.name AS label, o.name, i.price * 2 AS doubled, count(*) OVER () AS n FROM tpm_it_items i JOIN tpm_it_owners o ON o.id = i.owner_id").await;
+    let cols = r.statements[0].columns.clone().expect("columns");
+    let tables: Vec<Option<(String, String)>> =
+        cols.iter().map(|c| c.origin.as_ref().map(|o| (o.table.clone(), o.column.clone()))).collect();
+    if driver == Driver::Duckdb {
+        assert!(tables.iter().all(Option::is_none), "duckdb reports no origins: {tables:?}");
+        return;
+    }
+    assert_eq!(tables[0], Some(("tpm_it_items".into(), "id".into())), "{driver:?}");
+    assert_eq!(tables[1], Some(("tpm_it_items".into(), "name".into())), "aliased column keeps its origin ({driver:?})");
+    assert_eq!(tables[2], Some(("tpm_it_owners".into(), "name".into())), "{driver:?}");
+    assert_eq!(tables[3], None, "expression has no origin ({driver:?})");
+    assert_eq!(tables[4], None, "window aggregate has no origin ({driver:?})");
 }
 
 /// Export a table to every format, then import the CSV back into a copy, all through the engine.

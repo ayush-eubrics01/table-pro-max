@@ -38,6 +38,8 @@ interface Props {
   ws: Workspace;
   tab: QueryTabModel;
   active: boolean;
+  /** Reports whether the results hold edits that are not committed. */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 export function RunButton({ onRun, disabled }: { onRun: () => void; disabled: boolean }) {
@@ -78,7 +80,7 @@ export function QueryToolbarTarget({ target, readOnly, env }: { target: string; 
 }
 
 /** One query tab: its own editor, its own connection session and its own results. */
-export function QueryTab({ ws, tab, active }: Props) {
+export function QueryTab({ ws, tab, active, onDirtyChange }: Props) {
   const settings = useSettings((s) => s.settings);
   const updateTab = useWorkspaces((s) => s.updateTab);
   const openQuery = useWorkspaces((s) => s.openQuery);
@@ -98,6 +100,16 @@ export function QueryTab({ ws, tab, active }: Props) {
   const fileProgress = useJobProgress(fileTask?.id ?? null);
   const resultIds = useRef<string[]>([]);
   const [ai, setAi] = useState<{ task: AiTask } | null>(null);
+  const [resultsDirty, setResultsDirty] = useState(false);
+  // What produced the current results, so "Run again" repeats exactly that (a selection stays a selection).
+  const lastRun = useRef<{ mode: RunMode; target: { sql: string; base: number } } | null>(null);
+  const reportDirty = useCallback(
+    (d: boolean) => {
+      setResultsDirty(d);
+      onDirtyChange?.(d);
+    },
+    [onDirtyChange],
+  );
   const aiEnabled = settings["ai.enabled"];
 
   const lastError = useMemo(() => {
@@ -184,6 +196,15 @@ export function QueryTab({ ws, tab, active }: Props) {
       }
     }
     if (!target.sql.trim()) return;
+    if (resultsDirty && !confirmed) {
+      const ok = await confirmAction({
+        title: "Discard pending result edits?",
+        body: "Running again replaces the results, and the edits you have not committed are lost.",
+        confirmLabel: "Run and discard",
+        danger: true,
+      });
+      if (!ok) return;
+    }
 
     const s = await ensureSession().catch((e) => {
       notifyError(e, "Could not connect");
@@ -205,6 +226,7 @@ export function QueryTab({ ws, tab, active }: Props) {
       });
       if (resultIds.current.length) void api.releaseResults(resultIds.current);
       resultIds.current = r.statements.flatMap((x) => (x.resultId ? [x.resultId] : []));
+      lastRun.current = { mode, target };
       setResult(r);
       const failed = r.statements.find((x) => x.error && x.error.kind !== "cancelled");
       if (failed) markError(text, failed);
@@ -489,14 +511,23 @@ export function QueryTab({ ws, tab, active }: Props) {
               {error}
             </div>
           )}
-          {explain ? (
+          {explain && (
             <div className="results">
               <PlanTabs onBack={() => setExplain(null)} />
               <ExplainView result={explain} />
             </div>
-          ) : (
-            <ResultsPanel result={result} running={!!running} dialect={ws.session.dialect} />
           )}
+          {/* Hidden, not unmounted, while a plan is shown: pending result edits live in it. */}
+          <div style={{ display: explain ? "none" : "contents" }}>
+            <ResultsPanel
+              result={result}
+              running={!!running || !!fileTask}
+              dialect={ws.session.dialect}
+              session={session ?? undefined}
+              onRunAgain={() => lastRun.current && void run(lastRun.current.mode, false, lastRun.current.target)}
+              onDirtyChange={reportDirty}
+            />
+          </div>
         </div>
         {historyOpen && (
           <HistoryPanel

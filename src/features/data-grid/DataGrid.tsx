@@ -45,6 +45,8 @@ export interface DataGridProps {
   sort?: SortSpec[];
   onSort?: (column: string, descending: boolean | null) => void;
   onSelectionChange?: (sel: GridSelection) => void;
+  /** Tooltip for a data cell, e.g. why it cannot be edited. */
+  cellTitle?: (row: number, col: number) => string | undefined;
   /** Extra items for the cell context menu. */
   contextItems?: (sel: GridSelection) => MenuEntry[];
   onDeleteKey?: (sel: GridSelection) => void;
@@ -81,6 +83,7 @@ export function DataGrid(props: DataGridProps) {
     sort,
     onSort,
     onSelectionChange,
+    cellTitle,
     contextItems,
     onDeleteKey,
     rowNumberOffset = 0,
@@ -538,6 +541,7 @@ export function DataGrid(props: DataGridProps) {
                       aria-colindex={ci.index + 2}
                       aria-selected={selected}
                       className={cls}
+                      title={cellTitle?.(ri.index, col)}
                       style={{ left: ROWNUM_WIDTH + ci.start, width: ci.size }}
                       onMouseDown={(e) => {
                         if (e.button !== 0) return;

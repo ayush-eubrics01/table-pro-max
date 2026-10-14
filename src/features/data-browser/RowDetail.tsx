@@ -7,6 +7,8 @@ interface Props {
   columns: ColumnInfo[];
   row: Cell[] | undefined;
   editable: (col: number) => boolean;
+  /** Why a field cannot be edited, shown under it (query results). */
+  readOnlyReason?: (col: number) => string | null;
   onEdit: (col: number, value: string | null) => void;
   heading: string;
   subheading: string;
@@ -15,7 +17,7 @@ interface Props {
 }
 
 /** Vertical view of one row: full values, pretty JSON, and multi-line editing. */
-export function RowDetail({ columns, row, editable, onEdit, heading, subheading, isEdited, onClose }: Props) {
+export function RowDetail({ columns, row, editable, readOnlyReason, onEdit, heading, subheading, isEdited, onClose }: Props) {
   return (
     <aside className="detail-panel" aria-label="Row details">
       <header className="detail-head">
@@ -32,7 +34,15 @@ export function RowDetail({ columns, row, editable, onEdit, heading, subheading,
       ) : (
         <div className="detail-fields">
           {columns.map((c, i) => (
-            <Field key={c.name} column={c} value={row[i] ?? null} editable={editable(i)} edited={isEdited(i)} onEdit={(v) => onEdit(i, v)} />
+            <Field
+              key={c.name}
+              column={c}
+              value={row[i] ?? null}
+              editable={editable(i)}
+              reason={editable(i) ? null : (readOnlyReason?.(i) ?? null)}
+              edited={isEdited(i)}
+              onEdit={(v) => onEdit(i, v)}
+            />
           ))}
         </div>
       )}
@@ -44,12 +54,14 @@ function Field({
   column,
   value,
   editable,
+  reason,
   edited,
   onEdit,
 }: {
   column: ColumnInfo;
   value: Cell;
   editable: boolean;
+  reason: string | null;
   edited: boolean;
   onEdit: (v: string | null) => void;
 }) {
@@ -102,6 +114,7 @@ function Field({
       ) : (
         <pre className={value === null ? "hint" : undefined}>{value === null ? "NULL" : (json ?? value)}</pre>
       )}
+      {reason && <p className="hint">{reason}</p>}
     </div>
   );
 }

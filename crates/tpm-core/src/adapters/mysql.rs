@@ -166,7 +166,17 @@ fn type_name(c: &Column) -> String {
 }
 
 fn columns_meta(cols: &[Column]) -> Vec<ColumnMeta> {
-    cols.iter().map(|c| ColumnMeta::new(c.name_str(), type_name(c))).collect()
+    cols.iter()
+        .map(|c| {
+            // org_table/org_name are the base table and column; empty for expressions and derived values.
+            let origin = (!c.org_table_str().is_empty() && !c.org_name_str().is_empty()).then(|| ColumnOrigin {
+                schema: c.schema_str().into_owned(),
+                table: c.org_table_str().into_owned(),
+                column: c.org_name_str().into_owned(),
+            });
+            ColumnMeta::new(c.name_str(), type_name(c)).with_origin(origin)
+        })
+        .collect()
 }
 
 /// Converts a text-protocol row (all values arrive as bytes).
@@ -568,6 +578,17 @@ impl Session for MySession {
         }
         drop(result);
         Ok(rs)
+    }
+
+    async fn in_transaction(&mut self) -> Result<bool> {
+        // With autocommit off every statement runs in a transaction.
+        match self.conn.query_first::<i64, _>("SELECT @@autocommit").await {
+            Ok(Some(1)) => {}
+            _ => return Ok(true),
+        }
+        // MariaDB reports an open transaction exactly. MySQL has no such variable (and the driver
+        // keeps the server's status flags private), so there the engine tracks START TRANSACTION.
+        Ok(matches!(self.conn.query_first::<i64, _>("SELECT @@in_transaction").await, Ok(Some(1))))
     }
 
     async fn apply(&mut self, statements: &[ParamStatement], atomic: bool) -> Result<Vec<u64>> {

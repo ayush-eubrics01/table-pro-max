@@ -28,6 +28,9 @@ use crate::model::*;
 pub struct PgSession {
     client: Client,
     canceller: Arc<PgCanceller>,
+    /// (table oid, attnum) → (schema, table, column), for result column origins. Rebuilt for every
+    /// described statement, so a renamed or swapped column is never reported under a stale name.
+    origin_names: std::collections::HashMap<(u32, i16), (String, String, String)>,
 }
 
 struct PgCanceller {
@@ -94,7 +97,7 @@ impl PgSession {
             }
         });
         let canceller = Arc::new(PgCanceller { token: client.cancel_token(), tls });
-        Ok(Self { client, canceller })
+        Ok(Self { client, canceller, origin_names: std::collections::HashMap::new() })
     }
 
     async fn rows(&self, sql: &str, params: &[Param]) -> Result<Vec<Row>> {
@@ -437,6 +440,72 @@ impl Session for PgSession {
                 crate::ddl::create_table_sql(Dialect::Postgres, &s)
             }
         }
+    }
+
+    async fn in_transaction(&mut self) -> Result<bool> {
+        // In a transaction begun by an earlier statement, now() (its start) is older than this
+        // statement's start. Simple protocol: one message, so the two are equal otherwise (the
+        // extended protocol's separate Bind/Execute would move statement_timestamp()). A failure
+        // (e.g. an aborted transaction) also counts as "inside".
+        let rows = match self.client.simple_query("SELECT now() <> statement_timestamp()").await {
+            Ok(r) => r,
+            Err(_) => return Ok(true),
+        };
+        Ok(rows
+            .iter()
+            .find_map(|m| match m {
+                tokio_postgres::SimpleQueryMessage::Row(r) => r.get(0).map(|v| v != "f"),
+                _ => None,
+            })
+            .unwrap_or(true))
+    }
+
+    async fn describe_origins(&mut self, sql: &str) -> Result<Vec<Option<ColumnOrigin>>> {
+        // Describe only: prepare parses and analyses the statement but never executes it.
+        self.origin_names.clear();
+        let stmt = self.client.prepare(sql).await.map_err(map_error)?;
+        let cols: Vec<(Option<u32>, Option<i16>)> =
+            stmt.columns().iter().map(|c| (c.table_oid(), c.column_id())).collect();
+        let missing: Vec<u32> = {
+            let mut m: Vec<u32> = cols
+                .iter()
+                .filter_map(|(t, a)| match (t, a) {
+                    (Some(t), Some(a)) if !self.origin_names.contains_key(&(*t, *a)) => Some(*t),
+                    _ => None,
+                })
+                .collect();
+            m.sort_unstable();
+            m.dedup();
+            m
+        };
+        if !missing.is_empty() {
+            let rows = self
+                .client
+                .query(
+                    "SELECT a.attrelid, a.attnum, n.nspname, c.relname, a.attname FROM pg_attribute a \
+                     JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
+                     WHERE a.attrelid = ANY($1) AND a.attnum > 0 AND NOT a.attisdropped",
+                    &[&missing],
+                )
+                .await
+                .map_err(map_error)?;
+            for r in rows {
+                let oid: u32 = r.get(0);
+                let attnum: i16 = r.get(1);
+                self.origin_names.insert((oid, attnum), (r.get(2), r.get(3), r.get(4)));
+            }
+        }
+        Ok(cols
+            .into_iter()
+            .map(|(t, a)| match (t, a) {
+                (Some(t), Some(a)) => self.origin_names.get(&(t, a)).map(|(s, tb, c)| ColumnOrigin {
+                    schema: s.clone(),
+                    table: tb.clone(),
+                    column: c.clone(),
+                }),
+                _ => None,
+            })
+            .collect())
     }
 
     async fn execute(&mut self, sql: &str, max_rows: usize) -> Result<Vec<StatementOutcome>> {

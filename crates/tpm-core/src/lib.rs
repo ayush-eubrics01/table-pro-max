@@ -16,6 +16,8 @@ pub mod filter;
 pub mod model;
 pub mod redact;
 pub mod redis_kv;
+pub mod result_edit;
+pub mod result_sql;
 pub mod safety;
 pub mod split;
 pub mod ssh;

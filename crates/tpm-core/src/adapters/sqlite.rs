@@ -105,8 +105,21 @@ fn cell(v: ValueRef<'_>) -> Cell {
 
 fn run_query(conn: &Connection, sql: &str, params: &[Param], max_rows: usize) -> Result<RowSet> {
     let mut stmt = conn.prepare(sql).map_err(map_error)?;
-    let columns: Vec<ColumnMeta> =
-        stmt.columns().iter().map(|c| ColumnMeta::new(c.name(), c.decl_type().unwrap_or(""))).collect();
+    let columns: Vec<ColumnMeta> = stmt
+        .columns_with_metadata()
+        .iter()
+        .zip(stmt.columns().iter())
+        .map(|(m, c)| {
+            // SQLite reports the base table column (through views too); None for expressions.
+            let origin = match (m.database_name(), m.table_name(), m.origin_name()) {
+                (Some(d), Some(t), Some(o)) => {
+                    Some(ColumnOrigin { schema: d.into(), table: t.into(), column: o.into() })
+                }
+                _ => None,
+            };
+            ColumnMeta::new(c.name(), c.decl_type().unwrap_or("")).with_origin(origin)
+        })
+        .collect();
     let n = columns.len();
     let mut rows = stmt.query(rusqlite::params_from_iter(params.iter())).map_err(map_error)?;
     let mut rs = RowSet { columns, ..Default::default() };
@@ -377,6 +390,10 @@ impl Session for SqliteSession {
         let sql = sql.to_string();
         let params = params.to_vec();
         self.with_conn(move |c| run_query(c, &sql, &params, max_rows)).await
+    }
+
+    async fn in_transaction(&mut self) -> Result<bool> {
+        self.with_conn(|c| Ok(!c.is_autocommit())).await
     }
 
     async fn apply(&mut self, statements: &[ParamStatement], atomic: bool) -> Result<Vec<u64>> {

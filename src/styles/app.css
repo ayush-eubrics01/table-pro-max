@@ -1568,6 +1568,14 @@ pre,
   overflow-x: auto;
   flex: none;
 }
+.result-hint {
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--border-hairline);
+}
+.result-note {
+  margin: 6px 8px;
+  padding: 6px 12px;
+}
 .results-title {
   margin: 0;
   padding: 0 10px;

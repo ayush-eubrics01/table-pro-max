@@ -159,6 +159,8 @@ export const api = {
     call<ChangePreview>("preview_changes", { sessionId, changes }),
   applyChanges: (sessionId: string, changes: ChangeSet) =>
     call<number[]>("apply_changes", { sessionId, changes, confirmed: true }),
+  previewChangeSets: (sessionId: string, sets: ChangeSet[]) => call<ChangePreview>("preview_change_sets", { sessionId, sets }),
+  applyChangeSets: (sessionId: string, sets: ChangeSet[]) => call<number[]>("apply_change_sets", { sessionId, sets, confirmed: true }),
   previewCreateTable: (sessionId: string, request: { schema: string; name: string; columns: ColumnDef[] }) =>
     call<string[]>("preview_create_table", { sessionId, request }),
   previewAlterTable: (sessionId: string, schema: string, table: string, ops: AlterOp[]) =>

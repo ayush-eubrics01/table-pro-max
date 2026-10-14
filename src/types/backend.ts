@@ -77,9 +77,37 @@ export interface AppError {
 export type Cell = null | string | { $bytes: string; size: number };
 export type Row = Cell[];
 
+export interface ColumnOrigin {
+  schema: string;
+  table: string;
+  column: string;
+}
+
 export interface ColumnMeta {
   name: string;
   typeName: string;
+  /** Base table column this result column was read from, when the database reports it. */
+  origin?: ColumnOrigin;
+}
+
+export interface EditableTable {
+  schema: string;
+  table: string;
+  /** Result column index of each primary-key column, in key order. */
+  keyColumns: number[];
+}
+
+export interface ReadOnlyReason {
+  column?: number;
+  reason: string;
+}
+
+/** Which cells of a query result can be edited (see result_edit.rs). */
+export interface ResultEditing {
+  tables: EditableTable[];
+  /** Per result column: index into `tables`, or null when the column cannot be edited. */
+  columns: (number | null)[];
+  readOnly: ReadOnlyReason[];
 }
 
 export interface ServerInfo {
@@ -233,6 +261,7 @@ export interface StatementResult {
   truncated: boolean;
   rowsAffected?: number;
   error?: AppError;
+  editing?: ResultEditing;
 }
 
 export interface ScriptResult {
