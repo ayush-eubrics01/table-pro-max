@@ -55,7 +55,9 @@
   --focus-ring: rgba(15, 122, 83, 0.2);
   --selection: #d5eee3;
   --selection-strong: #b9e2d0;
-  --danger: #c2302b;
+  --editor-active-line: #f1f4f6;
+  --search-match: #fbe7b5;
+  --danger: #b42a25;
   --danger-text: #ffffff;
   --danger-bg: #fbe6e5;
   --warning: #8a5a00;
@@ -128,6 +130,8 @@
     --focus-ring: rgba(78, 214, 160, 0.22);
     --selection: #15302a;
     --selection-strong: #1d4537;
+    --editor-active-line: #161a1f;
+    --search-match: #4a3a14;
     --danger: #f0605a;
     --danger-text: #1a0907;
     --danger-bg: #2a1517;
@@ -200,6 +204,8 @@
   --focus-ring: rgba(78, 214, 160, 0.22);
   --selection: #15302a;
   --selection-strong: #1d4537;
+  --editor-active-line: #161a1f;
+  --search-match: #4a3a14;
   --danger: #f0605a;
   --danger-text: #1a0907;
   --danger-bg: #2a1517;

@@ -5,6 +5,7 @@ import { api } from "../../lib/ipc";
 import { formatCount, formatDuration, pluralize } from "../../lib/text";
 import { DataGrid } from "../data-grid/DataGrid";
 import { ExportDialog } from "../import-export/ExportDialog";
+import { isMacPlatform } from "../../app/WindowControls";
 
 const PAGE = 1000;
 
@@ -58,6 +59,7 @@ export function ResultsPanel({ result, running, dialect }: { result: ScriptResul
   const [tab, setTab] = useState<number | "messages">("messages");
   const [exporting, setExporting] = useState<StatementResult | null>(null);
   const withRows = result?.statements.filter((s) => s.columns) ?? [];
+  const mod = isMacPlatform() ? "⌘" : "Ctrl";
 
   useEffect(() => {
     if (!result) return;
@@ -74,7 +76,7 @@ export function ResultsPanel({ result, running, dialect }: { result: ScriptResul
             <div className="spinner" aria-label="Running" />
           ) : (
             <span>
-              Run a statement with <span className="kbd">Ctrl+Enter</span>, or everything with <span className="kbd">Ctrl+Shift+Enter</span>.
+              <span className="kbd">{mod} ↵</span> to run the statement at the cursor or the selection, <span className="kbd">{mod} ⇧ ↵</span> to run everything.
             </span>
           )}
         </div>

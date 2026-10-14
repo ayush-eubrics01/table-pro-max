@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CVD_TYPES, ENVS, contrast, deltaE, failures, parseThemes, simulate } from "./theme-check.mjs";
 
@@ -56,8 +57,12 @@ describe("theme tokens", () => {
   });
 
   it("app.css uses no color-mix() either", () => {
-    const app = readFileSync("src/styles/app.css", "utf8");
-    expect(app).not.toMatch(/color-mix/);
+    const walk = (dir) =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]));
+    const offenders = walk("src")
+      .filter((f) => /\.(css|ts|tsx)$/.test(f) && !/\.test\./.test(f))
+      .filter((f) => readFileSync(f, "utf8").includes("color-mix("));
+    expect(offenders).toEqual([]);
   });
 
   it("environment colours stay apart for protanopia and deuteranopia (production most of all)", () => {

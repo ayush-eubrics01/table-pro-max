@@ -64,20 +64,25 @@ const highlight = HighlightStyle.define([
   { tag: [t.name, t.special(t.name)], color: "var(--syn-ident)" },
 ]);
 
-const theme = EditorView.theme({
+/** Editor colours, all from tokens.css (exported for tests). */
+export const EDITOR_THEME: Record<string, Record<string, string>> = {
   "&": { color: "var(--text)", backgroundColor: "var(--surface)" },
-  ".cm-content": { caretColor: "var(--accent)", padding: "6px 0" },
-  ".cm-gutters": { backgroundColor: "var(--bg-sunken)", color: "var(--text-faint)", border: "none", borderRight: "1px solid var(--border)" },
-  ".cm-activeLine": { backgroundColor: "color-mix(in srgb, var(--accent) 6%, transparent)" },
-  ".cm-activeLineGutter": { backgroundColor: "color-mix(in srgb, var(--accent) 10%, transparent)" },
+  ".cm-scroller": { fontFamily: "var(--font-code)", lineHeight: "20px" },
+  ".cm-content": { caretColor: "var(--accent)", padding: "10px 0" },
+  ".cm-gutters": { backgroundColor: "var(--surface)", color: "var(--text-faint)", border: "none", borderRight: "1px solid var(--border-hairline)" },
+  ".cm-lineNumbers .cm-gutterElement": { minWidth: "32px", padding: "0 12px 0 14px" },
+  ".cm-activeLine": { backgroundColor: "var(--editor-active-line)" },
+  ".cm-activeLineGutter": { backgroundColor: "var(--editor-active-line)", color: "var(--text-muted)" },
   "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": { backgroundColor: "var(--selection-strong) !important" },
   ".cm-cursor": { borderLeftColor: "var(--accent)" },
-  ".cm-tooltip": { backgroundColor: "var(--surface)", border: "1px solid var(--border)", boxShadow: "var(--shadow-pop)" },
+  ".cm-tooltip": { backgroundColor: "var(--surface-panel)", border: "1px solid var(--border)", boxShadow: "var(--shadow-pop)" },
   ".cm-tooltip-autocomplete ul li[aria-selected]": { backgroundColor: "var(--selection)", color: "var(--text)" },
   ".cm-panels": { backgroundColor: "var(--bg-sunken)", color: "var(--text)" },
-  ".cm-searchMatch": { backgroundColor: "color-mix(in srgb, var(--warning) 30%, transparent)" },
+  ".cm-searchMatch": { backgroundColor: "var(--search-match)" },
   ".cm-matchingBracket": { backgroundColor: "var(--selection)", outline: "none" },
-});
+};
+
+const theme = EditorView.theme(EDITOR_THEME);
 
 function dialectFor(d: Dialect, mariadb?: boolean) {
   if (d === "postgres") return PostgreSQL;
