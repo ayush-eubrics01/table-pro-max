@@ -2606,15 +2606,19 @@ pre,
 }
 
   .update-banner {
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
-    padding: 6px 12px;
+    border-bottom: 1px solid var(--border-hairline);
+    background: var(--surface-panel);
+    padding: 4px 12px;
   }
   .update-banner-row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
+    min-height: 32px;
     flex-wrap: wrap;
+  }
+  .update-banner-icon {
+    color: var(--accent);
   }
   .update-banner-row .grow {
     flex: 1;

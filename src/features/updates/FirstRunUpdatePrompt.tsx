@@ -19,6 +19,7 @@ export function FirstRunUpdatePrompt() {
   return (
     <Dialog
       title="Check for updates automatically?"
+      subtitle="Asked once. You can change this, or check by hand, in Settings › Updates."
       onClose={() => setDismissed(true)}
       footer={
         <>
@@ -36,7 +37,6 @@ export function FirstRunUpdatePrompt() {
         Table Pro Max can check GitHub once a day for a new version. GitHub sees your IP address and that you use the app;
         nothing about your databases or queries is sent.
       </p>
-      <p className="hint">You can change this, or check by hand, in Settings.</p>
     </Dialog>
   );
 }
