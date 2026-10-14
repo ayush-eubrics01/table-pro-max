@@ -2,14 +2,18 @@ import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState,
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Icon } from "../../components/Icon";
 import type { Cell, SortSpec } from "../../types/backend";
-import { cellDisplay, cellTone, isBinary, isNumericType, toTsv } from "../../lib/cells";
+import { cellDisplay, cellTone, formatBytes, isBinary, isLargeText, isNotLoaded, isNumericType, isPartial, needsFetch, previewText, sizeLabel, toTsv } from "../../lib/cells";
 import { ContextMenu, useContextMenu, type MenuEntry } from "../../components/Menu";
+import { notify } from "../../stores/ui";
+import { pluralize } from "../../lib/text";
 
 export interface GridColumn {
   name: string;
   typeName: string;
   primaryKey?: boolean;
   foreignKey?: boolean;
+  /** Left out of the page query; cells hold `{ $notLoaded: true }` until loaded. */
+  deferred?: boolean;
 }
 
 export interface CellPos {
@@ -28,8 +32,10 @@ export interface GridSelection {
 export interface GridHandle {
   focus: () => void;
   selectCell: (pos: CellPos) => void;
-  copySelection: (withHeader?: boolean) => void;
+  copySelection: (withHeader?: boolean) => Promise<void>;
   getSelection: () => GridSelection;
+  /** Opens the inline editor on a cell (after its value has been loaded, say). */
+  startEdit: (pos: CellPos) => void;
 }
 
 export interface DataGridProps {
@@ -53,6 +59,19 @@ export interface DataGridProps {
   rowNumberOffset?: number;
   /** Extra scroll space below the last row (px), e.g. under a floating bar. */
   bottomInset?: number;
+  /**
+   * "click" on a Not loaded cell, or "open" (double-click, Enter) on any cell. Return true when
+   * the parent handled it (loaded the value, opened an editor); the inline editor then stays shut.
+   */
+  onOpenCell?: (row: number, col: number, how: "click" | "open") => boolean;
+  /** Full values for placeholder cells, in the given order (copying fetches them first). */
+  loadFull?: (cells: CellPos[]) => Promise<Cell[]>;
+  /** Extra items for a column header's menu. */
+  headerItems?: (col: number) => MenuEntry[];
+  /** A cell whose value is being fetched. */
+  isLoading?: (row: number, col: number) => boolean;
+  /** Text longer than this shows as a preview with its size, and opens in an editor. */
+  largeValueChars?: number;
   ref?: Ref<GridHandle>;
   ariaLabel: string;
 }
@@ -88,6 +107,11 @@ export function DataGrid(props: DataGridProps) {
     onDeleteKey,
     rowNumberOffset = 0,
     bottomInset,
+    onOpenCell,
+    loadFull,
+    headerItems,
+    isLoading,
+    largeValueChars = 256,
     ref,
     ariaLabel,
   } = props;
@@ -198,17 +222,34 @@ export function DataGrid(props: DataGridProps) {
     [rowVirtualizer, colVirtualizer, visible],
   );
 
+  /** Swaps placeholders in `data` (laid out as `rows` x `cols`) for full values before copying. */
+  const fillPlaceholders = useCallback(
+    async (data: Cell[][], rows: number[], cols: number[]): Promise<number> => {
+      const missing: { pos: CellPos; i: number; j: number }[] = [];
+      data.forEach((row, i) => row.forEach((cell, j) => needsFetch(cell) && missing.push({ pos: { row: rows[i]!, col: cols[j]! }, i, j })));
+      if (missing.length > 0 && loadFull) {
+        const full = await loadFull(missing.map((m) => m.pos));
+        missing.forEach((m, k) => (data[m.i]![m.j] = full[k] ?? null));
+      }
+      return missing.length;
+    },
+    [loadFull],
+  );
+
   const copySelection = useCallback(
-    (withHeader = false) => {
+    async (withHeader = false) => {
       if (selection.rows.length === 0) return;
       const data = selection.rows.map((r) => {
         const row = getRow(r);
         return selection.cols.map((c) => (row ? (row[c] ?? null) : null));
       });
+      const fetched = await fillPlaceholders(data, selection.rows, selection.cols);
       const header = withHeader ? selection.cols.map((c) => columns[c]!.name) : undefined;
-      void navigator.clipboard.writeText(toTsv(data, header));
+      const text = toTsv(data, header);
+      await navigator.clipboard.writeText(text);
+      if (fetched > 0) notify(`Copied ${pluralize(selection.rows.length, "row")} (${formatBytes(new TextEncoder().encode(text).length)})`, "success");
     },
-    [selection, getRow, columns],
+    [selection, getRow, columns, fillPlaceholders],
   );
 
   const select = useCallback(
@@ -228,7 +269,9 @@ export function DataGrid(props: DataGridProps) {
       selectCell: (pos) => select(pos),
       copySelection,
       getSelection: () => selection,
+      startEdit: (pos) => startEdit(pos),
     }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- startEdit reads current state when called
     [select, copySelection, selection],
   );
 
@@ -236,6 +279,7 @@ export function DataGrid(props: DataGridProps) {
     if (!onEdit || !canEdit?.(pos.row, pos.col)) return;
     const cell = getRow(pos.row)?.[pos.col];
     if (cell === undefined || (cell !== null && typeof cell === "object")) return;
+    if (isLargeText(cell, largeValueChars)) return; // long text opens in the value editor
     setEditing({ pos, value: initial ?? cell ?? "" });
   };
 
@@ -304,7 +348,7 @@ export function DataGrid(props: DataGridProps) {
       case "Enter":
       case "F2":
         e.preventDefault();
-        if (cur.col >= 0) startEdit(cur);
+        if (cur.col >= 0 && !onOpenCell?.(cur.row, cur.col, "open")) startEdit(cur);
         return;
       case "Delete":
       case "Backspace":
@@ -374,13 +418,18 @@ export function DataGrid(props: DataGridProps) {
         label: "Copy column values",
         onSelect: () => {
           const vals: Cell[][] = [];
+          const rows: number[] = [];
           for (let r = 0; r < rowCount; r++) {
             const row = getRow(r);
-            if (row) vals.push([row[col] ?? null]);
+            if (row) {
+              vals.push([row[col] ?? null]);
+              rows.push(r);
+            }
           }
-          void navigator.clipboard.writeText(toTsv(vals));
+          void fillPlaceholders(vals, rows, [col]).then(() => navigator.clipboard.writeText(toTsv(vals)));
         },
       },
+      ...(headerItems ? (["separator", ...headerItems(col)] as MenuEntry[]) : []),
     ];
   };
 
@@ -467,6 +516,11 @@ export function DataGrid(props: DataGridProps) {
                 >
                   {c.primaryKey && <Icon name="key" size={12} label="Primary key" />}
                   {c.foreignKey && <Icon name="link" size={12} label="Foreign key" />}
+                  {c.deferred && (
+                    <span className="col-deferred">
+                      <Icon name="visibility" size={12} label="Loaded on demand" />
+                    </span>
+                  )}
                   <span className="name">{c.name}</span>
                   <span className="type">{c.typeName}</span>
                   {s && (s.descending ? <Icon name="arrow_downward" size={12} /> : <Icon name="arrow_upward" size={12} />)}
@@ -527,6 +581,9 @@ export function DataGrid(props: DataGridProps) {
                     "grid-cell",
                     v === null ? "null" : "",
                     v !== undefined && isBinary(v) ? "binary" : "",
+                    v !== undefined && isNotLoaded(v) ? "not-loaded" : "",
+                    v !== undefined && (isPartial(v) || isLargeText(v, largeValueChars)) ? "partial" : "",
+                    isLoading?.(ri.index, col) ? "loading" : "",
                     isNumericType(c.typeName) ? "num" : "",
                     selected ? "selected" : "",
                     active ? "active" : "",
@@ -541,7 +598,10 @@ export function DataGrid(props: DataGridProps) {
                       aria-colindex={ci.index + 2}
                       aria-selected={selected}
                       className={cls}
-                      title={cellTitle?.(ri.index, col)}
+                      title={
+                        cellTitle?.(ri.index, col) ??
+                        (v !== undefined && isNotLoaded(v) ? "Click to load" : v !== undefined && (isPartial(v) || isLargeText(v, largeValueChars)) ? "Open to see the full value" : undefined)
+                      }
                       style={{ left: ROWNUM_WIDTH + ci.start, width: ci.size }}
                       onMouseDown={(e) => {
                         if (e.button !== 0) return;
@@ -552,7 +612,13 @@ export function DataGrid(props: DataGridProps) {
                       onMouseEnter={(e) => {
                         if (e.buttons === 1 && anchor && anchor.col >= 0) setFocus({ row: ri.index, col });
                       }}
-                      onDoubleClick={() => startEdit({ row: ri.index, col })}
+                      onDoubleClick={() => {
+                        if (onOpenCell?.(ri.index, col, "open")) return;
+                        startEdit({ row: ri.index, col });
+                      }}
+                      onClick={() => {
+                        if (v !== undefined && isNotLoaded(v)) onOpenCell?.(ri.index, col, "click");
+                      }}
                       onContextMenu={(e) => {
                         if (!inSelection(ri.index, col)) select({ row: ri.index, col });
                         menu.open(e, cellMenu());
@@ -582,7 +648,16 @@ export function DataGrid(props: DataGridProps) {
                           }}
                         />
                       ) : (
-                        <span className={tone === "enum" ? "tag" : undefined}>{v === undefined ? "…" : cellDisplay(v)}</span>
+                        v !== undefined && isNotLoaded(v) ? (
+                          <span className="not-loaded-label">{isLoading?.(ri.index, col) ? <span className="spinner spinner-xs" /> : "Not loaded"}</span>
+                        ) : v !== undefined && (isPartial(v) || isLargeText(v, largeValueChars)) ? (
+                          <>
+                            <span className="partial-preview">{(isPartial(v) ? v.$partial : previewText(v)).replace(/[\r\n]+/g, " ⏎ ")}…</span>
+                            <span className="size-tag">{sizeLabel(c.typeName, v.length)}</span>
+                          </>
+                        ) : (
+                          <span className={tone === "enum" ? "tag" : undefined}>{v === undefined ? "…" : cellDisplay(v)}</span>
+                        )
                       )}
                     </div>
                   );

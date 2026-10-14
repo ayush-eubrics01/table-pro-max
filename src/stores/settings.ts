@@ -7,6 +7,8 @@ export interface Settings {
   "editor.fontSize": number;
   "editor.wordWrap": boolean;
   "grid.pageSize": number;
+  /** Query results show text longer than this as a preview (characters). */
+  "grid.largeValueChars": number;
   "grid.checkConflicts": boolean;
   "query.maxRows": number;
   "query.timeoutSecs": number;
@@ -30,7 +32,8 @@ export const DEFAULT_SETTINGS: Settings = {
   theme: "system",
   "editor.fontSize": 13,
   "editor.wordWrap": false,
-  "grid.pageSize": 300,
+  "grid.pageSize": 150,
+  "grid.largeValueChars": 256,
   "grid.checkConflicts": true,
   "query.maxRows": 100_000,
   "query.timeoutSecs": 0,

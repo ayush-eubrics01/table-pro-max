@@ -1252,6 +1252,39 @@ pre,
 .grid-cell.binary > span {
   color: var(--text-muted);
 }
+.grid-cell.not-loaded .not-loaded-label {
+  color: var(--text-faint);
+  font-style: italic;
+  font-size: var(--text-xs);
+}
+.grid-cell.partial {
+  gap: 6px;
+}
+.grid-cell.partial .partial-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-dim);
+}
+.grid-cell .size-tag {
+  flex: none;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  border: 1px solid var(--border-hairline);
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 16px;
+}
+.col-deferred {
+  color: var(--text-faint);
+  display: inline-flex;
+}
+.spinner.spinner-xs {
+  width: 10px;
+  height: 10px;
+  border-width: 1.5px;
+}
 .grid-cell.selected {
   background: var(--selection);
 }

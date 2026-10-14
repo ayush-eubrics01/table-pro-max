@@ -4,11 +4,40 @@ export function isBinary(c: Cell): c is { $bytes: string; size: number } {
   return typeof c === "object" && c !== null && "$bytes" in c;
 }
 
+export function isNotLoaded(c: Cell): c is { $notLoaded: true } {
+  return typeof c === "object" && c !== null && "$notLoaded" in c;
+}
+
+export function isPartial(c: Cell): c is { $partial: string; length: number } {
+  return typeof c === "object" && c !== null && "$partial" in c;
+}
+
+/** The grid holds a placeholder; the full value must be fetched before copying or editing. */
+export function needsFetch(c: Cell | undefined): boolean {
+  return c !== undefined && (isNotLoaded(c) || isPartial(c));
+}
+
+/** Characters of a long value shown before it is opened (matches the backend's PREVIEW_CHARS). */
+export const PREVIEW_CHARS = 80;
+
+export function isLargeText(c: Cell | undefined, limit: number): c is string {
+  return typeof c === "string" && c.length > limit;
+}
+
+export function previewText(s: string): string {
+  return Array.from(s).slice(0, PREVIEW_CHARS).join("");
+}
+
+export function sizeLabel(typeName: string, length: number): string {
+  return isJsonType(typeName) ? formatBytes(length) : `${length.toLocaleString("en-US")} chars`;
+}
+
 /** Display text for a cell (single line). */
 export function cellDisplay(c: Cell): string {
   if (c === null) return "NULL";
   if (isBinary(c)) return `<binary ${formatBytes(c.size)}>`;
-  if (typeof c === "object") return "$notLoaded" in c ? "Not loaded" : `${c.$partial}…`;
+  if (isNotLoaded(c)) return "Not loaded";
+  if (isPartial(c)) return `${c.$partial}…`;
   return c.length > 2000 ? `${c.slice(0, 2000)}…` : c.replace(/[\r\n]+/g, " ⏎ ");
 }
 
@@ -16,7 +45,7 @@ export function cellDisplay(c: Cell): string {
 export function cellCopy(c: Cell, nullText = ""): string {
   if (c === null) return nullText;
   if (isBinary(c)) return `\\x${c.$bytes}`;
-  if (typeof c === "object") return ""; // placeholders are fetched before copying
+  if (isNotLoaded(c) || isPartial(c)) return ""; // placeholders are fetched before copying
   return c;
 }
 
@@ -24,7 +53,7 @@ export function cellCopy(c: Cell, nullText = ""): string {
 export function cellParam(c: Cell): string | null | undefined {
   if (c === null) return null;
   if (isBinary(c)) return undefined;
-  if (typeof c === "object") return undefined; // a placeholder is not the value
+  if (isNotLoaded(c) || isPartial(c)) return undefined; // a placeholder is not the value
   return c;
 }
 
