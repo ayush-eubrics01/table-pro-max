@@ -165,6 +165,49 @@ pub fn build_fetch(
         params: b.params,
     })
 }
+/// Every column of the rows with these keys (restore points). On PostgreSQL every value is read
+/// as text (bytea as `\x` hex), the same rendering the conflict check compares against, so values
+/// round-trip as bind parameters. Results come back in any order; callers match them by key.
+pub fn build_rows_by_key(
+    dialect: Dialect,
+    s: &TableStructure,
+    keys: &[Vec<crate::changes::ColumnValue>],
+) -> Result<BuiltQuery> {
+    let pk = s.primary_key();
+    if pk.is_empty() {
+        return Err(AppError::invalid_config(format!("{} has no primary key", s.name)));
+    }
+    if keys.is_empty() || keys.len() > 1000 {
+        return Err(AppError::invalid_config("Read between 1 and 1000 rows at a time"));
+    }
+    let mut select = Vec::with_capacity(s.columns.len());
+    for c in &s.columns {
+        let q = dialect.quote_ident(&c.name)?;
+        select.push(match dialect {
+            Dialect::Postgres => format!("t.{q}::text AS {q}"),
+            _ => format!("t.{q}"),
+        });
+    }
+    let mut b = SqlBuilder::new(dialect);
+    let mut ors = Vec::with_capacity(keys.len());
+    for key in keys {
+        if key.len() != pk.len() || !pk.iter().all(|c| key.iter().any(|v| v.column == c.name)) {
+            return Err(AppError::invalid_config("A row is identified by its whole primary key"));
+        }
+        let mut ands = Vec::with_capacity(pk.len());
+        for c in &pk {
+            let v = key.iter().find(|v| v.column == c.name).expect("checked above");
+            ands.push(format!("t.{} = {}", dialect.quote_ident(&c.name)?, b.bind(v.value.clone())));
+        }
+        ors.push(format!("({})", ands.join(" AND ")));
+    }
+    let table = dialect.qualified(Some(&s.schema), &s.name)?;
+    Ok(BuiltQuery {
+        sql: format!("SELECT {} FROM {table} AS t WHERE {}", select.join(", "), ors.join(" OR ")),
+        params: b.params,
+    })
+}
+
 pub fn build_count(dialect: Dialect, s: &TableStructure, filter: Option<&FilterNode>) -> Result<BuiltQuery> {
     let table = dialect.qualified(Some(&s.schema), &s.name)?;
     let mut b = SqlBuilder::new(dialect);
@@ -221,6 +264,22 @@ pub(crate) mod tests {
             "{}",
             q.sql
         );
+    }
+
+    #[test]
+    fn rows_by_key_select_every_column_as_text() {
+        use crate::changes::ColumnValue;
+        let s = users();
+        let k = |v: &str| vec![ColumnValue { column: "id".into(), value: Some(v.into()) }];
+        let q = build_rows_by_key(Dialect::Postgres, &s, &[k("1"), k("2")]).unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT t.\"id\"::text AS \"id\", t.\"email\"::text AS \"email\", t.\"avatar\"::text AS \"avatar\" FROM \"public\".\"users\" AS t WHERE (t.\"id\" = $1) OR (t.\"id\" = $2)"
+        );
+        assert_eq!(q.params, vec![Some("1".into()), Some("2".into())]);
+        let q = build_rows_by_key(Dialect::Mysql, &s, &[k("1")]).unwrap();
+        assert_eq!(q.sql, "SELECT t.`id`, t.`email`, t.`avatar` FROM `public`.`users` AS t WHERE (t.`id` = ?)");
+        assert!(build_rows_by_key(Dialect::Postgres, &s, &[]).is_err(), "no keys");
     }
 
     #[test]

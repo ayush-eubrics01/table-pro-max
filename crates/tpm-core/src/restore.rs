@@ -129,7 +129,9 @@ pub fn build_restore(
         Some(r) => r.iter().copied().filter(|i| *i < d.before.len()).collect(),
         None => (0..d.before.len()).collect(),
     };
-    if chosen.is_empty() {
+    // A dropped table or column with no rows still comes back (DDL only).
+    if chosen.is_empty() && (rows.is_some() || !matches!(point.kind, RestoreKind::DropTable | RestoreKind::DropColumn))
+    {
         return Err(AppError::invalid_config("Choose at least one row to restore"));
     }
     let mut ddl = Vec::new();

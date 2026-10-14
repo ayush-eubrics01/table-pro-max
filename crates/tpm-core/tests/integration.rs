@@ -574,6 +574,7 @@ async fn exercise(t: Target) {
 
 /// Restore points: planned before anything runs, captured around the statement, restored by review.
 async fn restore_points(engine: &Arc<Engine>, sid: &str, schema: &str, driver: Driver) {
+    use tpm_core::restore::{RestoreStatus, RestoreStore};
     let store = Arc::new(tpm_core::storage::Storage::open_in_memory().unwrap());
     engine.set_restore_store(store.clone());
     run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rp").await;
@@ -618,7 +619,105 @@ async fn restore_points(engine: &Arc<Engine>, sid: &str, schema: &str, driver: D
     // Confirming runs it anyway.
     let r = engine.run_script(sid, "UPDATE tpm_it_rp_nokey SET a = 1", opts(true), None).await.unwrap();
     assert!(r.statements[0].error.is_none(), "{driver:?}");
-    let _ = store; // continued below
+    // ... and its message says why there is no restore point.
+    let note = r.statements[0].restore.clone().expect("note");
+    assert_eq!((note.point_id, note.reason.as_deref()), (None, Some("the table has no primary key")), "{driver:?}");
+
+    // UPDATE: captured before → after, kept, and the note says so.
+    let r = engine
+        .run_script(sid, "UPDATE tpm_it_rp SET status = 'cancelled' WHERE status = 'paid'", opts(true), None)
+        .await
+        .unwrap();
+    assert!(r.statements[0].error.is_none(), "{driver:?}: {:?}", r.statements[0].error);
+    let id = r.statements[0].restore.clone().and_then(|n| n.point_id).expect("saved");
+    let p = store.get(&id).unwrap();
+    assert_eq!((p.row_count, p.data.before.len()), (2, 2), "{driver:?}");
+    assert_eq!((p.schema.as_str(), p.table.as_str()), (schema, "tpm_it_rp"), "{driver:?}");
+    assert_eq!(p.data.columns, vec!["id".to_string(), "status".to_string(), "qty".to_string()]);
+    assert_eq!(p.data.key_columns, vec!["id".to_string()]);
+    assert!(p.data.before.iter().all(|r| r[1].as_deref() == Some("paid")), "{driver:?}: {:?}", p.data.before);
+    assert!(p.data.after.iter().all(|r| r.as_ref().unwrap()[1].as_deref() == Some("cancelled")), "{driver:?}");
+    assert_eq!(p.status, RestoreStatus::Kept);
+    assert_eq!(p.statement, "UPDATE tpm_it_rp SET status = 'cancelled' WHERE status = 'paid'");
+    // DELETE: before rows only.
+    let r = engine.run_script(sid, "DELETE FROM tpm_it_rp WHERE id = 3", opts(true), None).await.unwrap();
+    let p = store.get(r.statements[0].restore.as_ref().unwrap().point_id.as_ref().unwrap()).unwrap();
+    assert_eq!((p.data.before.len(), p.data.after.len()), (1, 0), "{driver:?}");
+    assert_eq!(p.data.before[0][0].as_deref(), Some("3"));
+    // Over the size limit: the statement runs, and its message says why there is no restore point.
+    let tiny = RunOptions { confirmed: true, restore_max_mb: Some(0), ..Default::default() };
+    let r = engine.run_script(sid, "UPDATE tpm_it_rp SET qty = qty WHERE id = 1", tiny, None).await.unwrap();
+    let note = r.statements[0].restore.clone().expect("note");
+    assert!(note.point_id.is_none() && note.reason.unwrap_or_default().starts_with("more than"), "{driver:?}");
+    // Inside the user's transaction: pending; ROLLBACK deletes it, COMMIT keeps it.
+    run(engine, sid, "BEGIN").await;
+    let r = engine.run_script(sid, "UPDATE tpm_it_rp SET qty = 99 WHERE id = 1", opts(true), None).await.unwrap();
+    if driver == Driver::Duckdb {
+        // No savepoints on DuckDB: nothing is read inside a transaction, and the message says so.
+        let reason = r.statements[0].restore.as_ref().and_then(|n| n.reason.clone());
+        assert_eq!(reason.as_deref(), Some("inside a transaction on DuckDB"));
+        run(engine, sid, "ROLLBACK").await;
+    } else {
+        let pend = r.statements[0].restore.as_ref().unwrap().point_id.clone().unwrap();
+        assert_eq!(store.get(&pend).unwrap().status, RestoreStatus::Pending, "{driver:?}");
+        run(engine, sid, "ROLLBACK").await;
+        assert!(store.get(&pend).is_err(), "rolled back: no restore point ({driver:?})");
+        run(engine, sid, "BEGIN").await;
+        let r = engine.run_script(sid, "UPDATE tpm_it_rp SET qty = 98 WHERE id = 1", opts(true), None).await.unwrap();
+        let kept = r.statements[0].restore.as_ref().unwrap().point_id.clone().unwrap();
+        run(engine, sid, "COMMIT").await;
+        assert_eq!(store.get(&kept).unwrap().status, RestoreStatus::Kept, "{driver:?}");
+    }
+    // PostgreSQL: after an error the transaction is aborted, and its COMMIT rolls back.
+    if driver == Driver::Postgres {
+        run(engine, sid, "BEGIN").await;
+        let r = engine.run_script(sid, "UPDATE tpm_it_rp SET qty = 97 WHERE id = 1", opts(true), None).await.unwrap();
+        let doomed = r.statements[0].restore.as_ref().unwrap().point_id.clone().unwrap();
+        let r = engine.run_script(sid, "SELECT 1/0", opts(true), None).await.unwrap();
+        assert!(r.statements[0].error.is_some());
+        run(engine, sid, "COMMIT").await;
+        assert!(store.get(&doomed).is_err(), "the COMMIT rolled back: no restore point");
+    }
+    // A capture SELECT that fails at run time: a role that may count rows (SELECT on `id`) and
+    // update, but not read every column. Planning succeeds; the capture SELECT is refused; the
+    // UPDATE still runs, the note says why, and the user's transaction survives.
+    if driver == Driver::Postgres {
+        run(engine, sid, "DROP ROLE IF EXISTS tpm_it_limited").await;
+        run(engine, sid, "CREATE ROLE tpm_it_limited").await;
+        run(engine, sid, &format!("GRANT USAGE ON SCHEMA \"{schema}\" TO tpm_it_limited")).await;
+        run(engine, sid, "GRANT SELECT (id), UPDATE ON tpm_it_rp TO tpm_it_limited").await;
+        run(engine, sid, "BEGIN").await;
+        run(engine, sid, "SET LOCAL ROLE tpm_it_limited").await;
+        let r = engine.run_script(sid, "UPDATE tpm_it_rp SET qty = 1 WHERE id = 1", opts(true), None).await.unwrap();
+        assert!(r.statements[0].error.is_none(), "the statement still runs: {:?}", r.statements[0].error);
+        let note = r.statements[0].restore.clone().expect("note");
+        assert!(note.point_id.is_none());
+        assert!(note.reason.clone().unwrap_or_default().starts_with("could not read the rows"), "{note:?}");
+        run(engine, sid, "SELECT 1").await; // the transaction is still usable
+        run(engine, sid, "ROLLBACK").await;
+        run(engine, sid, "DROP OWNED BY tpm_it_limited").await;
+        run(engine, sid, "DROP ROLE tpm_it_limited").await;
+    }
+    // DROP COLUMN, TRUNCATE and DROP TABLE capture rows (and the definition).
+    let r = engine.run_script(sid, "ALTER TABLE tpm_it_rp DROP COLUMN qty", opts(true), None).await.unwrap();
+    assert!(r.statements[0].error.is_none(), "{driver:?}: {:?}", r.statements[0].error);
+    let dc = store.get(r.statements[0].restore.as_ref().unwrap().point_id.as_ref().unwrap()).unwrap();
+    assert_eq!(dc.data.columns, vec!["id".to_string(), "qty".to_string()], "{driver:?}");
+    assert_eq!(dc.data.before.len(), 2);
+    assert!(dc.data.column_type.is_some());
+    let r = engine.run_script(sid, "TRUNCATE TABLE tpm_it_rp", opts(true), None).await.unwrap();
+    if r.statements[0].error.is_none() {
+        let tp = store.get(r.statements[0].restore.as_ref().unwrap().point_id.as_ref().unwrap()).unwrap();
+        assert_eq!(tp.row_count, 2, "{driver:?}");
+    } else {
+        // SQLite has no TRUNCATE: the statement fails and no restore point is kept.
+        assert_eq!(driver, Driver::Sqlite);
+        assert!(r.statements[0].restore.as_ref().and_then(|n| n.point_id.clone()).is_none());
+    }
+    let r = engine.run_script(sid, "DROP TABLE tpm_it_rp", opts(true), None).await.unwrap();
+    let dt = store.get(r.statements[0].restore.as_ref().unwrap().point_id.as_ref().unwrap()).unwrap();
+    assert!(dt.data.ddl.as_deref().unwrap_or("").to_ascii_uppercase().contains("CREATE"), "{driver:?}");
+    run(engine, sid, "CREATE TABLE tpm_it_rp (id integer PRIMARY KEY, status varchar(20), qty integer)").await;
     run(engine, sid, "DROP TABLE tpm_it_rp_nokey").await;
     run(engine, sid, "DROP TABLE tpm_it_rp").await;
 }

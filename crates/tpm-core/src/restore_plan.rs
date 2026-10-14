@@ -188,16 +188,21 @@ fn from_sql(plan: &CapturePlan) -> String {
     }
 }
 
-/// The SELECT that reads the rows a statement is about to change (the user's own WHERE).
-pub fn capture_select(plan: &CapturePlan, s: &TableStructure, dialect: Dialect, lock: bool) -> Result<String> {
-    let qual = plan.alias.clone().unwrap_or_else(|| plan.table.sql.clone());
-    let cols: Vec<&ColumnInfo> = match (plan.kind, &plan.column) {
-        // DROP COLUMN keeps the key and the dropped column only.
+/// The columns a capture reads, in order: all of them, or for DROP COLUMN the key and the
+/// dropped column.
+pub fn capture_columns<'a>(plan: &CapturePlan, s: &'a TableStructure) -> Vec<&'a ColumnInfo> {
+    match (plan.kind, &plan.column) {
         (CaptureKind::DropColumn, Some(c)) => {
             s.columns.iter().filter(|x| x.primary_key.is_some() || x.name.eq_ignore_ascii_case(c)).collect()
         }
         _ => s.columns.iter().collect(),
-    };
+    }
+}
+
+/// The SELECT that reads the rows a statement is about to change (the user's own WHERE).
+pub fn capture_select(plan: &CapturePlan, s: &TableStructure, dialect: Dialect, lock: bool) -> Result<String> {
+    let qual = plan.alias.clone().unwrap_or_else(|| plan.table.sql.clone());
+    let cols = capture_columns(plan, s);
     let mut select = Vec::with_capacity(cols.len());
     for c in cols {
         let q = dialect.quote_ident(&c.name)?;
