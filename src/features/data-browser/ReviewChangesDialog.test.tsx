@@ -13,6 +13,7 @@ const props = {
   atomic: true,
   statements: 1,
   commitLabel: "Commit changes",
+  cancelLabel: "Keep editing",
   onCommit: async () => undefined,
   onClose: () => undefined,
 };
@@ -37,5 +38,19 @@ describe("ReviewChangesDialog", () => {
     expect(writeText).toHaveBeenCalledWith(props.sql);
     fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("uses a plain Cancel unless told otherwise", () => {
+    const { cancelLabel: _unused, ...rest } = props;
+    render(<ReviewChangesDialog {...rest} />);
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+  });
+
+  it("keeps wide structure tables scrollable and only tints key icons", async () => {
+    const { readFileSync } = await import("node:fs");
+    const css = readFileSync("src/styles/app.css", "utf8");
+    expect(css).toMatch(/\.table-card\s*\{[^}]*overflow-x:\s*auto/);
+    expect(css).not.toMatch(/\.table-card\s*\{[^}]*overflow:\s*hidden/);
+    expect(css).not.toMatch(/\.grid-hcell \.icon\s*\{/);
   });
 });

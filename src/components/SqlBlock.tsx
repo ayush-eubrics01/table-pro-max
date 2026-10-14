@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { highlightCode, tagHighlighter, tags as t } from "@lezer/highlight";
 import { MySQL, PostgreSQL, SQLite } from "@codemirror/lang-sql";
 import type { Dialect } from "../types/backend";
@@ -17,8 +17,14 @@ function language(d: Dialect) {
 
 type Segment = { text: string; cls: string };
 
+/** Above this size highlighting is skipped: hundreds of thousands of spans would freeze the view. */
+const MAX_HIGHLIGHT_CHARS = 100_000;
+const MAX_HIGHLIGHT_LINES = 2_000;
+
 /** Split highlighted SQL into lines of segments. */
 function highlightLines(sql: string, dialect: Dialect): Segment[][] {
+  const plain = sql.split("\n");
+  if (sql.length > MAX_HIGHLIGHT_CHARS || plain.length > MAX_HIGHLIGHT_LINES) return plain.map((text) => [{ text, cls: "" }]);
   const lines: Segment[][] = [[]];
   const tree = language(dialect).parser.parse(sql);
   highlightCode(
@@ -32,7 +38,7 @@ function highlightLines(sql: string, dialect: Dialect): Segment[][] {
 }
 
 /** Read-only SQL with line numbers and the editor's syntax colours. */
-export function SqlBlock({ sql, dialect, maxHeight }: { sql: string; dialect: Dialect; maxHeight?: string }) {
+export const SqlBlock = memo(function SqlBlock({ sql, dialect, maxHeight }: { sql: string; dialect: Dialect; maxHeight?: string }) {
   const lines = useMemo(() => highlightLines(sql, dialect), [sql, dialect]);
   return (
     <div className="sql-block" style={maxHeight ? { maxHeight } : undefined}>
@@ -56,4 +62,4 @@ export function SqlBlock({ sql, dialect, maxHeight }: { sql: string; dialect: Di
       ))}
     </div>
   );
-}
+});

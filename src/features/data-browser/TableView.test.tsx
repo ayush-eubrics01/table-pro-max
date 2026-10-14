@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { render, screen, fireEvent, waitFor, within, cleanup } from "@testing-library/react";
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks";
-import type { ChangeSet } from "../../types/backend";
+import type { ChangeSet, TableStructure } from "../../types/backend";
 import { session, usersStructure } from "../../test/fixtures";
 import { TableView } from "./TableView";
 import { Overlays } from "../../components/Overlays";
 
 let calls: { cmd: string; args: Record<string, unknown> }[] = [];
+let structure: TableStructure = usersStructure;
 let rows = [
   ["1", "ada@example.com", "36"],
   ["2", "grace@example.com", null],
@@ -14,6 +15,7 @@ let rows = [
 
 beforeEach(() => {
   calls = [];
+  structure = usersStructure;
   rows = [
     ["1", "ada@example.com", "36"],
     ["2", "grace@example.com", null],
@@ -22,7 +24,7 @@ beforeEach(() => {
     calls.push({ cmd, args: args as Record<string, unknown> });
     switch (cmd) {
       case "table_structure":
-        return usersStructure;
+        return structure;
       case "browse_table":
         return { columns: [], rows, sql: "SELECT …", durationMs: 1, hasMore: false };
       case "preview_changes":
@@ -123,5 +125,18 @@ describe("TableView", () => {
     expect(bar).toHaveTextContent("1 pending change");
     expect(within(bar).getByRole("button", { name: /Discard/ })).toBeInTheDocument();
     expect(within(bar).getByRole("button", { name: "Review and commit" })).toBeInTheDocument();
+  });
+
+  it("says Insert only for a table without a primary key, and Read-only for a view", async () => {
+    structure = { ...usersStructure, columns: usersStructure.columns.map((c) => ({ ...c, primaryKey: null })) };
+    const { unmount } = renderView();
+    const pill = await screen.findByTitle("No primary key: existing rows cannot be edited");
+    expect(pill).toHaveTextContent("Insert only");
+    expect(screen.getByRole("button", { name: /Row/ })).toBeInTheDocument();
+    unmount();
+    structure = { ...usersStructure, kind: "view" };
+    renderView();
+    expect(await screen.findByTitle("Views are read-only")).toHaveTextContent("Read-only");
+    expect(screen.queryByRole("button", { name: "Delete selected rows" })).not.toBeInTheDocument();
   });
 });

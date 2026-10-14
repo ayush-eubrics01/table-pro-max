@@ -75,6 +75,8 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
         ? "No primary key: existing rows cannot be edited"
         : null;
   const canInsert = !session.readOnly && isTable;
+  // A table without a primary key still takes new rows; only existing rows are locked.
+  const access = !canInsert ? "Read-only" : !hasPk ? "Insert only" : "Writable";
 
   useEffect(() => onDirtyChange?.(hasPending(pending)), [pending, onDirtyChange]);
 
@@ -354,9 +356,10 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
               </button>
             )}
             <span className="grow" />
-            <span className={`access-pill ${readOnlyReason ? "ro" : ""}`} title={readOnlyReason ?? "Edits stay pending until you review and commit them"}>
-              <Icon name={readOnlyReason ? "lock" : "edit"} size={13} />
-              {readOnlyReason ? "Read-only" : "Writable"}
+            <span className={`access-pill ${access !== "Writable" ? "ro" : ""}`} title={readOnlyReason ?? "Edits stay pending until you review and commit them"}>
+              <Icon name={access === "Writable" ? "edit" : "lock"} size={13} />
+              {access}
+              {readOnlyReason && <span className="sr-only">: {readOnlyReason}</span>}
             </span>
             <button
               className="btn btn-ghost btn-icon"
@@ -532,6 +535,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
           statements={review.statements}
           summary={`${pluralize(nPending, "change")} to ${schema}.${table}`}
           commitLabel="Commit changes"
+          cancelLabel="Keep editing"
           onCommit={commit}
           onClose={() => setReview(null)}
         />

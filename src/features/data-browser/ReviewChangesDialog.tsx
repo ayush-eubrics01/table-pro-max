@@ -16,12 +16,14 @@ interface Props {
   /** Number of statements in `sql`, when known. */
   statements?: number;
   commitLabel: string;
+  /** Label of the button that closes without committing. */
+  cancelLabel?: string;
   onCommit: () => Promise<void>;
   onClose: () => void;
 }
 
 /** Shows generated SQL and the exact target before anything is written. */
-export function ReviewChangesDialog({ session, title, sql, summary, atomic, statements, commitLabel, onCommit, onClose }: Props) {
+export function ReviewChangesDialog({ session, title, sql, summary, atomic, statements, commitLabel, cancelLabel = "Cancel", onCommit, onClose }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<BackendError | null>(null);
 
@@ -51,7 +53,7 @@ export function ReviewChangesDialog({ session, title, sql, summary, atomic, stat
           <span className="spacer" />
           <span className="hint">{atomic ? "All changes apply or none do." : "This database cannot run these statements in one transaction."}</span>
           <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
-            Keep editing
+            {cancelLabel}
           </button>
           <button
             className={`btn ${session.environment === "production" ? "btn-danger" : "btn-primary"}`}

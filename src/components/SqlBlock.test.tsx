@@ -15,4 +15,11 @@ describe("SqlBlock", () => {
     expect(container.querySelector(".syn-string")?.textContent).toBe("'x'");
     expect(Array.from(lines).map((l) => l.querySelector(".code")?.textContent).join("\n")).toBe(sql);
   });
+
+  it("skips highlighting for very large SQL but still numbers lines", () => {
+    const sql = Array.from({ length: 3000 }, (_, i) => `INSERT INTO t VALUES (${i}, 'x');`).join("\n");
+    const { container } = render(<SqlBlock sql={sql} dialect="postgres" />);
+    expect(container.querySelectorAll(".sql-line")).toHaveLength(3000);
+    expect(container.querySelector(".syn-keyword")).toBeNull();
+  });
 });

@@ -1222,7 +1222,7 @@ pre,
   outline: none;
   user-select: text;
 }
-.grid-hcell .icon {
+.grid-hcell .icon[aria-label="Primary key"] {
   color: var(--warning);
 }
 .grid-hcell .icon[aria-label="Foreign key"] {
@@ -1920,7 +1920,15 @@ pre,
 .table-card {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
+  overflow-x: auto;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
   overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 .table {
   width: 100%;
