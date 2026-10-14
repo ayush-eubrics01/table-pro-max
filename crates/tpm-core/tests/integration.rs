@@ -639,6 +639,10 @@ async fn restore_points(engine: &Arc<Engine>, sid: &str, schema: &str, driver: D
     assert!(p.data.after.iter().all(|r| r.as_ref().unwrap()[1].as_deref() == Some("cancelled")), "{driver:?}");
     assert_eq!(p.status, RestoreStatus::Kept);
     assert_eq!(p.statement, "UPDATE tpm_it_rp SET status = 'cancelled' WHERE status = 'paid'");
+    // The size counts every value kept: the rows before and after.
+    let len = |r: &Vec<Option<String>>| r.iter().map(|v| v.as_ref().map_or(0, |t| t.len() as u64)).sum::<u64>();
+    let expected = p.data.before.iter().map(len).sum::<u64>() + p.data.after.iter().flatten().map(len).sum::<u64>();
+    assert_eq!(p.bytes, expected, "{driver:?}");
     // DELETE: before rows only.
     let r = engine.run_script(sid, "DELETE FROM tpm_it_rp WHERE id = 3", opts(true), None).await.unwrap();
     let p = store.get(r.statements[0].restore.as_ref().unwrap().point_id.as_ref().unwrap()).unwrap();
@@ -742,6 +746,19 @@ async fn restore_points(engine: &Arc<Engine>, sid: &str, schema: &str, driver: D
     let rows =
         run(engine, sid, "SELECT status, qty FROM tpm_it_rp WHERE id = 1").await.statements[0].rows.clone().unwrap();
     assert_eq!((text(&rows[0][0]), text(&rows[0][1])), ("x", "42"), "{driver:?}");
+    // Rows already back as they were are skipped, so the rest can still be restored (here row 2,
+    // restored above, and row 1, now changed back by hand).
+    run(engine, sid, "UPDATE tpm_it_rp SET qty = 0 WHERE id = 1").await;
+    let preview = engine.preview_restore(sid, &pid, None).await.unwrap();
+    assert_eq!(preview.statement_count, 1, "only row 1 ({driver:?}): {}", preview.sql);
+    engine.apply_restore(sid, &pid, None, true).await.unwrap();
+    let rows =
+        run(engine, sid, "SELECT status, qty FROM tpm_it_rp ORDER BY id").await.statements[0].rows.clone().unwrap();
+    assert_eq!((text(&rows[0][0]), text(&rows[0][1])), ("paid", "5"), "{driver:?}");
+    assert_eq!((text(&rows[1][0]), text(&rows[1][1])), ("paid", "7"), "{driver:?}");
+    let err = engine.apply_restore(sid, &pid, None, true).await.unwrap_err();
+    assert!(err.message.contains("already"), "{driver:?}: {}", err.message);
+    run(engine, sid, "UPDATE tpm_it_rp SET status = 'x', qty = 42 WHERE id = 1").await;
     // A DELETE comes back by re-inserting.
     let r = engine.run_script(sid, "DELETE FROM tpm_it_rp WHERE id = 2", opts(true), None).await.unwrap();
     let did = r.statements[0].restore.as_ref().unwrap().point_id.clone().unwrap();

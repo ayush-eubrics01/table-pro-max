@@ -1474,8 +1474,85 @@ impl Engine {
             (Err(e), _) if e.kind == ErrorKind::NotFound => false,
             (Err(e), _) => return Err(e.clone()),
         };
+        let total = point.data.before.len();
+        let mut chosen: Vec<usize> = match &rows {
+            Some(r) => r.iter().copied().filter(|i| *i < total).collect(),
+            None => (0..total).collect(),
+        };
+        // Rows already back as they were (restored earlier, or changed back by hand) are skipped:
+        // their conflict check would otherwise stop the rest from being restored.
+        if exists
+            && let Ok(st) = &current
+            && !chosen.is_empty()
+        {
+            let back = self.rows_already_back(session_id, &point, st, &chosen).await?;
+            if back.len() == chosen.len() {
+                return Err(AppError::invalid_config(if chosen.len() == 1 {
+                    "This row is already back as it was"
+                } else {
+                    "These rows are already back as they were"
+                }));
+            }
+            chosen.retain(|i| !back.contains(i));
+        }
+        let rows = (rows.is_some() || chosen.len() < total).then_some(chosen);
         let actions = crate::restore::build_restore(&point, handle.info.dialect, rows.as_deref(), exists)?;
         Ok((point, actions))
+    }
+
+    /// Which of the chosen rows of a restore point the table already holds exactly as they
+    /// were before the change (every column the point kept, compared as text).
+    async fn rows_already_back(
+        &self,
+        session_id: &str,
+        point: &crate::restore::RestorePoint,
+        st: &TableStructure,
+        chosen: &[usize],
+    ) -> Result<std::collections::HashSet<usize>> {
+        let d = &point.data;
+        let pk: Vec<String> = st.primary_key().iter().map(|c| c.name.clone()).collect();
+        if pk.is_empty() || pk != d.key_columns {
+            return Ok(Default::default());
+        }
+        let dialect = self.handle(session_id)?.info.dialect;
+        let pos = |name: &str| d.columns.iter().position(|c| c == name);
+        let keys: Vec<Vec<crate::changes::ColumnValue>> = chosen
+            .iter()
+            .map(|i| {
+                pk.iter()
+                    .map(|k| crate::changes::ColumnValue {
+                        column: k.clone(),
+                        value: pos(k).and_then(|j| d.before[*i].get(j).cloned()).flatten(),
+                    })
+                    .collect()
+            })
+            .collect();
+        let st_owned = st.clone();
+        let current = self
+            .with_session(session_id, move |s| {
+                Box::pin(async move {
+                    let mut out = HashMap::new();
+                    for chunk in keys.chunks(1000) {
+                        out.extend(rows_by_key(s, dialect, &st_owned, chunk).await?);
+                    }
+                    Ok(out)
+                })
+            })
+            .await?;
+        let mut back = std::collections::HashSet::new();
+        for &i in chosen {
+            let before = &d.before[i];
+            let key: Vec<Param> = pk.iter().map(|k| pos(k).and_then(|j| before.get(j).cloned()).flatten()).collect();
+            let Some(now) = current.get(&key) else { continue };
+            let same = d.columns.iter().enumerate().all(|(j, c)| match st.columns.iter().position(|x| &x.name == c) {
+                Some(at) => now.get(at) == before.get(j),
+                None => false,
+            });
+            if same {
+                back.insert(i);
+            }
+        }
+        Ok(back)
     }
 
     /// The SQL a restore will run, for the review dialog.
@@ -2028,6 +2105,11 @@ struct Captured {
     dropped: Option<String>,
 }
 
+/// The size of a restore point's values (its `bytes`, counted against the size limits).
+fn values_bytes<'a>(rows: impl IntoIterator<Item = &'a Vec<Param>>) -> u64 {
+    rows.into_iter().flatten().map(|v| v.as_ref().map_or(0, |t| t.len() as u64)).sum()
+}
+
 fn cell_param(c: &Cell) -> Param {
     match c {
         Cell::Text(t) => Some(t.clone()),
@@ -2144,7 +2226,7 @@ async fn run_captured(
         Ok((rows, ddl)) => {
             cap.data.ddl = ddl;
             cap.data.before = rows.rows.iter().map(|r| r.iter().map(cell_param).collect()).collect();
-            cap.bytes = cap.data.before.iter().flatten().map(|v| v.as_ref().map_or(0, |t| t.len() as u64)).sum();
+            cap.bytes = values_bytes(&cap.data.before);
             if cap.data.before.len() > limit || rows.truncated {
                 cap.dropped = Some(format!("more than {} rows", job.max_rows));
             } else if cap.bytes > job.max_bytes {
@@ -2203,6 +2285,7 @@ async fn run_captured(
                     .iter()
                     .map(|b| by_key.get(&key_idx.iter().map(|i| b[*i].clone()).collect::<Vec<_>>()).cloned())
                     .collect();
+                cap.bytes += values_bytes(cap.data.after.iter().flatten());
             }
             Err(e) if is_fatal(&e) => {
                 if own_txn {
@@ -2386,8 +2469,7 @@ async fn apply_captured(
             c.captured.data.before.push(b.clone());
             c.captured.data.after.push(after.get(&k).cloned());
         }
-        c.captured.bytes =
-            c.captured.data.before.iter().flatten().map(|v| v.as_ref().map_or(0, |t| t.len() as u64)).sum();
+        c.captured.bytes = values_bytes(&c.captured.data.before) + values_bytes(c.captured.data.after.iter().flatten());
     }
     if let Err(e) = s.commit().await {
         let _ = s.rollback().await;
