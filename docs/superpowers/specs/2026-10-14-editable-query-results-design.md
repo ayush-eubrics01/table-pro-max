@@ -23,7 +23,7 @@ Success means:
 | Joins | Editable per table, when that table's full primary key is in the result. One commit can touch several tables, in one transaction. |
 | DuckDB | Query results are read-only (the driver reports no column origins); a short note says so. Editing an opened DuckDB table is unchanged. |
 | Scope | Change values and set NULL (grid and row inspector). No delete or insert from query results; those stay in the table view. |
-| Source of truth | The database's own column-origin metadata. No SQL parsing. |
+| Source of truth | The database's own column-origin metadata. No SQL parsing to *grant* editability. Amended after review: origins name the table, not the alias or UNION branch, so a parse of the statement may only *remove* editability (self-joins, compound selects, repeated CTEs, views on SQLite/MySQL; see `result_sql.rs`). |
 
 ## Non-goals
 - Deleting or inserting rows from a query result.

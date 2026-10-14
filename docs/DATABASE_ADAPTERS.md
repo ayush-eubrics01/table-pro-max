@@ -89,8 +89,16 @@ stays read-only. The rule that decides editability is in `result_edit.rs`.
 | SQLite | rusqlite feature `column_metadata` (`SQLITE_ENABLE_COLUMN_METADATA`): `column_database_name`, `column_table_name`, `column_origin_name`. Views report their base table. | none |
 | DuckDB | Not available. Query results are read-only; opened tables can still be edited. | none |
 
-Derived tables and `UNION` results usually report no origin on MySQL, so those columns are
-read-only, which is the safe outcome.
+Origins name the base table, not the alias or the branch of a `UNION`: in `users a JOIN users b`
+both sides report `users`, and SQLite reports a compound SELECT's origins from one branch and a
+view's columns as its base table's. So `result_sql.rs` also parses the statement, and only ever
+takes editability away: a table named more than once (or not at all), a CTE used twice,
+`UNION`/`INTERSECT`/`EXCEPT`, a statement that does not parse, and (on SQLite and MySQL) a view
+anywhere in the query make the affected result read-only.
+
+Committing edits refuses to run while the tab has an open transaction (its BEGIN/COMMIT would end
+the user's). PostgreSQL and SQLite check this exactly, MariaDB through `@@in_transaction`; MySQL
+checks `@@autocommit`, and the engine also tracks the `BEGIN`/`COMMIT`/`ROLLBACK` the user runs.
 
 ## SQL Server (evaluated, not implemented)
 * `tiberius` (MIT/Apache-2.0) is a maintained async TDS client with rustls support and
