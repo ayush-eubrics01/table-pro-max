@@ -7,6 +7,7 @@ import { useWorkspaces } from "../../stores/workspaces";
 import { useUi } from "../../stores/ui";
 import { rank } from "./fuzzy";
 import { groupResults } from "./groups";
+import { driverLabel, envLabel } from "../../lib/env";
 
 type Item =
   | { kind: "object"; label: string; where: string; wsId: string; obj: DbObject }
@@ -47,12 +48,12 @@ export function OpenAnything({ onConnect }: { onConnect: (p: ConnectionProfile) 
       for (const q of saved.filter((s) => !s.connectionId || s.connectionId === ws.profile.id))
         out.push({ kind: "saved", label: q.name, where: `${ws.profile.name} · saved query`, wsId: ws.id, query: q });
     }
-    for (const c of connections) out.push({ kind: "connection", label: c.profile.name, where: "connection", profile: c.profile });
+    for (const c of connections) out.push({ kind: "connection", label: c.profile.name, where: `${envLabel(c.profile.environment)} · ${driverLabel(c.profile.driver)}`, profile: c.profile });
     if (active) {
-      out.push({ kind: "action", label: "New query", where: "action", run: () => useWorkspaces.getState().openQuery(active.id) });
-      out.push({ kind: "action", label: "Reopen closed tab", where: "action", run: () => useWorkspaces.getState().reopenClosed(active.id) });
+      out.push({ kind: "action", label: "New query", where: "", run: () => useWorkspaces.getState().openQuery(active.id) });
+      out.push({ kind: "action", label: "Reopen closed tab", where: "", run: () => useWorkspaces.getState().reopenClosed(active.id) });
     }
-    out.push({ kind: "action", label: "Settings", where: "action", run: () => useUi.getState().setSettingsOpen(true) });
+    out.push({ kind: "action", label: "Settings", where: "", run: () => useUi.getState().setSettingsOpen(true) });
     return out;
   }, [workspaces, activeId, connections, saved]);
 
@@ -138,7 +139,7 @@ export function OpenAnything({ onConnect }: { onConnect: (p: ConnectionProfile) 
                   <li key={i} id={`palette-${i}`} role="option" aria-selected={i === index} onMouseEnter={() => setIndex(i)} onClick={() => choose(r)}>
                     {icon(r)}
                     <span>{r.label}</span>
-                    <span className="where">{r.where}</span>
+                    {r.where && <span className="where">{r.where}</span>}
                   </li>
                 );
               })}
