@@ -130,6 +130,25 @@ pre,
 .textarea::placeholder {
   color: var(--text-faint);
 }
+/* Drawn by the app: WebKitGTK otherwise paints selects as GTK widgets that ignore the theme. */
+.select {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-right: 30px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-muted) 50%), linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  text-overflow: ellipsis;
+}
+/* Forced colours (Windows High Contrast) drop gradient images: let the system draw the arrow. */
+@media (forced-colors: active) {
+  .select {
+    -webkit-appearance: auto;
+    appearance: auto;
+    background-image: none;
+  }
+}
 .textarea {
   height: auto;
   padding: 8px 10px;
@@ -2414,6 +2433,25 @@ pre,
   display: grid;
   grid-template-columns: 320px 1fr;
   min-height: 0;
+}
+.redis-keys-meta {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: 2px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.redis-keys-meta .grow {
+  flex: 1;
+}
+.tree-item.redis-key {
+  padding-left: 8px;
+}
+.tree-item.redis-key .driver-mark {
+  min-width: 40px;
+  height: 18px;
+  font-size: 10px;
 }
 .redis-console {
   flex: 1;

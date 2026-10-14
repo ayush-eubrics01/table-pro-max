@@ -5,7 +5,7 @@ import { api, toError } from "../../lib/ipc";
 import { confirmAction, notify, notifyError, promptText } from "../../stores/ui";
 import type { Workspace } from "../../stores/workspaces";
 import { prettyJson } from "../../lib/cells";
-import { formatCount } from "../../lib/text";
+import { formatCount, pluralize } from "../../lib/text";
 
 const TYPE_LABEL: Record<string, string> = { string: "STR", hash: "HASH", list: "LIST", set: "SET", zset: "ZSET", stream: "STRM" };
 
@@ -119,36 +119,37 @@ export function RedisView({ ws }: { ws: Workspace }) {
   return (
     <div className="redis">
       <aside className="sidebar" aria-label="Redis keys" style={{ minWidth: 0 }}>
-        <div className="sidebar-section">
-          <div className="field-row" style={{ gap: 4 }}>
-            <div style={{ position: "relative", flex: 1, display: "flex" }}>
-              <Icon name="search" size={13} style={{ position: "absolute", left: 8, top: 8, color: "var(--text-faint)" }} />
-              <input
-                className="input mono"
-                style={{ paddingLeft: 26, flex: 1 }}
-                value={pattern}
-                aria-label="Key pattern"
-                onChange={(e) => setPattern(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && void scan(true)}
-              />
-            </div>
+        <div className="sidebar-head">
+          <div className="sidebar-filter">
+            <Icon name="search" size={15} />
+            <input
+              className="input mono"
+              value={pattern}
+              aria-label="Key pattern"
+              onChange={(e) => setPattern(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void scan(true)}
+            />
+          </div>
+          <div className="redis-keys-meta">
+            <span>
+              {pluralize(keys.length, "key")}
+              {cursor !== "0" ? " · more available" : ""}
+            </span>
+            <span className="grow" />
             <button className="btn btn-ghost btn-icon" aria-label="Scan keys" title="Scan (SCAN MATCH)" onClick={() => void scan(true)}>
-              <Icon name="refresh" size={14} className={scanning ? "spin" : undefined} />
+              <Icon name="refresh" size={15} className={scanning ? "spin" : undefined} />
             </button>
             {!readOnly && (
               <button className="btn btn-ghost btn-icon" aria-label="New string key" title="New string key" onClick={newString}>
-                <Icon name="add" size={14} />
+                <Icon name="add" size={15} />
               </button>
             )}
           </div>
-          <span className="hint">
-            {formatCount(keys.length)} keys loaded{cursor !== "0" ? ", more available" : ""}
-          </span>
         </div>
         <div className="sidebar-tree" role="listbox" aria-label="Keys">
           {keys.map((k) => (
-            <button key={k.key} role="option" aria-selected={k.key === selected} className="tree-item" style={{ paddingLeft: 12 }} aria-current={k.key === selected} onClick={() => void open(k.key)} title={k.key}>
-              <span className="driver-mark" style={{ minWidth: 40, height: 18 }}>
+            <button key={k.key} role="option" aria-selected={k.key === selected} className="tree-item redis-key" aria-current={k.key === selected} onClick={() => void open(k.key)} title={k.key}>
+              <span className="driver-mark">
                 {TYPE_LABEL[k.kind] ?? k.kind.toUpperCase().slice(0, 4)}
               </span>
               <span className="name mono">{k.key}</span>
@@ -178,7 +179,7 @@ export function RedisView({ ws }: { ws: Workspace }) {
           {view === "key" && selected && (
             <>
               <span className="sep" />
-              <strong className="mono" style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+              <strong className="mono" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
                 {selected}
               </strong>
               {current && current.ttl >= 0 && <span className="meta">expires in {ttlLabel(current.ttl)}</span>}

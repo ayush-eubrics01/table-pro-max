@@ -56,6 +56,17 @@ describe("theme tokens", () => {
     expect(css).not.toMatch(/color-mix/);
   });
 
+  it("draws selects itself: no native look, a token-coloured arrow, room for it", () => {
+    const app = readFileSync("src/styles/app.css", "utf8");
+    const rule = app.match(/\n\.select \{[^}]*\}/)?.[0] ?? "";
+    expect(rule).toMatch(/appearance:\s*none/);
+    expect(rule).toMatch(/background-image:[^;]*var\(--text-muted\)/);
+    expect(rule).toMatch(/padding-right:\s*30px/);
+    expect(rule).toMatch(/-webkit-appearance:\s*none/);
+    // Forced colours drop gradient images: hand the arrow back to the system there.
+    expect(app).toMatch(/@media \(forced-colors: active\) \{\s*\.select \{[^}]*appearance:\s*auto/);
+  });
+
   it("app.css uses no color-mix() either", () => {
     const walk = (dir) =>
       readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]));
