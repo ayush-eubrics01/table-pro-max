@@ -223,6 +223,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange }: Props) {
         maxRows: settings["query.maxRows"],
         timeoutSecs: settings["query.timeoutSecs"] > 0 ? settings["query.timeoutSecs"] : undefined,
         baseOffset: target.base,
+        largeValueChars: settings["grid.largeValueChars"],
       });
       if (resultIds.current.length) void api.releaseResults(resultIds.current);
       resultIds.current = r.statements.flatMap((x) => (x.resultId ? [x.resultId] : []));

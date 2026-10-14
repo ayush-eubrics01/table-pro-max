@@ -76,6 +76,27 @@ Every driver implements `tpm_core::adapters::Session` (`crates/tpm-core/src/adap
   A statement that cannot be wrapped runs as is, and the wrapper never runs a statement twice.
 * Read-only sessions run each statement inside `BEGIN TRANSACTION READ ONLY`.
 
+## Large values on demand
+
+Opened tables leave potentially large columns out of the page query entirely: no `length()`,
+no preview, no `CASE`. The database never reads them for that page; on PostgreSQL those values
+stay in TOAST storage. Columns are chosen by type from the introspected structure, never by
+looking at data, and primary-key columns are always loaded. Tables without a primary key load
+every column.
+
+| Engine | Deferred by default | Loaded |
+|---|---|---|
+| PostgreSQL / DuckDB | `text`, `character varying` / `varchar` with no length, `json`, `jsonb`, `xml`, `bytea`, arrays, `tsvector` (DuckDB: `VARCHAR`, `JSON`, `BLOB`, lists, structs, maps) | `varchar(n)`, `char(n)`, numbers, booleans, dates and times, `uuid`, enums |
+| MySQL / MariaDB | `text`, `mediumtext`, `longtext`, `json`, `blob`, `mediumblob`, `longblob` | `char`, `varchar(n)`, `tinytext`, `tinyblob`, numbers, dates, `enum`, `set` |
+| SQLite | declared `TEXT`, `BLOB`, `JSON`, `CLOB`, or no declared type | `INTEGER`, `REAL`, `NUMERIC`, `varchar(n)` and other types |
+
+A user can mark any column **Always load** or **Don't load**; the choice is stored locally per
+connection, table and column (column names only). A value is fetched with
+`SELECT <pk…>, <column> FROM t WHERE (pk = $1 …) OR (…)`, keys as bind parameters. Query
+results are the user's own SQL and are never rewritten: the database sends full values, the app
+keeps them in its result store, and text longer than `grid.largeValueChars` reaches the UI as a
+preview that opens from memory.
+
 ## Column origins (editable query results)
 
 A query result cell can be edited only when the database says which table column it came

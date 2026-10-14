@@ -200,7 +200,8 @@ export function SettingsDialog({ appInfo, onClose }: { appInfo: AppInfo | null; 
           )}
           {section === "grid" && (
             <>
-              <NumberField label="Rows per page in tables" k="grid.pageSize" min={10} max={10000} />
+              <NumberField label="Rows per page" k="grid.pageSize" min={10} max={10000} />
+              <NumberField label="Preview query results longer than (characters)" k="grid.largeValueChars" min={64} max={100000} hint="Longer text in query results shows a preview; click to open it." />
               <NumberField label="Row limit for query results" k="query.maxRows" min={100} max={5000000} hint="Larger limits use more memory." />
               <Toggle label="Check that rows were not changed by someone else before committing edits" k="grid.checkConflicts" />
             </>

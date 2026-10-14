@@ -42,6 +42,13 @@ impl ParamStatement {
     }
 }
 
+/// What a describe reports for one result column.
+#[derive(Debug, Clone, Default)]
+pub struct DescribedColumn {
+    pub origin: Option<ColumnOrigin>,
+    pub type_name: String,
+}
+
 #[async_trait]
 pub trait Canceller: Send + Sync {
     /// Requests cancellation of the statement currently running on the session. Racy by
@@ -67,9 +74,10 @@ pub trait Session: Send {
     /// `max_rows` are not fetched and the row set is marked truncated.
     async fn execute(&mut self, sql: &str, max_rows: usize) -> Result<Vec<StatementOutcome>>;
 
-    /// Base-table origin of each column the statement returns, by position, without running it.
-    /// Drivers that report origins while executing (MySQL, SQLite) or cannot at all (DuckDB) keep the default.
-    async fn describe_origins(&mut self, _sql: &str) -> Result<Vec<Option<ColumnOrigin>>> {
+    /// Base-table origin and type name of each column the statement returns, by position,
+    /// without running it. Drivers that report these while executing (MySQL, SQLite) or cannot
+    /// at all (DuckDB) keep the default.
+    async fn describe(&mut self, _sql: &str) -> Result<Vec<DescribedColumn>> {
         Ok(vec![])
     }
 

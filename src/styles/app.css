@@ -1252,6 +1252,39 @@ pre,
 .grid-cell.binary > span {
   color: var(--text-muted);
 }
+.grid-cell.not-loaded .not-loaded-label {
+  color: var(--text-faint);
+  font-style: italic;
+  font-size: var(--text-xs);
+}
+.grid-cell.partial {
+  gap: 6px;
+}
+.grid-cell.partial .partial-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-dim);
+}
+.grid-cell .size-tag {
+  flex: none;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  border: 1px solid var(--border-hairline);
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 16px;
+}
+.col-deferred {
+  color: var(--text-faint);
+  display: inline-flex;
+}
+.spinner.spinner-xs {
+  width: 10px;
+  height: 10px;
+  border-width: 1.5px;
+}
 .grid-cell.selected {
   background: var(--selection);
 }
@@ -2758,4 +2791,32 @@ pre,
 /* The window drags only from the element that carries data-tauri-drag-region, so the mark's icon lets clicks through. */
 .app-mark .icon {
   pointer-events: none;
+}
+
+/* Value editor (large values and JSON) */
+.dialog.value-editor {
+  width: min(1200px, 80vw);
+  height: 80vh;
+  max-width: none;
+  display: flex;
+  flex-direction: column;
+}
+.value-editor .dialog-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+.value-editor-body {
+  flex: 1;
+  min-height: 0;
+}
+.value-editor-body .cm-editor {
+  height: 100%;
+}
+.value-editor-status {
+  flex: 1;
+  color: var(--text-muted);
+  font-size: 12px;
 }

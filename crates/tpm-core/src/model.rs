@@ -9,6 +9,14 @@ pub enum Cell {
     Null,
     Text(String),
     Bytes(Vec<u8>),
+    /// A deferred column in an opened table: not read from the database (see large_values.rs).
+    NotLoaded,
+    /// Long text in a query result, sent to the UI as a preview; the full value stays in the
+    /// result store.
+    Partial {
+        preview: String,
+        length: u64,
+    },
 }
 
 /// Binary values larger than this are previewed, not transferred in full.
@@ -25,6 +33,17 @@ impl Serialize for Cell {
                 let mut m = s.serialize_map(Some(2))?;
                 m.serialize_entry("$bytes", &hex::encode(shown))?;
                 m.serialize_entry("size", &b.len())?;
+                m.end()
+            }
+            Cell::NotLoaded => {
+                let mut m = s.serialize_map(Some(1))?;
+                m.serialize_entry("$notLoaded", &true)?;
+                m.end()
+            }
+            Cell::Partial { preview, length } => {
+                let mut m = s.serialize_map(Some(2))?;
+                m.serialize_entry("$partial", preview)?;
+                m.serialize_entry("length", length)?;
                 m.end()
             }
         }
@@ -45,6 +64,8 @@ impl Cell {
             Cell::Null => None,
             Cell::Text(t) => Some(t.clone()),
             Cell::Bytes(b) => Some(format!("\\x{}", hex::encode(b))),
+            // Never reaches export: transfer.rs refuses placeholder rows (ensure_full_rows).
+            Cell::NotLoaded | Cell::Partial { .. } => None,
         }
     }
 }
@@ -73,11 +94,18 @@ pub struct ColumnMeta {
     /// Base table column this result column was read from, when the driver reports it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<ColumnOrigin>,
+    /// A deferred column of an opened table: its cells are `Cell::NotLoaded`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deferred: bool,
 }
 
 impl ColumnMeta {
     pub fn new(name: impl Into<String>, type_name: impl Into<String>) -> Self {
-        Self { name: name.into(), type_name: type_name.into(), origin: None }
+        Self { name: name.into(), type_name: type_name.into(), origin: None, deferred: false }
+    }
+
+    pub fn deferred(name: impl Into<String>, type_name: impl Into<String>) -> Self {
+        Self { deferred: true, ..Self::new(name, type_name) }
     }
 
     pub fn with_origin(mut self, origin: Option<ColumnOrigin>) -> Self {
@@ -253,6 +281,21 @@ pub struct Capabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placeholder_cells_serialize_as_tagged_objects() {
+        assert_eq!(serde_json::to_string(&Cell::NotLoaded).unwrap(), r#"{"$notLoaded":true}"#);
+        assert_eq!(
+            serde_json::to_string(&Cell::Partial { preview: "ab".into(), length: 9000 }).unwrap(),
+            r#"{"$partial":"ab","length":9000}"#
+        );
+        let deferred = ColumnMeta::deferred("body", "text");
+        assert_eq!(serde_json::to_string(&deferred).unwrap(), r#"{"name":"body","typeName":"text","deferred":true}"#);
+        assert_eq!(
+            serde_json::to_string(&ColumnMeta::new("id", "int4")).unwrap(),
+            r#"{"name":"id","typeName":"int4"}"#
+        );
+    }
 
     #[test]
     fn cells_serialize_compactly() {

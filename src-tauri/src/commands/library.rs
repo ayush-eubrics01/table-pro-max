@@ -3,7 +3,7 @@
 
 use tauri::State;
 use tpm_core::error::Result;
-use tpm_core::storage::{Dashboard, FilterPreset, HistoryEntry, SavedQuery};
+use tpm_core::storage::{ColumnFetch, Dashboard, FetchMode, FilterPreset, HistoryEntry, SavedQuery};
 
 use crate::state::AppState;
 
@@ -108,4 +108,26 @@ pub fn set_workspace(state: State<'_, AppState>, key: String, value: serde_json:
 #[tauri::command]
 pub fn prune_history(state: State<'_, AppState>, days: u32, max_entries: u32) -> Result<usize> {
     state.storage.prune_history(days, max_entries)
+}
+
+#[tauri::command]
+pub fn list_column_fetch(
+    state: State<'_, AppState>,
+    connection_id: String,
+    schema: String,
+    table: String,
+) -> Result<Vec<ColumnFetch>> {
+    state.storage.list_column_fetch(&connection_id, &schema, &table)
+}
+
+#[tauri::command]
+pub fn set_column_fetch(
+    state: State<'_, AppState>,
+    connection_id: String,
+    schema: String,
+    table: String,
+    column: String,
+    mode: Option<FetchMode>,
+) -> Result<()> {
+    state.storage.set_column_fetch(&connection_id, &schema, &table, &column, mode)
 }

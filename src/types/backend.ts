@@ -74,7 +74,7 @@ export interface AppError {
 }
 
 /** A cell: NULL, text, or a binary preview. */
-export type Cell = null | string | { $bytes: string; size: number };
+export type Cell = null | string | { $bytes: string; size: number } | { $notLoaded: true } | { $partial: string; length: number };
 export type Row = Cell[];
 
 export interface ColumnOrigin {
@@ -88,6 +88,8 @@ export interface ColumnMeta {
   typeName: string;
   /** Base table column this result column was read from, when the database reports it. */
   origin?: ColumnOrigin;
+  /** A deferred column of an opened table: its cells are `{ $notLoaded: true }`. */
+  deferred?: boolean;
 }
 
 export interface EditableTable {
@@ -246,6 +248,8 @@ export interface RunOptions {
   timeoutSecs?: number;
   maxRows?: number;
   baseOffset?: number;
+  /** Send text longer than this many characters as a preview (query results). */
+  largeValueChars?: number;
 }
 
 export interface StatementResult {
@@ -319,6 +323,21 @@ export interface BrowseRequest {
   sort: SortSpec[];
   limit: number;
   offset: number;
+  /** Leave potentially large columns out of the page (opened tables). */
+  lazy?: boolean;
+  loadColumns?: string[];
+  deferColumns?: string[];
+}
+
+export type FetchMode = "load" | "defer";
+export interface ColumnFetch {
+  column: string;
+  mode: FetchMode;
+}
+
+export interface FetchedCell {
+  found: boolean;
+  value: Cell;
 }
 
 export interface BrowseResult {

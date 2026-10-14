@@ -4,10 +4,47 @@ export function isBinary(c: Cell): c is { $bytes: string; size: number } {
   return typeof c === "object" && c !== null && "$bytes" in c;
 }
 
+export function isNotLoaded(c: Cell): c is { $notLoaded: true } {
+  return typeof c === "object" && c !== null && "$notLoaded" in c;
+}
+
+export function isPartial(c: Cell): c is { $partial: string; length: number } {
+  return typeof c === "object" && c !== null && "$partial" in c;
+}
+
+/** The grid holds a placeholder; the full value must be fetched before copying or editing. */
+export function needsFetch(c: Cell | undefined): boolean {
+  return c !== undefined && (isNotLoaded(c) || isPartial(c));
+}
+
+/** Characters of a long value shown before it is opened (matches the backend's PREVIEW_CHARS). */
+export const PREVIEW_CHARS = 80;
+
+export function isLargeText(c: Cell | undefined, limit: number): c is string {
+  return typeof c === "string" && c.length > limit;
+}
+
+export function previewText(s: string): string {
+  // Walk only the first PREVIEW_CHARS code points: values can be megabytes long.
+  let out = "";
+  let n = 0;
+  for (const ch of s) {
+    if (n++ === PREVIEW_CHARS) break;
+    out += ch;
+  }
+  return out;
+}
+
+export function sizeLabel(typeName: string, length: number): string {
+  return isJsonType(typeName) ? formatBytes(length) : `${length.toLocaleString("en-US")} chars`;
+}
+
 /** Display text for a cell (single line). */
 export function cellDisplay(c: Cell): string {
   if (c === null) return "NULL";
   if (isBinary(c)) return `<binary ${formatBytes(c.size)}>`;
+  if (isNotLoaded(c)) return "Not loaded";
+  if (isPartial(c)) return `${c.$partial}…`;
   return c.length > 2000 ? `${c.slice(0, 2000)}…` : c.replace(/[\r\n]+/g, " ⏎ ");
 }
 
@@ -15,6 +52,7 @@ export function cellDisplay(c: Cell): string {
 export function cellCopy(c: Cell, nullText = ""): string {
   if (c === null) return nullText;
   if (isBinary(c)) return `\\x${c.$bytes}`;
+  if (isNotLoaded(c) || isPartial(c)) return ""; // placeholders are fetched before copying
   return c;
 }
 
@@ -22,6 +60,7 @@ export function cellCopy(c: Cell, nullText = ""): string {
 export function cellParam(c: Cell): string | null | undefined {
   if (c === null) return null;
   if (isBinary(c)) return undefined;
+  if (isNotLoaded(c) || isPartial(c)) return undefined; // a placeholder is not the value
   return c;
 }
 
@@ -48,7 +87,7 @@ const FALSE = /^(f|false|0|no|off)$/i;
 
 /** How a cell is drawn: enum values as tags, booleans coloured. NULL and binary values are never toned. */
 export function cellTone(typeName: string, value: Cell | undefined): "enum" | "true" | "false" | null {
-  if (value === null || value === undefined || isBinary(value)) return null;
+  if (value === null || value === undefined || typeof value === "object") return null;
   if (isBooleanType(typeName)) return TRUE.test(value) ? "true" : FALSE.test(value) ? "false" : null;
   if (ENUM.test(typeName)) return "enum";
   return null;

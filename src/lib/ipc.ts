@@ -3,6 +3,8 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  Cell,
+  FetchedCell,
   AiAnswer,
   AiPrompt,
   AiProvider,
@@ -23,6 +25,8 @@ import type {
   ExplainResult,
   FilterNode,
   FilterPreset,
+  ColumnFetch,
+  FetchMode,
   HistoryEntry,
   ObjectKind,
   Row,
@@ -153,6 +157,11 @@ export const api = {
 
   // browsing & editing
   browseTable: (sessionId: string, request: BrowseRequest) => call<BrowseResult>("browse_table", { sessionId, request }),
+  fetchValue: (sessionId: string, schema: string, table: string, key: { column: string; value: string | null }[], column: string) =>
+    call<Cell>("fetch_value", { sessionId, schema, table, key, column }),
+  resultValue: (resultId: string, row: number, col: number) => call<Cell>("result_value", { resultId, row, col }),
+  fetchColumn: (sessionId: string, schema: string, table: string, column: string, keys: { column: string; value: string | null }[][]) =>
+    call<FetchedCell[]>("fetch_column", { sessionId, schema, table, column, keys }),
   countRows: (sessionId: string, schema: string, table: string, filter: FilterNode | null) =>
     call<number>("count_rows", { sessionId, schema, table, filter }),
   previewChanges: (sessionId: string, changes: ChangeSet) =>
@@ -233,6 +242,9 @@ export const api = {
     call<FilterPreset[]>("list_filter_presets", { connectionId, schema, table }),
   saveFilterPreset: (preset: FilterPreset) => call<void>("save_filter_preset", { preset }),
   deleteFilterPreset: (id: string) => call<void>("delete_filter_preset", { id }),
+  listColumnFetch: (connectionId: string, schema: string, table: string) => call<ColumnFetch[]>("list_column_fetch", { connectionId, schema, table }),
+  setColumnFetch: (connectionId: string, schema: string, table: string, column: string, mode: FetchMode | null) =>
+    call<void>("set_column_fetch", { connectionId, schema, table, column, mode }),
   // AI assistance (off unless enabled in Settings)
   aiStatus: () => call<AiStatus>("ai_status"),
   aiSetKey: (provider: AiProvider, key: string | null) => call<void>("ai_set_key", { request: { provider, key } }),

@@ -13,6 +13,7 @@ pub mod dialect;
 pub mod engine;
 pub mod error;
 pub mod filter;
+pub mod large_values;
 pub mod model;
 pub mod redact;
 pub mod redis_kv;

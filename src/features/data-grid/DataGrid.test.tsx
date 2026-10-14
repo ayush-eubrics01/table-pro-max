@@ -1,6 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
-import { DataGrid } from "./DataGrid";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { createRef } from "react";
+import { DataGrid, type GridHandle } from "./DataGrid";
+import type { Cell } from "../../types/backend";
 
 afterEach(cleanup);
 
@@ -36,5 +38,62 @@ describe("DataGrid", () => {
       return h;
     };
     expect(height(56) - height()).toBe(56);
+  });
+
+  it("shows Not loaded and previews, loads on click, and opens instead of inline editing", () => {
+    const cols = [
+      { name: "id", typeName: "integer", primaryKey: true },
+      { name: "body", typeName: "text", deferred: true },
+      { name: "note", typeName: "text" },
+    ];
+    const data = [["1", { $notLoaded: true }, "x".repeat(300)]] as Cell[][];
+    const opened: [number, number, string][] = [];
+    const edits: unknown[] = [];
+    render(
+      <DataGrid
+        ariaLabel="Rows"
+        columns={cols}
+        rowCount={1}
+        getRow={(i) => data[i]}
+        canEdit={() => true}
+        onEdit={(...a) => edits.push(a)}
+        onOpenCell={(r, c, how) => (opened.push([r, c, how]), true)}
+      />,
+    );
+    expect(screen.getByLabelText("Loaded on demand")).toBeInTheDocument();
+    const nl = screen.getByText("Not loaded").closest(".grid-cell")!;
+    expect(nl).toHaveClass("not-loaded");
+    fireEvent.click(nl);
+    expect(opened).toEqual([[0, 1, "click"]]);
+    const long = screen.getByText("300 chars").closest(".grid-cell")!;
+    expect(long).toHaveTextContent("x".repeat(80) + "…");
+    fireEvent.doubleClick(long);
+    expect(opened[1]).toEqual([0, 2, "open"]);
+    expect(screen.queryByLabelText("Edit note")).not.toBeInTheDocument();
+    expect(edits).toHaveLength(0);
+  });
+
+  it("copies full values, fetching placeholders first", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: write }, configurable: true });
+    const data = [
+      ["1", { $notLoaded: true }, null],
+      ["2", "short", null],
+    ] as Cell[][];
+    const ref = createRef<GridHandle>();
+    render(
+      <DataGrid
+        ref={ref}
+        ariaLabel="Rows"
+        columns={[{ name: "id", typeName: "integer" }, { name: "body", typeName: "text" }, { name: "n", typeName: "integer" }]}
+        rowCount={2}
+        getRow={(i) => data[i]}
+        loadFull={async (cells) => cells.map(() => "FULL")}
+      />,
+    );
+    fireEvent.mouseDown(screen.getAllByText("1").find((e) => e.closest(".grid-cell"))!.closest(".grid-cell")!);
+    fireEvent.mouseDown(screen.getAllByText("NULL")[1]!.closest(".grid-cell")!, { shiftKey: true });
+    await act(async () => ref.current!.copySelection(false));
+    expect(write).toHaveBeenCalledWith("1\tFULL\t\n2\tshort\t");
   });
 });
