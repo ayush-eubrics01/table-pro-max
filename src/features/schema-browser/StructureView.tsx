@@ -47,218 +47,251 @@ export function StructureView({ session, structure, onChanged }: Props) {
 
   return (
     <div className="structure">
-      {editable && (
+      {editable && ops.length > 0 && (
         <div className="field-row" style={{ alignItems: "center", flex: "none" }}>
-          <button className="btn" onClick={() => setColumnDialog({ mode: "add" })}>
-            <Icon name="add" size={14} /> Add column
-          </button>
-          <button className="btn" onClick={() => setIndexDialog(true)}>
-            <Icon name="add" size={14} /> Add index
-          </button>
           <span style={{ flex: 1 }} />
-          {ops.length > 0 && (
-            <>
-              <span className="hint">{pluralize(ops.length, "pending structure change")}</span>
-              <button className="btn" onClick={() => setOps([])}>
-                <Icon name="undo" size={14} /> Discard
-              </button>
-              <button className="btn btn-primary" onClick={preview}>
-                Review SQL
-              </button>
-            </>
-          )}
+          <span className="hint">{pluralize(ops.length, "pending structure change")}</span>
+          <button className="btn" onClick={() => setOps([])}>
+            <Icon name="undo" size={14} /> Discard
+          </button>
+          <button className="btn btn-primary" onClick={preview}>
+            Review SQL
+          </button>
         </div>
       )}
 
       <section>
-        <h3>Columns</h3>
-        <table className="table">
-          <thead>
-            <tr>
-              <th style={{ width: 24 }} />
-              <th>Name</th>
-              <th>Type</th>
-              <th>Nullable</th>
-              <th>Default</th>
-              <th>Comment</th>
-              {editable && <th style={{ width: 70 }} />}
-            </tr>
-          </thead>
-          <tbody>
-            {s.columns.map((c) => (
-              <tr key={c.name} className={dropped(c.name) ? "removed" : touched(c.name) ? "pending" : undefined}>
-                <td>{c.primaryKey !== null && <Icon name="key" size={12} label={`Primary key position ${c.primaryKey}`} />}</td>
-                <td>{c.name}</td>
-                <td className="mono">{c.dataType}</td>
-                <td>{c.nullable ? "yes" : "no"}</td>
-                <td className="mono">{c.autoIncrement && !c.default ? "auto" : (c.default ?? "")}</td>
-                <td>{c.comment ?? ""}</td>
-                {editable && (
-                  <td>
-                    <button className="btn btn-ghost btn-icon" aria-label={`Edit ${c.name}`} onClick={() => setColumnDialog({ mode: "edit", name: c.name })}>
-                      <Icon name="edit" size={13} />
-                    </button>
-                    <button
-                      className="btn btn-ghost btn-icon"
-                      aria-label={`Drop ${c.name}`}
-                      onClick={() =>
-                        setOps((o) => (dropped(c.name) ? o.filter((x) => !(x.type === "dropColumn" && x.name === c.name)) : [...o, { type: "dropColumn", name: c.name }]))
-                      }
-                    >
-                      {dropped(c.name) ? <Icon name="undo" size={13} /> : <Icon name="delete" size={13} />}
-                    </button>
-                  </td>
-                )}
-              </tr>
-            ))}
-            {addedColumns.map((o, i) => (
-              <tr key={`new-${i}`} className="pending">
-                <td />
-                <td>{o.column.name}</td>
-                <td className="mono">{o.column.dataType}</td>
-                <td>{o.column.nullable ? "yes" : "no"}</td>
-                <td className="mono">{o.column.default ?? ""}</td>
-                <td />
-                {editable && (
-                  <td>
-                    <button className="btn btn-ghost btn-icon" aria-label="Remove new column" onClick={() => setOps((x) => x.filter((y) => y !== o))}>
-                      <Icon name="delete" size={13} />
-                    </button>
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
-
-      <section>
-        <h3>Indexes</h3>
-        {s.indexes.length === 0 ? (
-          <p className="hint">No indexes.</p>
-        ) : (
+        <div className="section-head">
+          <h3>
+            Columns <span className="count">{s.columns.length}</span>
+          </h3>
+          {editable && (
+            <>
+              <button className="btn" onClick={() => setColumnDialog({ mode: "add" })}>
+                <Icon name="add" size={14} /> Add column
+              </button>
+              <button className="btn" onClick={() => setIndexDialog(true)}>
+                <Icon name="add" size={14} /> Add index
+              </button>
+            </>
+          )}
+        </div>
+        <div className="table-card">
           <table className="table">
             <thead>
               <tr>
+                <th style={{ width: 24 }} />
                 <th>Name</th>
-                <th>Columns</th>
-                <th>Unique</th>
-                <th>Definition</th>
-                {editable && <th style={{ width: 40 }} />}
+                <th>Type</th>
+                <th>Nullable</th>
+                <th>Default</th>
+                <th>Comment</th>
+                {editable && <th style={{ width: 70 }} />}
               </tr>
             </thead>
             <tbody>
-              {s.indexes.map((i) => (
-                <tr key={i.name} className={droppedIndex(i.name) ? "removed" : undefined}>
+              {s.columns.map((c) => (
+                <tr key={c.name} className={dropped(c.name) ? "removed" : touched(c.name) ? "pending" : undefined}>
                   <td>
-                    {i.name} {i.primary && <span className="hint">(primary)</span>}
+                    {c.primaryKey !== null && <Icon name="key" size={12} label={`Primary key position ${c.primaryKey}`} />}
+                    {s.foreignKeys.some((f) => f.columns.includes(c.name)) && <Icon name="link" size={12} label="Foreign key" />}
                   </td>
-                  <td className="mono">{i.columns.join(", ")}</td>
-                  <td>{i.unique ? "yes" : "no"}</td>
-                  <td className="mono">{i.definition ?? ""}</td>
+                  <td>{c.name}</td>
+                  <td className="mono">{c.dataType}</td>
+                  <td className={c.nullable ? "nullable" : "required"}>{c.nullable ? "nullable" : "required"}</td>
+                  <td className="mono">{c.autoIncrement && !c.default ? "auto" : (c.default ?? "")}</td>
+                  <td>{c.comment ?? ""}</td>
                   {editable && (
                     <td>
-                      {!i.primary && (
-                        <button
-                          className="btn btn-ghost btn-icon"
-                          aria-label={`Drop index ${i.name}`}
-                          onClick={() =>
-                            setOps((o) =>
-                              droppedIndex(i.name) ? o.filter((x) => !(x.type === "dropIndex" && x.name === i.name)) : [...o, { type: "dropIndex", name: i.name }],
-                            )
-                          }
-                        >
-                          {droppedIndex(i.name) ? <Icon name="undo" size={13} /> : <Icon name="delete" size={13} />}
-                        </button>
-                      )}
+                      <button className="btn btn-ghost btn-icon" aria-label={`Edit ${c.name}`} onClick={() => setColumnDialog({ mode: "edit", name: c.name })}>
+                        <Icon name="edit" size={13} />
+                      </button>
+                      <button
+                        className="btn btn-ghost btn-icon"
+                        aria-label={`Drop ${c.name}`}
+                        onClick={() =>
+                          setOps((o) => (dropped(c.name) ? o.filter((x) => !(x.type === "dropColumn" && x.name === c.name)) : [...o, { type: "dropColumn", name: c.name }]))
+                        }
+                      >
+                        {dropped(c.name) ? <Icon name="undo" size={13} /> : <Icon name="delete" size={13} />}
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              ))}
+              {addedColumns.map((o, i) => (
+                <tr key={`new-${i}`} className="pending">
+                  <td />
+                  <td>{o.column.name}</td>
+                  <td className="mono">{o.column.dataType}</td>
+                  <td>{o.column.nullable ? "yes" : "no"}</td>
+                  <td className="mono">{o.column.default ?? ""}</td>
+                  <td />
+                  {editable && (
+                    <td>
+                      <button className="btn btn-ghost btn-icon" aria-label="Remove new column" onClick={() => setOps((x) => x.filter((y) => y !== o))}>
+                        <Icon name="delete" size={13} />
+                      </button>
                     </td>
                   )}
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      </section>
+
+      <section>
+        <div className="section-head">
+          <h3>
+            Indexes <span className="count">{s.indexes.length}</span>
+          </h3>
+        </div>
+        {s.indexes.length === 0 ? (
+          <p className="hint">No indexes.</p>
+        ) : (
+          <div className="table-card">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Columns</th>
+                  <th>Unique</th>
+                  <th>Definition</th>
+                  {editable && <th style={{ width: 40 }} />}
+                </tr>
+              </thead>
+              <tbody>
+                {s.indexes.map((i) => (
+                  <tr key={i.name} className={droppedIndex(i.name) ? "removed" : undefined}>
+                    <td>
+                      {i.name} {i.primary && <span className="hint">(primary)</span>}
+                    </td>
+                    <td className="mono">{i.columns.join(", ")}</td>
+                    <td>{i.unique ? "yes" : "no"}</td>
+                    <td className="mono">{i.definition ?? ""}</td>
+                    {editable && (
+                      <td>
+                        {!i.primary && (
+                          <button
+                            className="btn btn-ghost btn-icon"
+                            aria-label={`Drop index ${i.name}`}
+                            onClick={() =>
+                              setOps((o) =>
+                                droppedIndex(i.name) ? o.filter((x) => !(x.type === "dropIndex" && x.name === i.name)) : [...o, { type: "dropIndex", name: i.name }],
+                              )
+                            }
+                          >
+                            {droppedIndex(i.name) ? <Icon name="undo" size={13} /> : <Icon name="delete" size={13} />}
+                          </button>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
 
       <section>
-        <h3>Foreign keys</h3>
+        <div className="section-head">
+          <h3>
+            Foreign keys <span className="count">{s.foreignKeys.length}</span>
+          </h3>
+        </div>
         {s.foreignKeys.length === 0 ? (
           <p className="hint">No foreign keys.</p>
         ) : (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Columns</th>
-                <th>References</th>
-                <th>On update</th>
-                <th>On delete</th>
-              </tr>
-            </thead>
-            <tbody>
-              {s.foreignKeys.map((f) => (
-                <tr key={f.name}>
-                  <td>{f.name}</td>
-                  <td className="mono">{f.columns.join(", ")}</td>
-                  <td className="mono">
-                    {f.refSchema}.{f.refTable} ({f.refColumns.join(", ")})
-                  </td>
-                  <td>{f.onUpdate}</td>
-                  <td>{f.onDelete}</td>
+          <div className="table-card">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Columns</th>
+                  <th>References</th>
+                  <th>On update</th>
+                  <th>On delete</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {s.foreignKeys.map((f) => (
+                  <tr key={f.name}>
+                    <td>{f.name}</td>
+                    <td className="mono">{f.columns.join(", ")}</td>
+                    <td className="mono">
+                      {f.refSchema}.{f.refTable} ({f.refColumns.join(", ")})
+                    </td>
+                    <td>{f.onUpdate}</td>
+                    <td>{f.onDelete}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
 
       {s.constraints.length > 0 && (
         <section>
-          <h3>Constraints</h3>
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Kind</th>
-                <th>Definition</th>
-              </tr>
-            </thead>
-            <tbody>
-              {s.constraints.map((c) => (
-                <tr key={c.name + c.kind}>
-                  <td>{c.name}</td>
-                  <td>{c.kind.replace("_", " ")}</td>
-                  <td className="mono">{c.definition}</td>
+          <div className="section-head">
+          <h3>
+            Constraints <span className="count">{s.constraints.length}</span>
+          </h3>
+        </div>
+          <div className="table-card">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Kind</th>
+                  <th>Definition</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {s.constraints.map((c) => (
+                  <tr key={c.name + c.kind}>
+                    <td>{c.name}</td>
+                    <td>{c.kind.replace("_", " ")}</td>
+                    <td className="mono">{c.definition}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </section>
       )}
 
       {s.triggers.length > 0 && (
         <section>
-          <h3>Triggers</h3>
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Timing</th>
-                <th>Event</th>
-                <th>Definition</th>
-              </tr>
-            </thead>
-            <tbody>
-              {s.triggers.map((t) => (
-                <tr key={t.name}>
-                  <td>{t.name}</td>
-                  <td>{t.timing}</td>
-                  <td>{t.event}</td>
-                  <td className="mono">{t.definition}</td>
+          <div className="section-head">
+          <h3>
+            Triggers <span className="count">{s.triggers.length}</span>
+          </h3>
+        </div>
+          <div className="table-card">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Timing</th>
+                  <th>Event</th>
+                  <th>Definition</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {s.triggers.map((t) => (
+                  <tr key={t.name}>
+                    <td>{t.name}</td>
+                    <td>{t.timing}</td>
+                    <td>{t.event}</td>
+                    <td className="mono">{t.definition}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </section>
       )}
 

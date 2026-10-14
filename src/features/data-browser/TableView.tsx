@@ -34,11 +34,13 @@ interface Props {
   table: string;
   onReconnect: () => Promise<void>;
   onDirtyChange?: (dirty: boolean) => void;
+  /** Opens SQL (e.g. the definition) in a new query tab without running it. */
+  onOpenSql?: (sql: string, title: string) => void;
 }
 
 type View = "data" | "structure" | "definition";
 
-export function TableView({ session, schema, table, onReconnect, onDirtyChange }: Props) {
+export function TableView({ session, schema, table, onReconnect, onDirtyChange, onOpenSql }: Props) {
   const pageSizeSetting = useSettings((s) => s.settings["grid.pageSize"]);
   const checkConflicts = useSettings((s) => s.settings["grid.checkConflicts"]);
   const [view, setView] = useState<View>("data");
@@ -380,7 +382,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
         />
       )}
       {view === "definition" && structure && (
-        <DefinitionView session={session} schema={schema} name={table} kind={structure.kind} />
+        <DefinitionView session={session} schema={schema} name={table} kind={structure.kind} onOpenSql={onOpenSql} />
       )}
 
       {view === "data" && (

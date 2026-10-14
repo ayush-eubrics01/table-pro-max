@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Icon } from "../../components/Icon";
+import { SqlBlock } from "../../components/SqlBlock";
 import type { ObjectKind, SessionInfo } from "../../types/backend";
 import { api, toError, type BackendError } from "../../lib/ipc";
 import { notify } from "../../stores/ui";
@@ -9,11 +10,14 @@ export function DefinitionView({
   schema,
   name,
   kind,
+  onOpenSql,
 }: {
   session: SessionInfo;
   schema: string;
   name: string;
   kind: ObjectKind;
+  /** Opens the DDL in a new query tab (never runs it). Hidden when not given. */
+  onOpenSql?: (sql: string, title: string) => void;
 }) {
   const [sql, setSql] = useState<string | null>(null);
   const [error, setError] = useState<BackendError | null>(null);
@@ -37,7 +41,7 @@ export function DefinitionView({
       {sql === null && !error && <div className="spinner" aria-label="Loading definition" />}
       {sql !== null && (
         <>
-          <div>
+          <div className="definition-bar">
             <button
               className="btn"
               onClick={() => {
@@ -47,8 +51,15 @@ export function DefinitionView({
             >
               <Icon name="content_copy" size={14} /> Copy SQL
             </button>
+            {onOpenSql && (
+              <button className="btn" onClick={() => onOpenSql(sql, `${name} (definition)`)}>
+                <Icon name="terminal" size={14} /> Open in editor
+              </button>
+            )}
+            <span className="grow" />
+            <span className="hint">Generated from the catalog · read-only</span>
           </div>
-          <pre className="code-block">{sql}</pre>
+          <SqlBlock sql={sql} dialect={session.dialect} />
         </>
       )}
     </div>
