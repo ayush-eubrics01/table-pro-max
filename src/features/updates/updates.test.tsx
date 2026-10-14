@@ -71,6 +71,13 @@ describe("first-run consent", () => {
     expect(screen.queryByText("Check for updates automatically?")).not.toBeInTheDocument();
   });
 
+  it("says in the consent dialog what a check reveals and that it can be changed later", async () => {
+    await useUpdates.getState().init();
+    render(<FirstRunUpdatePrompt />);
+    expect(screen.getByText("You won't be asked again once you choose. You can change this, or check by hand, in Settings › Updates.")).toBeInTheDocument();
+    expect(screen.getByText(/GitHub sees your IP address and that you use the app/)).toBeInTheDocument();
+  });
+
   it("saves no and never checks", async () => {
     await useUpdates.getState().init();
     render(<FirstRunUpdatePrompt />);

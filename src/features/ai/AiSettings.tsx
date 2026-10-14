@@ -3,6 +3,7 @@ import type { AiStatus } from "../../types/backend";
 import { api } from "../../lib/ipc";
 import { useSettings, type Settings } from "../../stores/settings";
 import { confirmAction, notify, notifyError } from "../../stores/ui";
+import { SettingRow } from "../settings/SettingRow";
 
 const PROVIDER_DEFAULTS = {
   anthropic: { model: "claude-opus-5-5", baseUrl: "https://api.anthropic.com", keyLabel: "Anthropic API key" },
@@ -70,12 +71,21 @@ export function AiSettings() {
   };
 
   return (
-    <fieldset className="fieldset">
-      <legend>AI assistant</legend>
-      <label className="checkbox">
-        <input type="checkbox" checked={settings["ai.enabled"]} onChange={(e) => void toggle(e.target.checked)} />
-        Offer AI help in query tabs (explain, fix errors, improve, write SQL)
-      </label>
+    <>
+      <SettingRow
+        label="Offer AI help in query tabs (explain, fix errors, improve, write SQL)"
+        description="Off by default. Every request is shown to you before it is sent. Suggested SQL goes into the editor and is never run automatically."
+        htmlFor="ai-enabled"
+      >
+        <input
+          id="ai-enabled"
+          type="checkbox"
+          className="switch"
+          role="switch"
+          checked={settings["ai.enabled"]}
+          onChange={(e) => void toggle(e.target.checked)}
+        />
+      </SettingRow>
       {settings["ai.enabled"] && (
         <>
           <section className="field-row">
@@ -122,6 +132,6 @@ export function AiSettings() {
           </label>
         </>
       )}
-    </fieldset>
+    </>
   );
 }

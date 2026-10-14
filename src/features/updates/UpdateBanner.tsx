@@ -20,7 +20,7 @@ export function UpdateBanner() {
   return (
     <div className="update-banner" role="region" aria-label="Update available">
       <div className="update-banner-row">
-        <Icon name="refresh" size={14} aria-hidden />
+        <Icon name="system_update_alt" size={16} className="update-banner-icon" />
         <span>Table Pro Max {available.version} is available.</span>
         {working && (
           <span className="hint" role="status">
