@@ -117,7 +117,7 @@ No feature has a paid tier, license check, quota or artificial limit.
 | Read-only execution | Widgets run on a separate session opened read-only at the database level; each query must be one statement that passes the read-only policy; 30 s timeout; 5,000-row cap | VERIFIED | `engine.rs::run_widget`, `run_widget_query` | all | integration (all drivers: policy refusal, multi-statement refusal, timeout) | |
 | Date range | `{{from}}` / `{{to}}` placeholders replaced by strictly validated date literals | VERIFIED | `substitute_dashboard_params` | all | unit test (injection attempt refused) | Only date/time values are accepted |
 | Refresh | Manual, per widget, or every 30 s to 15 min while the tab is visible; widgets run one at a time, a failing widget shows its own error | IMPLEMENTED | `DashboardView.tsx` | all | manual (Xvfb) | |
-| Chart accessibility | Validated palette (light and dark), legend for 2+ series, tooltips with crosshair, table view per widget, text never in series colours | VERIFIED | `tokens.css`, `Charts.tsx` | — | `validate_palette.js` run against both app surfaces | |
+| Chart accessibility | Validated palette (light and dark), legend for 2+ series, tooltips with crosshair, table view per widget, text never in series colours | VERIFIED | `tokens.css`, `Charts.tsx` | — | Palette validator (the dataviz skill's `validate_palette.js`, not in this repo) re-run 2026-10-14 after the redesign: dark series pass every check on `#13161A` and `#0F1215`; light passes on `#FFFFFF` with three series below 3:1, relieved by the legend and the table view | Light series 3, 4 and 5 are under 3:1 against white |
 
 ## DuckDB (Tier 2)
 

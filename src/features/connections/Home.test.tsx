@@ -105,4 +105,15 @@ describe("Home", () => {
     fireEvent.click(screen.getByText("Prod Core"));
     expect(onConnect).toHaveBeenCalledWith(expect.objectContaining({ id: "p" }));
   });
+
+  it("sorts cards by name inside each group", () => {
+    useConnections.setState({
+      connections: [conn({ id: "b", name: "Beta", environment: "local" }, null, 1), conn({ id: "a", name: "alpha", environment: "local" }, null, 2), conn({ id: "c", name: "Gamma", environment: "local" }, null, 3)],
+    } as never);
+    render(<Home appInfo={null} connecting={null} onConnect={() => undefined} />);
+    const order = () => screen.getAllByRole("button", { name: /^Connect to / }).map((b) => b.getAttribute("aria-label"));
+    expect(order()).toEqual(["Connect to Beta", "Connect to alpha", "Connect to Gamma"]);
+    fireEvent.click(screen.getByRole("button", { name: "Name" }));
+    expect(order()).toEqual(["Connect to alpha", "Connect to Beta", "Connect to Gamma"]);
+  });
 });

@@ -59,15 +59,19 @@ touching every rule. New variables are added for the design's extra levels.
 | Accent and text on accent | `#4ED6A0`, `#06150F` |
 | Syntax | keyword `#C4A1FF` · string `#E8B04A` · number `#5BB8F0` · type/function `#4ED6A0` · comment `#6E7783` |
 
-**Environment colours**, the same in both themes:
+**Environment colours** (as built; each theme has its own set, checked by `scripts/theme-check.mjs`):
 
-| Environment | Colour | Source |
-|---|---|---|
-| Local | `#5BB8F0` | design |
-| Staging | `#E8B04A` | design |
-| Production | `#F0605A` | design |
-| Development | `#8B9CF7` | new: indigo, between local blue and the accent |
-| Testing | `#C79BF2` | new: violet, distinct from staging amber and production red |
+| Environment | Dark | Light | Source |
+|---|---|---|---|
+| Local | `#5BB8F0` | `#4081D2` | design (dark) |
+| Staging | `#E8B04A` | `#C16E2D` | design (dark) |
+| Production | `#F0605A` | `#9B1207` | design (dark); the badge is filled |
+| Development | `#5D7BF1` | `#4C0C49` | new, chosen by a CVD-aware search |
+| Testing | `#8EF9FF` | `#2E40A3` | new, chosen by a CVD-aware search |
+
+The first draft of this spec named Development `#8B9CF7` and Testing `#C79BF2`. Those failed the
+colour-distance check against the other three (and Staging/Production in light failed it too),
+so all light values and the two new dark values were re-chosen against the floors below.
 
 Development and Testing must be told apart from the other three by the colour-distance
 validator (the same CVD/normal-vision checks used for chart palettes), with the label always
@@ -77,7 +81,7 @@ shown next to the colour.
 - **Neutrals:** a ramp from near-white backgrounds (`#F6F7F9` main, `#FFFFFF` cards, `#EFF1F4`
   sidebar) to dark text (`#14181D` primary). It keeps the same number of surface and border
   steps as dark.
-- **Accent:** darkened to `#1E9E6E` so text and buttons meet 4.5:1. The text on accent buttons
+- **Accent:** darkened to `#0F7A53` (first drafted as `#1E9E6E`) so text and buttons meet 4.5:1. The text on accent buttons
   stays `#06150F`, or white if contrast requires it.
 - **Environment colours and syntax:** adjusted only as far as needed to reach 3:1 against the
   light surfaces for dots, stripes and borders. Environment text labels use a darker shade of
@@ -89,7 +93,7 @@ shown next to the colour.
   status bar 28.
 - **Type:** Geist 13 px for the UI; Geist Mono 12.5–13 px for data, SQL and paths.
 
-**Contrast check:** `scripts/check-contrast.mjs` reads both themes from `tokens.css` and fails
+**Contrast check:** `scripts/theme-check.mjs` (first drafted as `check-contrast.mjs`) reads both themes from `tokens.css` and fails
 when a declared pair is below its target:
 - 4.5:1 for body text on its surfaces;
 - 3:1 for large text, icons, focus rings, environment dots and stripes.
@@ -106,7 +110,7 @@ It runs in `npm test` as a vitest test.
 ### Icons
 - **Source package:** `@material-symbols/svg-300` (Apache-2.0), rounded set.
 - **Generated file:** `scripts/gen-icons.mjs` reads a list of icon names and writes
-  `src/components/icons.generated.tsx`, a map of name → SVG path data. Only listed icons are
+  `src/components/icons.generated.ts`, a map of name → SVG path data (`npm run gen:icons`). Only listed icons are
   bundled, and there is no runtime dependency or HTML injection.
 - **`Icon` component:** `<Icon name="table" size={16} />` renders an inline `<svg>` with
   `currentColor`. It is `aria-hidden` by default and takes a `label` prop when the icon is the

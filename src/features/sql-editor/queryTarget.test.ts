@@ -32,8 +32,8 @@ describe("Plan tabs", () => {
     const { PlanTabs } = await import("./QueryTab");
     let back = false;
     render(createElement(PlanTabs, { onBack: () => (back = true) }));
-    expect(screen.getByRole("tab", { name: "Plan" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.queryByRole("tab", { name: "Back to results" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Plan" })).toBeInTheDocument();
+    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
     screen.getByRole("button", { name: "Back to results" }).click();
     expect(back).toBe(true);
   });

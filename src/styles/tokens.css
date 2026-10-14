@@ -94,7 +94,7 @@
   --syn-type: #127a53;
   --syn-operator: #4a535e;
   --syn-ident: #14181d;
-  /* Categorical chart series (validated: scripts/validate_palette.js, light surface #ffffff). */
+  /* Categorical chart series (checked with the dataviz palette validator; see FEATURE_MATRIX "Chart accessibility"). */
   --series-1: #2a78d6;
   --series-2: #eb6834;
   --series-3: #1baf7a;

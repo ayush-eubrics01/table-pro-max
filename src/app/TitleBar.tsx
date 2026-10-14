@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { shortcut } from "../lib/shortcut";
 import { Icon } from "../components/Icon";
 import { api } from "../lib/ipc";
 import { envStyle } from "../lib/env";
@@ -90,12 +91,12 @@ export function TitleBar({ mac, onCloseWorkspace }: Props) {
         <button
           className="btn btn-ghost btn-icon"
           aria-label="New window"
-          title={`New window (${mac ? "⇧⌘N" : "Ctrl+Shift+N"})`}
+          title={`New window (${shortcut("Mod+Shift+N", mac)})`}
           onClick={() => void api.openWindow().catch((err) => notifyError(err, "Could not open a window"))}
         >
           <Icon name="new_window" size={16} />
         </button>
-        <button className="btn btn-ghost btn-icon" aria-label="Settings" title={`Settings (${mac ? "⌘," : "Ctrl+,"})`} onClick={() => useUi.getState().setSettingsOpen(true)}>
+        <button className="btn btn-ghost btn-icon" aria-label="Settings" title={`Settings (${shortcut("Mod+,", mac)})`} onClick={() => useUi.getState().setSettingsOpen(true)}>
           <Icon name="settings" size={16} />
         </button>
       </div>

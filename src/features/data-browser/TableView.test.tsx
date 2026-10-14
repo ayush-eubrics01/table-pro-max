@@ -139,4 +139,13 @@ describe("TableView", () => {
     expect(await screen.findByTitle("Views are read-only")).toHaveTextContent("Read-only");
     expect(screen.queryByRole("button", { name: "Delete selected rows" })).not.toBeInTheDocument();
   });
+
+  it("centres the commit bar without halving the room it may use", async () => {
+    const { readFileSync } = await import("node:fs");
+    const rule = readFileSync("src/styles/app.css", "utf8").match(/\n\.commit-bar \{[^}]*\}/)?.[0] ?? "";
+    expect(rule).toMatch(/left:\s*12px/);
+    expect(rule).toMatch(/right:\s*12px/);
+    expect(rule).toMatch(/width:\s*fit-content/);
+    expect(rule).not.toMatch(/translateX|left:\s*50%/);
+  });
 });

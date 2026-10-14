@@ -55,4 +55,15 @@ describe("ObjectTabs", () => {
     expect(css).toMatch(/\.tab-main\s*\{[^}]*flex:\s*1[^}]*padding:\s*0 8px 0 14px/);
     expect(css).toMatch(/\.tab\s*\{[^}]*padding:\s*0 6px 0 0;/);
   });
+
+  it("reorders tabs by drag and drop, and closes one with a middle click", () => {
+    const onClose = vi.fn();
+    const { container } = render(<ObjectTabs ws={ws} dirtyTables={{}} onClose={onClose} />);
+    const wrappers = container.querySelectorAll(".tab");
+    fireEvent.dragStart(wrappers[0]!);
+    fireEvent.drop(wrappers[1]!);
+    expect(useWorkspaces.getState().workspaces[0]!.tabs.map((t) => t.id)).toEqual(["q1", "t1"]);
+    fireEvent(wrappers[1]!, new MouseEvent("auxclick", { bubbles: true, button: 1 }));
+    expect(onClose).toHaveBeenCalledWith(expect.objectContaining({ id: "q1" }));
+  });
 });

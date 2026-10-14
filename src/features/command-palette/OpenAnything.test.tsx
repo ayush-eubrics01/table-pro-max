@@ -51,6 +51,8 @@ describe("OpenAnything", () => {
     render(<OpenAnything onConnect={() => undefined} />);
     expect(await screen.findByRole("option", { name: /^Settings/ })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /^set/ })).toBeInTheDocument();
+    // The list is still capped, so a huge schema never floods it.
+    expect(screen.getAllByRole("option").length).toBeLessThanOrEqual(60);
   });
 
   it("announces each section as a named group of options", async () => {

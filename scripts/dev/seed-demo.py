@@ -6,15 +6,22 @@ SQLite connection with a table tab and a query tab) and the theme setting.
 
 Usage: scripts/dev/seed-demo.py <app-data-dir> <light|dark> [active-tab-index]
 <app-data-dir> is $XDG_DATA_HOME/dev.tablepromax.app of an isolated run. The app must have
-started there once so app.db exists. Never point this at a real data folder.
+started there once so app.db exists. Never point this at a real data folder: the script
+refuses any path outside the repo's target/ folder or the system temp folder.
 """
 import datetime
 import json
 import pathlib
 import sqlite3
 import sys
+import tempfile
 
 data = pathlib.Path(sys.argv[1])
+# Demo data only ever goes into scratch space: the repo's target/ folder or the temp folder.
+_root = pathlib.Path(__file__).resolve().parents[2]
+_allowed = [_root / "target", pathlib.Path(tempfile.gettempdir()).resolve()]
+if not any(data.resolve().is_relative_to(a) for a in _allowed):
+    sys.exit(f"seed-demo.py writes only under {_allowed[0]} or {_allowed[1]}, not {data.resolve()}")
 theme = sys.argv[2]
 active_tab = int(sys.argv[3]) if len(sys.argv) > 3 else 0
 assert theme in ("light", "dark"), "theme must be light or dark"

@@ -36,4 +36,14 @@ describe("window chrome", () => {
       ].sort(),
     );
   });
+
+  it("each platform window is the base window plus only its own title-bar settings", () => {
+    const base = read("src-tauri/tauri.conf.json").app.windows[0];
+    const own = { linux: ["decorations"], windows: ["decorations"], macos: ["titleBarStyle", "hiddenTitle", "trafficLightPosition"] };
+    for (const [platform, keys] of Object.entries(own)) {
+      const win = { ...read(`src-tauri/tauri.${platform}.conf.json`).app.windows[0] };
+      for (const k of keys) delete win[k];
+      expect(win, platform).toEqual(base);
+    }
+  });
 });

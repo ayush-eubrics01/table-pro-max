@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Icon } from "../components/Icon";
 import { useWorkspaces, type Tab, type Workspace } from "../stores/workspaces";
-import { isMacPlatform } from "./WindowControls";
+import { shortcut } from "../lib/shortcut";
 
 function TabIcon({ tab }: { tab: Tab }) {
   if (tab.kind === "query") return <Icon name="terminal" size={14} />;
@@ -61,7 +61,7 @@ export function ObjectTabs({ ws, dirtyTables, onClose }: { ws: Workspace; dirtyT
           </button>
         </div>
       ))}
-      <button className="tab-add" aria-label="New query tab" title={`New query (${isMacPlatform() ? "⌘" : "Ctrl"}+T)`} onClick={() => openQuery(ws.id)}>
+      <button className="tab-add" aria-label="New query tab" title={`New query (${shortcut("Mod+T")})`} onClick={() => openQuery(ws.id)}>
         <Icon name="add" size={15} />
       </button>
     </div>
