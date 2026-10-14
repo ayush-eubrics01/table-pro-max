@@ -236,6 +236,7 @@ async fn exercise(t: Target) {
         }
         Cell::Text(t) => assert_eq!(t, "\\xdeadbeef", "PostgreSQL text protocol renders bytea as hex"),
         Cell::Null => panic!("blob missing"),
+        other => panic!("unexpected placeholder for a blob in a query result: {other:?}"),
     }
     assert_eq!(text(&r.statements[1].rows.as_ref().unwrap()[0][0]), "2");
 
