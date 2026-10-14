@@ -24,16 +24,16 @@ const GROUPS: { kinds: ObjectKind[]; label: string }[] = [
 function KindIcon({ kind }: { kind: ObjectKind }) {
   switch (kind) {
     case "view":
-      return <Icon name="visibility" size={13} />;
+      return <Icon name="visibility" size={14} />;
     case "materialized_view":
-      return <Icon name="layers" size={13} />;
+      return <Icon name="layers" size={14} />;
     case "function":
     case "procedure":
-      return <Icon name="function" size={13} />;
+      return <Icon name="function" size={14} />;
     case "sequence":
-      return <Icon name="tag" size={13} />;
+      return <Icon name="tag" size={14} />;
     default:
-      return <Icon name="table" size={13} />;
+      return <Icon name="table" size={14} />;
   }
 }
 
@@ -119,18 +119,23 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
 
   return (
     <aside className="sidebar" aria-label="Database objects">
-      <div className="sidebar-section">
-        {ws.session.capabilities.multipleDatabases && databases.length > 0 && (
-          <select className="select" aria-label="Database" value={ws.session.database} onChange={(e) => onSwitchDatabase(e.target.value)}>
-            {databases.map((d) => (
-              <option key={d}>{d}</option>
-            ))}
-          </select>
-        )}
-        <div className="field-row" style={{ gap: 4 }}>
+      <div className="sidebar-head">
+        <div className="db-switch" role="group" aria-label="Database and schema">
+          <Icon name="database" size={15} />
+          {ws.session.capabilities.multipleDatabases && databases.length > 0 && (
+            <>
+              <select className="db-switch-select db" aria-label="Database" value={ws.session.database} onChange={(e) => onSwitchDatabase(e.target.value)}>
+                {databases.map((d) => (
+                  <option key={d}>{d}</option>
+                ))}
+              </select>
+              <span className="db-switch-sep" aria-hidden>
+                /
+              </span>
+            </>
+          )}
           <select
-            className="select"
-            style={{ flex: 1 }}
+            className="db-switch-select"
             aria-label={ws.session.dialect === "mysql" ? "Database" : "Schema"}
             value={ws.schema}
             onChange={(e) => setSchema(ws.id, e.target.value).catch((err) => notifyError(err))}
@@ -139,21 +144,12 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
               <option key={s}>{s}</option>
             ))}
           </select>
-          <button className="btn btn-ghost btn-icon" aria-label="Refresh objects" title="Refresh" onClick={refresh}>
-            <Icon name="refresh" size={14} className={loading ? "spin" : undefined} />
-          </button>
-          {!ws.session.readOnly && (
-            <>
-              <button className="btn btn-ghost btn-icon" aria-label="New table" title="New table" onClick={() => setCreating(true)}>
-                <Icon name="add" size={14} />
-              </button>
-              <button className="btn btn-ghost btn-icon" aria-label="Import data" title="Import a CSV or JSON file" onClick={() => setImportInto(null)}>
-                <Icon name="upload" size={14} />
-              </button>
-            </>
-          )}
+          <Icon name="unfold_more" size={15} className="db-switch-chevron" />
         </div>
-        <input className="input" placeholder="Filter objects" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter objects" />
+        <div className="sidebar-filter">
+          <Icon name="filter_list" size={15} />
+          <input className="input" placeholder="Filter objects" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter objects" />
+        </div>
       </div>
       <div className="sidebar-tree" role="tree">
         {!objects && <div className="empty"><div className="spinner" /></div>}
@@ -163,9 +159,10 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
           const isCollapsed = collapsed[g.label];
           return (
             <div key={g.label} role="group">
-              <button className="tree-group" aria-expanded={!isCollapsed} onClick={() => setCollapsed({ ...collapsed, [g.label]: !isCollapsed })}>
-                {isCollapsed ? <Icon name="chevron_right" size={13} /> : <Icon name="keyboard_arrow_down" size={13} />}
-                {g.label} <span className="meta">{items.length}</span>
+              <button className="tree-group" aria-expanded={!isCollapsed} aria-label={`${g.label} (${items.length})`} onClick={() => setCollapsed({ ...collapsed, [g.label]: !isCollapsed })}>
+                <Icon name={isCollapsed ? "chevron_right" : "keyboard_arrow_down"} size={14} />
+                <span className="label">{g.label}</span>
+                <span className="count">{items.length}</span>
               </button>
               {!isCollapsed &&
                 items.map((o) => (
@@ -180,7 +177,7 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
                   >
                     <KindIcon kind={o.kind} />
                     <span className="name">{o.name}</span>
-                    {o.estimatedRows !== undefined && o.estimatedRows >= 0 && <span className="meta">~{formatCount(o.estimatedRows)}</span>}
+                    {o.estimatedRows !== undefined && o.estimatedRows >= 0 && <span className="count">~{formatCount(o.estimatedRows)}</span>}
                   </button>
                 ))}
             </div>
@@ -188,14 +185,14 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
         })}
         {objects && visible.length === 0 && <div className="empty">{needle ? "No matching objects" : "This schema is empty"}</div>}
         <div role="group">
-          <div className="tree-group" style={{ cursor: "default" }}>
-            <button className="tree-group" style={{ padding: 0, width: "auto" }} aria-expanded={!collapsed.dash} onClick={() => setCollapsed({ ...collapsed, dash: !collapsed.dash })}>
-              {collapsed.dash ? <Icon name="chevron_right" size={13} /> : <Icon name="keyboard_arrow_down" size={13} />}
-              Dashboards <span className="meta">{dashboards.length}</span>
+          <div className="tree-group-row">
+            <button className="tree-group" aria-expanded={!collapsed.dash} aria-label={`Dashboards (${dashboards.length})`} onClick={() => setCollapsed({ ...collapsed, dash: !collapsed.dash })}>
+              <Icon name={collapsed.dash ? "chevron_right" : "keyboard_arrow_down"} size={14} />
+              <span className="label">Dashboards</span>
+              <span className="count">{dashboards.length}</span>
             </button>
-            <span style={{ flex: 1 }} />
-            <button className="btn btn-ghost btn-icon" style={{ height: 18, width: 18 }} aria-label="New dashboard" title="New dashboard" onClick={() => void createDashboard(ws).catch((e) => notifyError(e))}>
-              <Icon name="add" size={12} />
+            <button className="btn btn-ghost btn-icon tree-group-add" aria-label="New dashboard" title="New dashboard" onClick={() => void createDashboard(ws).catch((e) => notifyError(e))}>
+              <Icon name="add" size={13} />
             </button>
           </div>
           {!collapsed.dash &&
@@ -225,9 +222,10 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
         </div>
         {saved.length > 0 && (
           <div role="group">
-            <button className="tree-group" aria-expanded={!collapsed.saved} onClick={() => setCollapsed({ ...collapsed, saved: !collapsed.saved })}>
-              {collapsed.saved ? <Icon name="chevron_right" size={13} /> : <Icon name="keyboard_arrow_down" size={13} />}
-              Saved queries <span className="meta">{saved.length}</span>
+            <button className="tree-group" aria-expanded={!collapsed.saved} aria-label={`Saved queries (${saved.length})`} onClick={() => setCollapsed({ ...collapsed, saved: !collapsed.saved })}>
+              <Icon name={collapsed.saved ? "chevron_right" : "keyboard_arrow_down"} size={14} />
+              <span className="label">Saved queries</span>
+              <span className="count">{saved.length}</span>
             </button>
             {!collapsed.saved &&
               saved.map((s) => (
@@ -255,6 +253,22 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
                 </button>
               ))}
           </div>
+        )}
+      </div>
+      <div className="sidebar-foot" role="toolbar" aria-label="Schema actions">
+        {!ws.session.readOnly && (
+          <button className="btn btn-ghost" onClick={() => setCreating(true)}>
+            <Icon name="add" size={15} /> New table
+          </button>
+        )}
+        <span className="grow" />
+        <button className="btn btn-ghost btn-icon" aria-label="Refresh objects" title="Refresh schema" onClick={refresh}>
+          <Icon name="refresh" size={15} className={loading ? "spin" : undefined} />
+        </button>
+        {!ws.session.readOnly && (
+          <button className="btn btn-ghost btn-icon" aria-label="Import data" title="Import a CSV or JSON file" onClick={() => setImportInto(null)}>
+            <Icon name="upload" size={15} />
+          </button>
         )}
       </div>
       <ContextMenu state={menu.menu} onClose={menu.close} />
