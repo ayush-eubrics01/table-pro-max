@@ -273,6 +273,7 @@ pre,
   position: fixed;
   inset: 0;
   background: var(--backdrop);
+  -webkit-backdrop-filter: blur(2px);
   backdrop-filter: blur(2px);
   display: flex;
   align-items: flex-start;

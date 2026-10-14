@@ -52,7 +52,6 @@ check the npm packages' `license` fields before each release.
 | @tanstack/react-virtual | MIT |
 | zustand | MIT |
 | sql-formatter | MIT |
-| lucide-react | ISC |
 | @fontsource-variable/geist, @fontsource-variable/geist-mono | OFL-1.1 (Geist fonts, bundled locally) |
 | Material Symbols Rounded icon paths (from the dev dependency @material-symbols/svg-300, copied into `src/components/icons.generated.ts`) | Apache-2.0 |
 

@@ -13,8 +13,14 @@ import json
 import pathlib
 import sqlite3
 import sys
+import tempfile
 
 data = pathlib.Path(sys.argv[1])
+# Demo data only ever goes into scratch space: the repo's target/ folder or the temp folder.
+_root = pathlib.Path(__file__).resolve().parents[2]
+_allowed = [_root / "target", pathlib.Path(tempfile.gettempdir()).resolve()]
+if not any(data.resolve().is_relative_to(a) for a in _allowed):
+    sys.exit(f"seed-demo.py writes only under {_allowed[0]} or {_allowed[1]}, not {data.resolve()}")
 theme = sys.argv[2]
 active_tab = int(sys.argv[3]) if len(sys.argv) > 3 else 0
 assert theme in ("light", "dark"), "theme must be light or dark"

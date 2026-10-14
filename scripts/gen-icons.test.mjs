@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { ICONS, buildModule, extractPath } from "./gen-icons.mjs";
 import { ICON_PATHS } from "../src/components/icons.generated";
@@ -21,5 +22,10 @@ describe("gen-icons", () => {
 
   it("the committed module matches the icon list", () => {
     expect(Object.keys(ICON_PATHS).sort()).toEqual([...ICONS].sort());
+  });
+
+  it("the committed module is exactly what the generator writes from the installed icons", () => {
+    const read = (name) => readFileSync(`node_modules/@material-symbols/svg-300/rounded/${name}.svg`, "utf8");
+    expect(readFileSync("src/components/icons.generated.ts", "utf8")).toBe(buildModule(ICONS, read));
   });
 });
