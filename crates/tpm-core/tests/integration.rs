@@ -566,6 +566,7 @@ async fn exercise(t: Target) {
     lazy_values(&engine, &sid, &t.schema, driver).await;
     fk_round_trip(&engine, &sid, &t.schema, driver).await;
     restore_points(&engine, &sid, &t.schema, driver, &profile, t.password.as_deref()).await;
+    restore_point_edges(&engine, &sid, driver).await;
 
     // --- cleanup ---
     run(&engine, &sid, "DROP TABLE tpm_it_items; DROP TABLE tpm_it_owners").await;
@@ -620,7 +621,7 @@ async fn restore_points(
     let small = RunOptions { confirmed: false, restore_max_rows: Some(2), ..Default::default() };
     let err = engine.run_script(sid, "UPDATE tpm_it_rp SET qty = 0 WHERE qty > 0", small, None).await.unwrap_err();
     assert_eq!(err.kind, ErrorKind::ConfirmationRequired, "{driver:?}");
-    assert!(err.detail.unwrap_or_default().contains("affects 3 rows, more than 2"), "{driver:?}");
+    assert!(err.detail.unwrap_or_default().contains("affects more than 2 rows"), "{driver:?}");
     // A capturable statement within the limits needs no confirmation.
     engine.run_script(sid, "UPDATE tpm_it_rp SET qty = qty WHERE id = 3", opts(false), None).await.unwrap();
     // Confirming runs it anyway.
@@ -709,6 +710,8 @@ async fn restore_points(
     // update, but not read every column. Planning succeeds; the capture SELECT is refused; the
     // UPDATE still runs, the note says why, and the user's transaction survives.
     if driver == Driver::Postgres {
+        // Left behind by an earlier failed run?
+        run(engine, sid, "DO $$ BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'tpm_it_limited') THEN EXECUTE 'DROP OWNED BY tpm_it_limited'; END IF; END $$").await;
         run(engine, sid, "DROP ROLE IF EXISTS tpm_it_limited").await;
         run(engine, sid, "CREATE ROLE tpm_it_limited").await;
         run(engine, sid, &format!("GRANT USAGE ON SCHEMA \"{schema}\" TO tpm_it_limited")).await;
@@ -836,6 +839,108 @@ async fn restore_points(
     assert_eq!(rows.len(), 2, "{driver:?}");
     assert_eq!((text(&rows[1][1]), text(&rows[1][2])), ("paid", "7"), "{driver:?}");
     run(engine, sid, "DROP TABLE tpm_it_rp").await;
+}
+
+/// Restore points: transactions the engine did not see begin, names resolved at run time, and
+/// planning that can be cancelled.
+async fn restore_point_edges(engine: &Arc<Engine>, sid: &str, driver: Driver) {
+    use tpm_core::restore::{RestoreStatus, RestoreStore};
+    let store = Arc::new(tpm_core::storage::Storage::open_in_memory().unwrap());
+    engine.set_restore_store(store.clone());
+    let opts = |confirmed| RunOptions { confirmed, ..Default::default() };
+    let point = |r: &tpm_core::engine::ScriptResult| {
+        r.statements.last().and_then(|s| s.restore.clone()).and_then(|n| n.point_id)
+    };
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rpe").await;
+    run(engine, sid, "CREATE TABLE tpm_it_rpe (id integer PRIMARY KEY, qty integer)").await;
+    run(engine, sid, "INSERT INTO tpm_it_rpe VALUES (1, 1), (2, 2), (3, 3)").await;
+    let qty = |id: i32| async move {
+        let r = run(engine, sid, &format!("SELECT qty FROM tpm_it_rpe WHERE id = {id}")).await;
+        text(&r.statements[0].rows.as_ref().unwrap()[0][0]).to_string()
+    };
+
+    // A transaction the engine did not see begin: the capture must not commit it.
+    let started = match driver {
+        Driver::Mysql | Driver::Mariadb => Some("SET autocommit = 0"),
+        Driver::Sqlite => Some("SAVEPOINT tpm_it_sp"),
+        _ => None,
+    };
+    if let Some(start) = started {
+        run(engine, sid, start).await;
+        let r = engine.run_script(sid, "UPDATE tpm_it_rpe SET qty = 9 WHERE id = 1", opts(true), None).await.unwrap();
+        assert!(r.statements[0].error.is_none(), "{driver:?}: {:?}", r.statements[0].error);
+        let id = point(&r).expect("saved");
+        assert_eq!(store.get(&id).unwrap().status, RestoreStatus::Pending, "{driver:?}");
+        run(engine, sid, "ROLLBACK").await;
+        assert_eq!(qty(1).await, "1", "the user's ROLLBACK undid the change ({driver:?})");
+        assert!(store.get(&id).is_err(), "{driver:?}");
+        if matches!(driver, Driver::Mysql | Driver::Mariadb) {
+            run(engine, sid, "SET autocommit = 1").await;
+        }
+    }
+
+    // MySQL commits the open transaction at DDL: points made after it are no longer pending.
+    if matches!(driver, Driver::Mysql | Driver::Mariadb) {
+        run(engine, sid, "BEGIN").await;
+        run(engine, sid, "CREATE TABLE tpm_it_rpe_tmp (a integer)").await;
+        let r = engine.run_script(sid, "UPDATE tpm_it_rpe SET qty = 8 WHERE id = 2", opts(true), None).await.unwrap();
+        let id = point(&r).expect("saved");
+        run(engine, sid, "ROLLBACK").await;
+        assert_eq!(qty(2).await, "8", "autocommitted after the DDL ({driver:?})");
+        assert_eq!(store.get(&id).unwrap().status, RestoreStatus::Kept, "{driver:?}");
+        run(engine, sid, "DROP TABLE tpm_it_rpe_tmp").await;
+    }
+
+    // Names are matched the way the database matches them.
+    if matches!(driver, Driver::Sqlite | Driver::Duckdb) {
+        let r = engine.run_script(sid, "UPDATE TPM_IT_RPE SET qty = 7 WHERE id = 3", opts(true), None).await.unwrap();
+        let id = point(&r).unwrap_or_else(|| panic!("{driver:?}: {:?}", r.statements[0].restore));
+        assert_eq!(store.get(&id).unwrap().table, "tpm_it_rpe");
+    }
+
+    // A schema switched earlier in the same script: the point names the table actually changed.
+    if driver == Driver::Postgres {
+        run(engine, sid, "DROP SCHEMA IF EXISTS tpm_it_s2 CASCADE").await;
+        run(engine, sid, "CREATE SCHEMA tpm_it_s2").await;
+        run(engine, sid, "CREATE TABLE tpm_it_s2.tpm_it_rpe (id integer PRIMARY KEY, qty integer)").await;
+        run(engine, sid, "INSERT INTO tpm_it_s2.tpm_it_rpe VALUES (1, 100)").await;
+        let r = engine
+            .run_script(
+                sid,
+                "SET search_path TO tpm_it_s2; DELETE FROM tpm_it_rpe WHERE id = 1; SET search_path TO public",
+                opts(true),
+                None,
+            )
+            .await
+            .unwrap();
+        let id = r.statements[1].restore.as_ref().and_then(|n| n.point_id.clone()).expect("saved");
+        let p = store.get(&id).unwrap();
+        assert_eq!((p.schema.as_str(), p.data.before[0][1].as_deref()), ("tpm_it_s2", Some("100")));
+        run(engine, sid, "DROP SCHEMA tpm_it_s2 CASCADE").await;
+
+        // Planning can be cancelled (a slow count): nothing runs.
+        let task = "tpm-it-cancel-plan".to_string();
+        let e2 = engine.clone();
+        let sid2 = sid.to_string();
+        let t2 = task.clone();
+        let h = tokio::spawn(async move {
+            let o = RunOptions { confirmed: true, task_id: Some(t2), ..Default::default() };
+            e2.run_script(&sid2, "UPDATE tpm_it_rpe SET qty = 0 WHERE pg_sleep(1) IS NOT NULL", o, None).await
+        });
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let t0 = Instant::now();
+        assert!(engine.cancel_task(&task).await.unwrap(), "the task is known while planning");
+        let r = h.await.unwrap().unwrap();
+        assert!(r.cancelled && r.statements.is_empty(), "{r:?}");
+        assert!(t0.elapsed() < Duration::from_secs(2));
+        assert_ne!(qty(1).await, "0");
+    }
+
+    // Runs that ask for no restore points (SQL files) keep none.
+    let o = RunOptions { confirmed: true, keep_restore_points: Some(false), ..Default::default() };
+    let r = engine.run_script(sid, "DELETE FROM tpm_it_rpe WHERE id = 3", o, None).await.unwrap();
+    assert!(r.statements[0].restore.is_none(), "{driver:?}");
+    run(engine, sid, "DROP TABLE tpm_it_rpe").await;
 }
 
 /// Following a foreign key: the referenced columns are known (even when the DDL left them

@@ -22,6 +22,7 @@ pub const TABLE_UNREADABLE: &str = "the table could not be read";
 pub const MULTI: &str = "names more than one table";
 pub const COMBINED: &str = "combines several changes";
 pub const BINARY: &str = "the table has binary columns";
+pub const MERGE: &str = "uses MERGE";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureKind {
@@ -104,7 +105,7 @@ pub fn plan_statement(sql: &str, dialect: Dialect) -> PlanOutcome {
                 return unsupported(UNREADABLE);
             };
             let mut p = new_plan(CaptureKind::Update, table_ref(name));
-            p.alias = alias.as_ref().map(|a| a.name.value.clone());
+            p.alias = alias.as_ref().map(|a| a.name.to_string());
             p.where_sql = u.selection.as_ref().map(|e| e.to_string());
             p.set_columns = u
                 .assignments
@@ -128,7 +129,7 @@ pub fn plan_statement(sql: &str, dialect: Dialect) -> PlanOutcome {
                 return unsupported(UNREADABLE);
             };
             let mut p = new_plan(CaptureKind::Delete, table_ref(name));
-            p.alias = alias.as_ref().map(|a| a.name.value.clone());
+            p.alias = alias.as_ref().map(|a| a.name.to_string());
             p.where_sql = d.selection.as_ref().map(|e| e.to_string());
             PlanOutcome::Capture(p)
         }
@@ -154,6 +155,7 @@ pub fn plan_statement(sql: &str, dialect: Dialect) -> PlanOutcome {
             }
         }
         Statement::Query(q) if matches!(*q.body, SetExpr::Update(_) | SetExpr::Delete(_)) => unsupported(WITH),
+        Statement::Merge(_) => unsupported(MERGE),
         _ => PlanOutcome::None,
     }
 }
@@ -226,13 +228,28 @@ pub fn capture_select(plan: &CapturePlan, s: &TableStructure, dialect: Dialect, 
     Ok(sql)
 }
 
-/// Counts the rows a statement will change, before anything runs.
-pub fn count_select(plan: &CapturePlan) -> String {
-    let mut sql = format!("SELECT count(*) FROM {}", from_sql(plan));
-    if let (Some(w), CaptureKind::Update | CaptureKind::Delete) = (&plan.where_sql, plan.kind) {
-        sql.push_str(&format!(" WHERE {w}"));
+/// Counts (at most `limit + 1` of) the rows a statement will change, before anything runs, and
+/// estimates their size as the capture would store it. Bounded, so a huge table is never scanned.
+pub fn count_select(plan: &CapturePlan, s: &TableStructure, driver: Driver, limit: u64) -> Result<String> {
+    let dialect = driver.dialect();
+    let qual = plan.alias.clone().unwrap_or_else(|| plan.table.sql.clone());
+    let mut sizes = Vec::new();
+    for c in capture_columns(plan, s) {
+        let col = format!("{qual}.{}", dialect.quote_ident(&c.name)?);
+        sizes.push(match driver {
+            Driver::Postgres => format!("COALESCE(octet_length({col}::text), 0)"),
+            Driver::Mysql | Driver::Mariadb => format!("COALESCE(LENGTH({col}), 0)"),
+            Driver::Sqlite => format!("COALESCE(length(CAST({col} AS BLOB)), 0)"),
+            _ => format!("COALESCE(strlen(CAST({col} AS VARCHAR)), 0)"),
+        });
     }
-    sql
+    let size = if sizes.is_empty() { "0".to_string() } else { sizes.join(" + ") };
+    let mut inner = format!("SELECT {size} AS rp_size FROM {}", from_sql(plan));
+    if let (Some(w), CaptureKind::Update | CaptureKind::Delete) = (&plan.where_sql, plan.kind) {
+        inner.push_str(&format!(" WHERE {w}"));
+    }
+    inner.push_str(&format!(" LIMIT {}", limit.saturating_add(1)));
+    Ok(format!("SELECT count(*), COALESCE(sum(rp_size), 0) FROM ({inner}) AS rp_count"))
 }
 
 #[cfg(test)]
@@ -323,6 +340,48 @@ mod tests {
     }
 
     #[test]
+    fn merge_is_unsupported_and_quoted_aliases_stay_quoted() {
+        assert_eq!(
+            plan("MERGE INTO orders o USING src s ON o.id = s.id WHEN MATCHED THEN DELETE"),
+            PlanOutcome::Unsupported(MERGE.into())
+        );
+        let p = cap("UPDATE orders \"O\" SET status = 'x' WHERE \"O\".id = 1");
+        assert_eq!(p.alias.as_deref(), Some("\"O\""));
+        assert!(
+            capture_select(&p, &orders(), Dialect::Postgres, false)
+                .unwrap()
+                .contains("FROM orders AS \"O\" WHERE \"O\".id = 1")
+        );
+    }
+
+    #[test]
+    fn counts_are_bounded_and_estimate_the_size() {
+        let p = cap("UPDATE orders o SET status = 'x' WHERE o.id = 1");
+        assert_eq!(
+            count_select(&p, &orders(), Driver::Postgres, 10).unwrap(),
+            "SELECT count(*), COALESCE(sum(rp_size), 0) FROM (SELECT COALESCE(octet_length(o.\"id\"::text), 0) + COALESCE(octet_length(o.\"status\"::text), 0) + COALESCE(octet_length(o.\"doc\"::text), 0) AS rp_size FROM orders AS o WHERE o.id = 1 LIMIT 11) AS rp_count"
+        );
+        let t = plan_statement("TRUNCATE orders", Dialect::Mysql);
+        let PlanOutcome::Capture(t) = t else { panic!() };
+        assert_eq!(
+            count_select(&t, &orders(), Driver::Mysql, 5).unwrap(),
+            "SELECT count(*), COALESCE(sum(rp_size), 0) FROM (SELECT COALESCE(LENGTH(orders.`id`), 0) + COALESCE(LENGTH(orders.`status`), 0) + COALESCE(LENGTH(orders.`doc`), 0) AS rp_size FROM orders LIMIT 6) AS rp_count"
+        );
+        let d = plan_statement("DELETE FROM orders WHERE id = 2", Dialect::Sqlite);
+        let PlanOutcome::Capture(d) = d else { panic!() };
+        assert!(
+            count_select(&d, &orders(), Driver::Sqlite, 5)
+                .unwrap()
+                .contains("COALESCE(length(CAST(orders.\"id\" AS BLOB)), 0)")
+        );
+        assert!(
+            count_select(&d, &orders(), Driver::Duckdb, 5)
+                .unwrap()
+                .contains("COALESCE(strlen(CAST(orders.\"id\" AS VARCHAR)), 0)")
+        );
+    }
+
+    #[test]
     fn structure_reasons() {
         let s = orders();
         assert_eq!(
@@ -347,9 +406,7 @@ mod tests {
             capture_select(&p, &orders(), Dialect::Postgres, true).unwrap(),
             "SELECT o.\"id\"::text AS \"id\", o.\"status\"::text AS \"status\", o.\"doc\"::text AS \"doc\" FROM orders AS o WHERE o.id = 1 FOR UPDATE"
         );
-        assert_eq!(count_select(&p), "SELECT count(*) FROM orders AS o WHERE o.id = 1");
         let t = cap("TRUNCATE orders");
-        assert_eq!(count_select(&t), "SELECT count(*) FROM orders");
         assert_eq!(
             capture_select(&t, &orders(), Dialect::Sqlite, false).unwrap(),
             "SELECT orders.\"id\", orders.\"status\", orders.\"doc\" FROM orders"

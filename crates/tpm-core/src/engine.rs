@@ -153,6 +153,9 @@ pub struct RunOptions {
     /// Size limit for one restore point in MB (default 50); over it, none is kept.
     #[serde(default)]
     pub restore_max_mb: Option<u64>,
+    /// `Some(false)` runs without restore points (SQL files).
+    #[serde(default)]
+    pub keep_restore_points: Option<bool>,
 }
 
 /// A statement's restore point, resolved against its table before the script runs.
@@ -175,6 +178,13 @@ enum CaptureState {
 }
 
 const DUCKDB_TXN: &str = "inside a transaction on DuckDB";
+
+/// The size limits of one restore point (Settings › Safety).
+#[derive(Clone, Copy)]
+struct RestoreLimits {
+    rows: u64,
+    bytes: u64,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -583,8 +593,25 @@ impl Engine {
         if let PolicyDecision::Block { reason } = &analysis.decision {
             return Err(AppError::new(ErrorKind::PolicyViolation, reason));
         }
+        // The task exists from here on, so Cancel also stops planning.
+        let task_id = opts.task_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        lock(&self.tasks)
+            .insert(task_id.clone(), RunningTask { session_id: session_id.to_string(), cancelled: cancelled.clone() });
+        let limits = RestoreLimits {
+            rows: opts.restore_max_rows.unwrap_or(100_000),
+            bytes: opts.restore_max_mb.unwrap_or(50).saturating_mul(1024 * 1024),
+        };
         // Plan restore points before anything runs, so one confirmation covers every reason.
-        let captures = self.plan_restore_points(&handle, &analysis, opts.restore_max_rows.unwrap_or(100_000)).await;
+        let captures = if opts.keep_restore_points == Some(false) {
+            vec![CaptureState::Off; analysis.statements.len()]
+        } else {
+            self.plan_restore_points(&handle, &analysis, limits, &cancelled).await
+        };
+        if cancelled.load(Ordering::SeqCst) {
+            lock(&self.tasks).remove(&task_id);
+            return Ok(ScriptResult { task_id, statements: vec![], duration_ms: 0, cancelled: true });
+        }
         let mut reasons = match &analysis.decision {
             PolicyDecision::Confirm { reasons } => reasons.clone(),
             _ => vec![],
@@ -595,6 +622,7 @@ impl Engine {
             }
         }
         if !reasons.is_empty() && !opts.confirmed {
+            lock(&self.tasks).remove(&task_id);
             return Err(AppError::new(
                 ErrorKind::ConfirmationRequired,
                 format!("Confirm execution on {} ({})", handle.info.connection_name, handle.info.target),
@@ -602,15 +630,13 @@ impl Engine {
             .with_detail(reasons.join("\n")));
         }
 
-        let task_id = opts.task_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let cancelled = Arc::new(AtomicBool::new(false));
-        lock(&self.tasks)
-            .insert(task_id.clone(), RunningTask { session_id: session_id.to_string(), cancelled: cancelled.clone() });
         let timeout_secs = opts.timeout_secs.unwrap_or(handle.profile.query_timeout_secs);
         let max_rows = opts.max_rows.unwrap_or(DEFAULT_MAX_ROWS).clamp(1, 10_000_000);
-        let restore_max_rows = opts.restore_max_rows.unwrap_or(100_000);
-        let restore_max_bytes = opts.restore_max_mb.unwrap_or(50).saturating_mul(1024 * 1024);
         let started = Instant::now();
+        // A USE/SET or DDL earlier in the script can change which table a name means: plans made
+        // before the script ran are resolved again before such a statement's capture.
+        let mut context_changed = false;
+        let mut structures = HashMap::new();
         let mut statements = Vec::new();
 
         async {
@@ -625,15 +651,20 @@ impl Engine {
                 let want_origins = stmt.class == crate::safety::StatementClass::Read
                     && !handle.profile.read_only()
                     && !handle.open_txn.load(Ordering::SeqCst);
-                let (job, mut note) = match &captures[index] {
+                let state = if context_changed {
+                    self.plan_one(&handle, stmt, limits, &mut structures).await
+                } else {
+                    captures[index].clone()
+                };
+                let (job, mut note) = match &state {
                     CaptureState::Planned(rc) => (
                         Some(CaptureJob {
                             rc: (**rc).clone(),
                             dialect: handle.info.dialect,
                             driver: handle.profile.driver,
                             in_txn: handle.open_txn.load(Ordering::SeqCst),
-                            max_rows: restore_max_rows,
-                            max_bytes: restore_max_bytes,
+                            max_rows: limits.rows,
+                            max_bytes: limits.bytes,
                         }),
                         None,
                     ),
@@ -656,6 +687,12 @@ impl Engine {
                     self.add_origins(&handle, &stmt.sql, outcomes).await;
                 }
                 self.track_transaction(&handle, stmt, res.is_ok());
+                if stmt.class == crate::safety::StatementClass::Session
+                    || stmt.class >= crate::safety::StatementClass::Ddl
+                {
+                    context_changed = true;
+                    structures.clear();
+                }
                 let duration_ms = t0.elapsed().as_millis() as u64;
                 let base = opts.base_offset + stmt.start;
                 let mut produced = match res {
@@ -773,8 +810,8 @@ impl Engine {
         .await
     }
 
-    /// The schema and name of the table a statement names, as the server resolves it.
-    /// `Ok(None)` when no such table exists (the statement will fail, or is `IF EXISTS`).
+    /// The schema and name of the table a statement names, as the server resolves it (SQLite and
+    /// DuckDB match names case-insensitively, as they do). `Ok(None)` when no such table exists.
     async fn resolve_table(
         &self,
         handle: &Arc<SessionHandle>,
@@ -798,88 +835,158 @@ impl Engine {
                     .await?;
                 Ok(first(&rs, 0).zip(first(&rs, 1)))
             }
-            driver => {
-                let schema = match (&t.schema, driver) {
-                    (Some(s), _) => s.clone(),
-                    (None, Driver::Mysql | Driver::Mariadb) => {
+            Driver::Sqlite => {
+                // Unqualified names find temp tables before main ones, as SQLite does.
+                let schemas = match &t.schema {
+                    Some(s) => vec![s.clone()],
+                    None => vec!["temp".into(), "main".into()],
+                };
+                for schema in schemas {
+                    let sql = format!(
+                        "SELECT name FROM {}.sqlite_master WHERE type = 'table' AND name = ?1 COLLATE NOCASE",
+                        Dialect::Sqlite.quote_ident(&schema)?
+                    );
+                    let rs = self.restore_read(handle, sql, vec![Some(t.name.clone())], 1).await?;
+                    if let Some(name) = first(&rs, 0) {
+                        return Ok(Some((schema, name)));
+                    }
+                }
+                Ok(None)
+            }
+            Driver::Duckdb => {
+                let (sql, params) = match &t.schema {
+                    Some(s) => (
+                        "SELECT schema_name, table_name FROM duckdb_tables() \
+                         WHERE lower(schema_name) = lower($2) AND lower(table_name) = lower($1)",
+                        vec![Some(t.name.clone()), Some(s.clone())],
+                    ),
+                    None => (
+                        "SELECT schema_name, table_name FROM duckdb_tables() \
+                         WHERE schema_name = current_schema() AND lower(table_name) = lower($1)",
+                        vec![Some(t.name.clone())],
+                    ),
+                };
+                let rs = self.restore_read(handle, sql.into(), params, 1).await?;
+                Ok(first(&rs, 0).zip(first(&rs, 1)))
+            }
+            _ => {
+                let schema = match &t.schema {
+                    Some(s) => s.clone(),
+                    None => {
                         let rs = self.restore_read(handle, "SELECT DATABASE()".into(), vec![], 1).await?;
                         first(&rs, 0).unwrap_or_else(|| handle.info.database.clone())
                     }
-                    (None, Driver::Duckdb) => {
-                        let rs = self.restore_read(handle, "SELECT current_schema()".into(), vec![], 1).await?;
-                        first(&rs, 0).unwrap_or_else(|| "main".into())
-                    }
-                    (None, _) => "main".into(),
                 };
                 Ok(Some((schema, t.name.clone())))
             }
         }
     }
 
-    /// Resolves a capture plan against its table and the row limit. `Ok(None)`: the table does
-    /// not exist, so there is nothing to keep. `Err`: the reason there can't be a restore point.
+    /// Resolves a capture plan against its table and the limits. `Ok(None)`: nothing to keep (no
+    /// such table, for a drop or truncate). `Err`: why there can't be a restore point, and whether
+    /// to ask before running. `structures` caches tables already read in this planning pass.
     async fn resolve_capture(
         &self,
         handle: &Arc<SessionHandle>,
-        mut plan: crate::restore_plan::CapturePlan,
-        max_rows: u64,
-    ) -> std::result::Result<Option<ResolvedCapture>, String> {
-        use crate::restore_plan::{TABLE_UNREADABLE, UNREADABLE, count_select, structure_reason};
+        plan: crate::restore_plan::CapturePlan,
+        limits: RestoreLimits,
+        structures: &mut HashMap<(String, String), TableStructure>,
+    ) -> std::result::Result<Option<ResolvedCapture>, (String, bool)> {
+        use crate::restore_plan::{CaptureKind, TABLE_UNREADABLE, UNREADABLE, count_select, structure_reason};
         let session_id = handle.info.session_id.clone();
+        let changes_rows = matches!(plan.kind, CaptureKind::Update | CaptureKind::Delete);
+        // A row change whose table can't be found still runs (it may be a table we can't see):
+        // say so rather than stay silent. A missing table to drop or truncate holds nothing.
+        let missing = || if changes_rows { Err((TABLE_UNREADABLE.to_string(), false)) } else { Ok(None) };
         let (schema, table) = match self.resolve_table(handle, &plan.table).await {
             Ok(Some(found)) => found,
-            Ok(None) => return Ok(None),
-            Err(e) if e.message.contains(DUCKDB_TXN) => return Err(DUCKDB_TXN.into()),
-            Err(_) => return Err(TABLE_UNREADABLE.into()),
+            Ok(None) => return missing(),
+            Err(e) if e.message.contains(DUCKDB_TXN) => return Err((DUCKDB_TXN.into(), false)),
+            Err(_) => return Err((TABLE_UNREADABLE.into(), true)),
         };
-        let structure = match self.table_structure(&session_id, &schema, &table, true).await {
-            Ok(s) => s,
-            Err(e) if e.kind == ErrorKind::NotFound => return Ok(None),
-            Err(_) => return Err(TABLE_UNREADABLE.into()),
+        let key = (schema.clone(), table.clone());
+        let structure = match structures.get(&key) {
+            Some(s) => s.clone(),
+            None => match self.table_structure(&session_id, &schema, &table, true).await {
+                Ok(s) => {
+                    structures.insert(key, s.clone());
+                    s
+                }
+                Err(e) if e.kind == ErrorKind::NotFound => return missing(),
+                Err(_) => return Err((TABLE_UNREADABLE.into(), true)),
+            },
         };
         if let Some(r) = structure_reason(&plan, &structure, handle.profile.driver) {
-            return Err(r);
+            return Err((r, true));
         }
-        plan.table.schema = Some(schema);
-        plan.table.name = table;
-        let rs = self.restore_read(handle, count_select(&plan), vec![], 1).await.map_err(|_| UNREADABLE.to_string())?;
-        let n: u64 =
-            rs.rows.first().and_then(|r| r.first()).and_then(|c| c.as_text()).and_then(|t| t.parse().ok()).unwrap_or(0);
-        if n > max_rows {
-            return Err(format!("affects {n} rows, more than {max_rows}"));
+        let sql = count_select(&plan, &structure, handle.profile.driver, limits.rows)
+            .map_err(|_| (UNREADABLE.to_string(), true))?;
+        let rs = self
+            .restore_read(handle, sql, vec![], 1)
+            .await
+            .map_err(|e| (format!("could not read the rows: {}", e.message), true))?;
+        let num = |i: usize| -> u64 {
+            rs.rows
+                .first()
+                .and_then(|r| r.get(i))
+                .and_then(|c| c.as_text())
+                .and_then(|t| t.parse::<f64>().ok())
+                .map_or(0, |f| f as u64)
+        };
+        let (n, bytes) = (num(0), num(1));
+        if n > limits.rows {
+            return Err((format!("affects more than {} rows", limits.rows), true));
+        }
+        // Too large to keep: the statement runs without one, and its message says so.
+        if bytes > limits.bytes {
+            return Err((format!("more than {} MB", limits.bytes / (1024 * 1024)), false));
         }
         Ok(Some(ResolvedCapture { plan, structure }))
     }
 
-    /// Plans a restore point for each statement of a script (see restore_plan.rs).
+    /// Plans a restore point for each statement of a script (see restore_plan.rs). Stops early
+    /// when the run is cancelled.
     async fn plan_restore_points(
         &self,
         handle: &Arc<SessionHandle>,
         analysis: &ScriptAnalysis,
-        max_rows: u64,
+        limits: RestoreLimits,
+        cancelled: &AtomicBool,
     ) -> Vec<CaptureState> {
-        use crate::restore_plan::{PlanOutcome, plan_statement};
         let mut out = vec![CaptureState::Off; analysis.statements.len()];
         if !self.restore_enabled(handle) {
             return out;
         }
+        let mut structures = HashMap::new();
         for (i, stmt) in analysis.statements.iter().enumerate() {
-            if stmt.class < crate::safety::StatementClass::Write {
-                continue;
+            if cancelled.load(Ordering::SeqCst) {
+                break;
             }
-            out[i] = match plan_statement(&stmt.sql, handle.info.dialect) {
-                PlanOutcome::None => CaptureState::Off,
-                PlanOutcome::Unsupported(reason) => CaptureState::Skipped { reason, ask: true },
-                PlanOutcome::Capture(plan) => match self.resolve_capture(handle, plan, max_rows).await {
-                    Ok(Some(rc)) => CaptureState::Planned(Box::new(rc)),
-                    Ok(None) => CaptureState::Off,
-                    // DuckDB in a transaction: said in the statement's message, not asked about.
-                    Err(reason) if reason == DUCKDB_TXN => CaptureState::Skipped { reason, ask: false },
-                    Err(reason) => CaptureState::Skipped { reason, ask: true },
-                },
-            };
+            out[i] = self.plan_one(handle, stmt, limits, &mut structures).await;
         }
         out
+    }
+
+    async fn plan_one(
+        &self,
+        handle: &Arc<SessionHandle>,
+        stmt: &crate::safety::StatementAnalysis,
+        limits: RestoreLimits,
+        structures: &mut HashMap<(String, String), TableStructure>,
+    ) -> CaptureState {
+        use crate::restore_plan::{PlanOutcome, plan_statement};
+        if stmt.class < crate::safety::StatementClass::Write {
+            return CaptureState::Off;
+        }
+        match plan_statement(&stmt.sql, handle.info.dialect) {
+            PlanOutcome::None => CaptureState::Off,
+            PlanOutcome::Unsupported(reason) => CaptureState::Skipped { reason, ask: true },
+            PlanOutcome::Capture(plan) => match self.resolve_capture(handle, plan, limits, structures).await {
+                Ok(Some(rc)) => CaptureState::Planned(Box::new(rc)),
+                Ok(None) => CaptureState::Off,
+                Err((reason, ask)) => CaptureState::Skipped { reason, ask },
+            },
+        }
     }
 
     // ---- restore points: after a statement ------------------------------------------
@@ -908,8 +1015,9 @@ impl Engine {
                 handle.open_txn.store(open, Ordering::SeqCst);
             }
         } else if matches!(driver, Driver::Mysql | Driver::Mariadb) && mysql_implicit_commit(&stmt.sql) {
-            // MySQL commits the open transaction before and after DDL.
+            // MySQL commits the open transaction before and after DDL: it is over.
             self.settle_pending(handle, true);
+            handle.open_txn.store(false, Ordering::SeqCst);
         }
     }
 
@@ -2087,8 +2195,6 @@ fn build_select_unchecked(
     Ok(q)
 }
 
-/// Whether a successful transaction-control statement leaves a transaction open (`Some(true)`),
-/// ends it (`Some(false)`), or neither (savepoints, `SET TRANSACTION`).
 /// What a planned restore point needs while its statement runs (see `run_captured`).
 struct CaptureJob {
     rc: ResolvedCapture,
@@ -2115,6 +2221,21 @@ struct Captured {
 /// The size of a restore point's values (its `bytes`, counted against the size limits).
 fn values_bytes<'a>(rows: impl IntoIterator<Item = &'a Vec<Param>>) -> u64 {
     rows.into_iter().flatten().map(|v| v.as_ref().map_or(0, |t| t.len() as u64)).sum()
+}
+
+impl Captured {
+    /// A capture that kept nothing (only `dropped` is filled in by the caller).
+    fn empty(st: &TableStructure) -> Self {
+        Captured {
+            kind: crate::restore::RestoreKind::Update,
+            schema: st.schema.clone(),
+            table: st.name.clone(),
+            data: Default::default(),
+            bytes: 0,
+            pending: false,
+            dropped: None,
+        }
+    }
 }
 
 fn cell_param(c: &Cell) -> Param {
@@ -2144,9 +2265,16 @@ async fn guarded<T>(
     r
 }
 
-/// The connection is gone or the user cancelled: stop rather than carry on without a capture.
+/// The connection is gone, the user cancelled, or the server ended the transaction (deadlock,
+/// serialization failure): stop rather than carry on without a capture, possibly outside the
+/// transaction the user thinks is open.
 fn is_fatal(e: &AppError) -> bool {
+    let code = e.code.as_deref().unwrap_or("");
     matches!(e.kind, ErrorKind::Cancelled | ErrorKind::Network | ErrorKind::Timeout)
+        || code.starts_with("40001")
+        || code.starts_with("40P01")
+        || code.starts_with("1213")
+        || code.contains("(40001)")
 }
 
 /// Runs one statement with its restore point (spec: "Capture at run time"): outside the user's
@@ -2169,8 +2297,16 @@ async fn run_captured(
     // MySQL commits implicitly around DDL (TRUNCATE too): no transaction of ours, and the point
     // is kept even inside the user's transaction, which that commit ended.
     let implicit_commit = mysql && !row_change;
-    let own_txn = !job.in_txn && !implicit_commit;
-    let guard = job.in_txn && job.driver == Driver::Postgres;
+    // A transaction the engine did not see begin (MySQL `SET autocommit = 0`, SQLite `SAVEPOINT`)
+    // is still the user's: our BEGIN would commit it (MySQL) or fail (SQLite). Ask the session.
+    let in_txn = job.in_txn || (!implicit_commit && s.in_transaction().await.unwrap_or(true));
+    if in_txn && job.driver == Driver::Duckdb {
+        // No savepoints: a failed read would abort the user's transaction, so read nothing.
+        let outcomes = s.execute(sql, max_rows).await?;
+        return Ok((outcomes, Captured { dropped: Some(DUCKDB_TXN.into()), ..Captured::empty(st) }));
+    }
+    let own_txn = !in_txn && !implicit_commit;
+    let guard = in_txn && job.driver == Driver::Postgres;
     let lock = (job.driver == Driver::Postgres || mysql) && row_change;
     let cols = capture_columns(plan, st);
     let mut cap = Captured {
@@ -2195,7 +2331,7 @@ async fn run_captured(
             ..Default::default()
         },
         bytes: 0,
-        pending: job.in_txn && !implicit_commit,
+        pending: in_txn && !implicit_commit,
         dropped: None,
     };
 
@@ -2508,6 +2644,8 @@ fn mysql_implicit_commit(sql: &str) -> bool {
     matches!(first.as_str(), "CREATE" | "ALTER" | "DROP" | "TRUNCATE" | "RENAME")
 }
 
+/// Whether a successful transaction-control statement leaves a transaction open (`Some(true)`),
+/// ends it (`Some(false)`), or neither (savepoints, `SET TRANSACTION`).
 fn txn_effect(sql: &str) -> Option<bool> {
     let words: Vec<String> =
         sql.split_whitespace().take(2).map(|w| w.trim_end_matches(';').to_ascii_uppercase()).collect();
@@ -2556,6 +2694,16 @@ mod schema_tests {
         assert_eq!(super::txn_effect("ROLLBACK"), Some(false));
         assert_eq!(super::txn_effect("rollback to savepoint a"), None);
         assert_eq!(super::txn_effect("SAVEPOINT a"), None);
+    }
+
+    #[test]
+    fn deadlocks_and_serialization_failures_stop_a_capture() {
+        let e = |code: &str| AppError::new(ErrorKind::Database, "x").with_code(code);
+        assert!(super::is_fatal(&e("40P01")));
+        assert!(super::is_fatal(&e("40001")));
+        assert!(super::is_fatal(&e("1213 (40001)")));
+        assert!(!super::is_fatal(&e("42501")));
+        assert!(!super::is_fatal(&e("1142 (42000)")));
     }
 
     #[test]
