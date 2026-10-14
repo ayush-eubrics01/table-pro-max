@@ -102,4 +102,9 @@ describe("Sidebar", () => {
     expect(css).toMatch(/\.db-switch-select:last-of-type\s*\{[^}]*flex:\s*1/);
     expect(css).toMatch(/\.db-switch-chevron\s*\{[^}]*position:\s*absolute[^}]*pointer-events:\s*none/);
   });
+
+  it("shows which of the two switcher selects has keyboard focus", () => {
+    const css = readFileSync("src/styles/app.css", "utf8");
+    expect(css).toMatch(/\.db-switch-select:focus-visible\s*\{[^}]*text-decoration:\s*underline/);
+  });
 });

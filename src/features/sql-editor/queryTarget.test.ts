@@ -33,7 +33,8 @@ describe("Plan tabs", () => {
     let back = false;
     render(createElement(PlanTabs, { onBack: () => (back = true) }));
     expect(screen.getByRole("tab", { name: "Plan" })).toHaveAttribute("aria-selected", "true");
-    screen.getByRole("tab", { name: "Back to results" }).click();
+    expect(screen.queryByRole("tab", { name: "Back to results" })).not.toBeInTheDocument();
+    screen.getByRole("button", { name: "Back to results" }).click();
     expect(back).toBe(true);
   });
 

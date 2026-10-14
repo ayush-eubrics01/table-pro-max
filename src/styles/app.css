@@ -714,8 +714,13 @@ pre,
   text-overflow: ellipsis;
   cursor: pointer;
 }
+/* Both selects share the box's focus ring, so the focused one is also underlined. */
 .db-switch-select:focus-visible {
   outline: none;
+  text-decoration: underline;
+  text-decoration-color: var(--focus);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
 }
 .db-switch-select.db {
   font-weight: 600;
@@ -1558,6 +1563,10 @@ pre,
   overflow-x: auto;
   flex: none;
 }
+.results-tablist {
+  display: flex;
+  gap: 4px;
+}
 .results-tabs button {
   height: 26px;
   padding: 0 10px;
@@ -2088,6 +2097,14 @@ pre,
   padding: 6px;
   max-height: 50vh;
   overflow: auto;
+}
+.palette-section {
+  list-style: none;
+}
+.palette ul ul {
+  padding: 0;
+  max-height: none;
+  overflow: visible;
 }
 .palette-group {
   padding: 10px 10px 4px;
