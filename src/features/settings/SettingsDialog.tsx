@@ -41,10 +41,11 @@ function NumberField({ label, k, min, max, hint }: { label: string; k: keyof Set
   useEffect(() => {
     if (!edited.current) setDraft(String(value));
   }, [value]);
-  // Closing Settings (Esc, Done) unmounts the field without a blur: save what was typed, and only that.
+  // Closing Settings (Esc, Done) unmounts the field without a blur: save what was typed, and only that
+  // (a cleared field is dropped rather than saved as the minimum).
   const latest = useRef({ draft, commit });
   latest.current = { draft, commit };
-  useEffect(() => () => void (edited.current && latest.current.commit(latest.current.draft)), []);
+  useEffect(() => () => void (edited.current && latest.current.draft !== "" && latest.current.commit(latest.current.draft)), []);
   return (
     <SettingRow label={label} description={hint}>
       <input

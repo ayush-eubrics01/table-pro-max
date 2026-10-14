@@ -107,4 +107,12 @@ describe("SettingsDialog", () => {
     rerender(<Overlays />);
     expect(useSettings.getState().settings["editor.fontSize"]).toBe(DEFAULT_SETTINGS["editor.fontSize"]);
   });
+
+  it("drops a cleared number when the dialog closes", () => {
+    const { unmount } = render(<SettingsDialog appInfo={appInfo} onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "History" }));
+    fireEvent.change(screen.getByLabelText("Maximum history entries"), { target: { value: "" } });
+    unmount();
+    expect(useSettings.getState().settings["history.maxEntries"]).toBe(DEFAULT_SETTINGS["history.maxEntries"]);
+  });
 });

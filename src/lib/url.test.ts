@@ -9,4 +9,15 @@ describe("withoutPassword", () => {
     expect(withoutPassword("sqlite:///tmp/a.db")).toBe("sqlite:///tmp/a.db");
     expect(withoutPassword("not a url")).toBe("not a url");
   });
+
+  it("never leaves any part of a password with / ? # or @ in it", () => {
+    for (const pw of ["pa/ss", "pa?ss", "pa#ss", "p@ss", "a:b", "x@y/z?#"]) {
+      const out = withoutPassword(`mongodb://u:${pw}@db.internal:27017/x`);
+      expect(out).not.toContain(pw);
+      expect(out.startsWith("mongodb://u@")).toBe(true);
+    }
+    expect(withoutPassword("postgres://u:p@ss@h/db")).toBe("postgres://u@h/db");
+    expect(withoutPassword("redis://u@h:6379/0")).toBe("redis://u@h:6379/0");
+    expect(withoutPassword("postgres://[::1]:5432/db")).toBe("postgres://[::1]:5432/db");
+  });
 });
