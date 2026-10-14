@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
 import type { ConnectionProfile, DbObject, SavedQuery } from "../../types/backend";
 import { api } from "../../lib/ipc";
@@ -6,6 +6,7 @@ import { useConnections } from "../../stores/connections";
 import { useWorkspaces } from "../../stores/workspaces";
 import { useUi } from "../../stores/ui";
 import { rank } from "./fuzzy";
+import { groupResults } from "./groups";
 
 type Item =
   | { kind: "object"; label: string; where: string; wsId: string; obj: DbObject }
@@ -56,6 +57,9 @@ export function OpenAnything({ onConnect }: { onConnect: (p: ConnectionProfile) 
   }, [workspaces, activeId, connections, saved]);
 
   const results = useMemo(() => rank(items, debounced, (i) => i.label), [items, debounced]);
+  const groups = useMemo(() => groupResults(results), [results]);
+  // Keyboard order follows the displayed (grouped) order.
+  const flat = useMemo(() => groups.flatMap((g) => g.items), [groups]);
   useEffect(() => setIndex(0), [debounced]);
   useEffect(() => {
     listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
@@ -98,36 +102,61 @@ export function OpenAnything({ onConnect }: { onConnect: (p: ConnectionProfile) 
   return (
     <div className="dialog-backdrop" onMouseDown={(e) => e.target === e.currentTarget && setOpen(false)}>
       <div className="dialog palette" role="dialog" aria-modal="true" aria-label="Open anything">
-        <input
-          autoFocus
-          placeholder="Open a table, view, schema, saved query or connection"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          role="combobox"
-          aria-expanded="true"
-          aria-controls="palette-results"
-          aria-activedescendant={`palette-${index}`}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") setOpen(false);
-            else if (e.key === "ArrowDown") {
-              e.preventDefault();
-              setIndex((i) => Math.min(results.length - 1, i + 1));
-            } else if (e.key === "ArrowUp") {
-              e.preventDefault();
-              setIndex((i) => Math.max(0, i - 1));
-            } else if (e.key === "Enter") choose(results[index]);
-          }}
-        />
+        <div className="palette-search">
+          <Icon name="search" size={16} />
+          <input
+            autoFocus
+            placeholder="Jump to a table, run an action, switch connection…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="palette-results"
+            aria-activedescendant={`palette-${index}`}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setOpen(false);
+              else if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setIndex((i) => Math.min(flat.length - 1, i + 1));
+              } else if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setIndex((i) => Math.max(0, i - 1));
+              } else if (e.key === "Enter") choose(flat[index]);
+            }}
+          />
+          <span className="kbd">Esc</span>
+        </div>
         <ul id="palette-results" role="listbox" ref={listRef}>
-          {results.map((r, i) => (
-            <li key={i} id={`palette-${i}`} role="option" aria-selected={i === index} onMouseEnter={() => setIndex(i)} onClick={() => choose(r)}>
-              {icon(r)}
-              <span>{r.label}</span>
-              <span className="where">{r.where}</span>
-            </li>
+          {groups.map((g) => (
+            <Fragment key={g.kind}>
+              <li role="presentation" className="palette-group">
+                {g.title}
+              </li>
+              {g.items.map((r) => {
+                const i = flat.indexOf(r);
+                return (
+                  <li key={i} id={`palette-${i}`} role="option" aria-selected={i === index} onMouseEnter={() => setIndex(i)} onClick={() => choose(r)}>
+                    {icon(r)}
+                    <span>{r.label}</span>
+                    <span className="where">{r.where}</span>
+                  </li>
+                );
+              })}
+            </Fragment>
           ))}
-          {results.length === 0 && <li className="hint">Nothing matches. Objects appear here after their schema has been opened.</li>}
+          {flat.length === 0 && <li className="hint">Nothing matches. Objects appear here after their schema has been opened.</li>}
         </ul>
+        <div className="palette-foot">
+          <span>
+            <span className="kbd">↑</span> <span className="kbd">↓</span> navigate
+          </span>
+          <span>
+            <span className="kbd">↵</span> open
+          </span>
+          <span>
+            <span className="kbd">Esc</span> close
+          </span>
+        </div>
       </div>
     </div>
   );

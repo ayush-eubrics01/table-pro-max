@@ -1882,38 +1882,71 @@ pre,
 
 .palette {
   width: min(640px, calc(100vw - 32px));
+  padding: 0;
 }
-.palette input {
-  width: 100%;
-  height: 44px;
+.palette-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 52px;
+  padding: 0 14px 0 16px;
+  border-bottom: 1px solid var(--border-hairline);
+  color: var(--text-faint);
+}
+.palette-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
   border: 0;
-  border-bottom: 1px solid var(--border);
-  padding: 0 var(--space-5);
+  padding: 0;
   font-size: var(--text-lg);
+  color: var(--text);
   background: transparent;
   outline: none;
 }
 .palette ul {
   list-style: none;
   margin: 0;
-  padding: var(--space-2) 0;
+  padding: 6px;
   max-height: 50vh;
   overflow: auto;
 }
-.palette li {
+.palette-group {
+  padding: 10px 10px 4px;
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.palette li[role="option"] {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-5);
+  gap: 10px;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: var(--radius-md);
   cursor: pointer;
 }
+.palette li[role="option"] .icon {
+  color: var(--accent);
+}
 .palette li[aria-selected="true"] {
-  background: var(--selection);
+  background: var(--surface-active);
 }
 .palette li .where {
-  margin-left: auto;
-  color: var(--text-faint);
-  font-size: var(--text-sm);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+.palette li.hint {
+  padding: 10px;
+}
+.palette-foot {
+  display: flex;
+  gap: 14px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border-hairline);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
 }
 
 /* ---- structure view ------------------------------------------------------ */
