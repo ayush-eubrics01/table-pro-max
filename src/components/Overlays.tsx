@@ -23,6 +23,7 @@ export function Overlays() {
         <Dialog
           title={confirm.title}
           onClose={() => confirm.resolve(false)}
+          tone={confirm.danger ? "danger" : undefined}
           initialFocus=".dialog-footer .btn-cancel"
           footer={
             <>

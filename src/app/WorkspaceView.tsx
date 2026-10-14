@@ -16,7 +16,8 @@ import { confirmAction, notifyError } from "../stores/ui";
 import { connectWithPrompt, reconnectWithPrompt } from "../features/connections/connectFlow";
 
 export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean }) {
-  const { closeTab, update } = useWorkspaces.getState();
+  const { closeTab, openQuery, update } = useWorkspaces.getState();
+  const openSql = (sql: string, title: string) => openQuery(ws.id, { sql, title });
   const [dirtyTables, setDirtyTables] = useState<Record<string, boolean>>({});
   const [sidebarWidth, setSidebarWidth] = useState(264);
 
@@ -104,6 +105,7 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
             {t.kind === "table" && (
               <TableView
                 session={s}
+                onOpenSql={openSql}
                 schema={t.schema}
                 table={t.name}
                 onReconnect={reconnect}
@@ -111,7 +113,7 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
               />
             )}
             {t.kind === "query" && <QueryTab ws={ws} tab={t} active={visible && ws.activeTabId === t.id} />}
-            {t.kind === "definition" && <DefinitionView session={s} schema={t.schema} name={t.name} kind={t.objectKind} />}
+            {t.kind === "definition" && <DefinitionView session={s} schema={t.schema} name={t.name} kind={t.objectKind} onOpenSql={openSql} />}
             {t.kind === "dashboard" && <DashboardView ws={ws} tab={t} active={visible && ws.activeTabId === t.id} />}
           </div>
         ))}

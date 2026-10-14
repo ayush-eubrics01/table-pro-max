@@ -8,6 +8,7 @@ import { confirmAction, notify, notifyError } from "../../stores/ui";
 import { useSettings } from "../../stores/settings";
 import { DataGrid, type GridHandle, type GridSelection } from "../data-grid/DataGrid";
 import { FilterBuilder } from "../filters/FilterBuilder";
+import { FilterChips } from "../filters/FilterChips";
 import { countConditions, emptyGroup, newCondition, type GroupNode } from "../filters/filterModel";
 import {
   EMPTY_PENDING,
@@ -33,11 +34,13 @@ interface Props {
   table: string;
   onReconnect: () => Promise<void>;
   onDirtyChange?: (dirty: boolean) => void;
+  /** Opens SQL (e.g. the definition) in a new query tab without running it. */
+  onOpenSql?: (sql: string, title: string) => void;
 }
 
 type View = "data" | "structure" | "definition";
 
-export function TableView({ session, schema, table, onReconnect, onDirtyChange }: Props) {
+export function TableView({ session, schema, table, onReconnect, onDirtyChange, onOpenSql }: Props) {
   const pageSizeSetting = useSettings((s) => s.settings["grid.pageSize"]);
   const checkConflicts = useSettings((s) => s.settings["grid.checkConflicts"]);
   const [view, setView] = useState<View>("data");
@@ -55,7 +58,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
   const [total, setTotal] = useState<number | null>(null);
   const [selection, setSelection] = useState<GridSelection>({ rows: [], cols: [], active: null });
   const [detailOpen, setDetailOpen] = useState(false);
-  const [review, setReview] = useState<{ sql: string; atomic: boolean } | null>(null);
+  const [review, setReview] = useState<{ sql: string; atomic: boolean; statements: number } | null>(null);
   const [exportSource, setExportSource] = useState<ExportSource | null>(null);
   const [importing, setImporting] = useState(false);
   const gridRef = useRef<GridHandle>(null);
@@ -72,6 +75,8 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
         ? "No primary key: existing rows cannot be edited"
         : null;
   const canInsert = !session.readOnly && isTable;
+  // A table without a primary key still takes new rows; only existing rows are locked.
+  const access = !canInsert ? "Read-only" : !hasPk ? "Insert only" : "Writable";
 
   useEffect(() => onDirtyChange?.(hasPending(pending)), [pending, onDirtyChange]);
 
@@ -208,7 +213,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
     try {
       const set = buildChangeSet(pending, rows, structure.columns, schema, table, checkConflicts);
       const preview = await api.previewChanges(session.sessionId, set);
-      setReview({ sql: preview.sql, atomic: preview.atomic });
+      setReview({ sql: preview.sql, atomic: preview.atomic, statements: preview.statementCount });
     } catch (e) {
       notifyError(e, "Changes cannot be committed");
     }
@@ -302,11 +307,6 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
             <button className="btn btn-ghost btn-icon" onClick={() => guard(() => void load())} aria-label="Reload" title="Reload (F5)">
               <Icon name="refresh" size={14} className={loading ? "spin" : undefined} />
             </button>
-            {readOnlyReason ? (
-              <span className="meta" title={readOnlyReason}>
-                <Icon name="lock" size={12} /> {readOnlyReason}
-              </span>
-            ) : null}
             {canInsert && (
               <>
                 <span className="sep" />
@@ -356,19 +356,11 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
               </button>
             )}
             <span className="grow" />
-            {nPending > 0 && (
-              <>
-                <span className="meta" role="status">
-                  {pluralize(nPending, "pending change")}
-                </span>
-                <button className="btn" onClick={() => setPending(EMPTY_PENDING)}>
-                  <Icon name="undo" size={14} /> Discard
-                </button>
-                <button className="btn btn-primary" onClick={openReview}>
-                  Review and commit
-                </button>
-              </>
-            )}
+            <span className={`access-pill ${access !== "Writable" ? "ro" : ""}`} title={readOnlyReason ?? "Edits stay pending until you review and commit them"}>
+              <Icon name={access === "Writable" ? "edit" : "lock"} size={13} />
+              {access}
+              {readOnlyReason && <span className="sr-only">: {readOnlyReason}</span>}
+            </span>
             <button
               className="btn btn-ghost btn-icon"
               aria-pressed={detailOpen}
@@ -393,11 +385,20 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
         />
       )}
       {view === "definition" && structure && (
-        <DefinitionView session={session} schema={schema} name={table} kind={structure.kind} />
+        <DefinitionView session={session} schema={schema} name={table} kind={structure.kind} onOpenSql={onOpenSql} />
       )}
 
       {view === "data" && (
         <>
+          {!filtersOpen && (
+            <FilterChips
+              filter={filter}
+              onEdit={() => {
+                setDraftFilter(filter);
+                setFiltersOpen(true);
+              }}
+            />
+          )}
           {filtersOpen && structure && (
             <FilterBuilder
               columns={structure.columns}
@@ -423,12 +424,12 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
             </div>
           )}
           <div className="split-h" style={{ minHeight: 0 }}>
-            <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0 }}>
+            <div className="grid-area" style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0 }}>
               {structure && page && (
                 <DataGrid
                   ref={gridRef}
                   ariaLabel={`Rows of ${table}`}
-                  columns={structure.columns.map((c) => ({ name: c.name, typeName: c.dataType, primaryKey: c.primaryKey !== null }))}
+                  columns={structure.columns.map((c) => ({ name: c.name, typeName: c.dataType, primaryKey: c.primaryKey !== null, foreignKey: structure.foreignKeys.some((f) => f.columns.includes(c.name)) }))}
                   rowCount={rowCount}
                   getRow={getRow}
                   rowState={(i) => (i >= rows.length ? "inserted" : pending.deleted.includes(i) ? "deleted" : undefined)}
@@ -441,7 +442,20 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
                   contextItems={contextItems}
                   onDeleteKey={(sel) => deleteSelected(sel)}
                   rowNumberOffset={offset}
+                  bottomInset={nPending > 0 ? 56 : 0}
                 />
+              )}
+              {nPending > 0 && (
+                <div className="commit-bar" role="region" aria-label="Pending changes">
+                  <span className="dot" />
+                  <span role="status">{pluralize(nPending, "pending change")}</span>
+                  <button className="btn btn-ghost" onClick={() => setPending(EMPTY_PENDING)}>
+                    <Icon name="undo" size={14} /> Discard
+                  </button>
+                  <button className="btn btn-primary" onClick={openReview}>
+                    Review and commit
+                  </button>
+                </div>
               )}
               {!page && !error && <div className="empty">{loading ? <div className="spinner" /> : null}</div>}
               <div className="grid-footer">
@@ -474,7 +488,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
                     </option>
                   ))}
                 </select>
-                <button className="btn btn-ghost" onClick={countRows}>
+                <button className="btn btn-link" onClick={countRows}>
                   Count rows
                 </button>
                 <span className="grow" />
@@ -487,6 +501,10 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
                 row={activeRow}
                 editable={(c) => selection.active !== null && canEdit(selection.active.row, c)}
                 onEdit={(c, v) => selection.active && onEdit(selection.active.row, c, v)}
+                heading={selection.active ? `Row ${offset + selection.active.row + 1}` : "Inspector"}
+                subheading={table}
+                isEdited={(c) => selection.active !== null && selection.active.row < rows.length && pending.edits[selection.active.row]?.[c] !== undefined}
+                onClose={() => setDetailOpen(false)}
               />
             )}
           </div>
@@ -514,8 +532,10 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
           title="Review changes"
           sql={review.sql}
           atomic={review.atomic}
+          statements={review.statements}
           summary={`${pluralize(nPending, "change")} to ${schema}.${table}`}
           commitLabel="Commit changes"
+          cancelLabel="Keep editing"
           onCommit={commit}
           onClose={() => setReview(null)}
         />

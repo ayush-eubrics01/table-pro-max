@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { Dialog } from "../../components/Dialog";
 import { EnvBadge } from "../../components/EnvBadge";
+import { Icon } from "../../components/Icon";
+import { SqlBlock } from "../../components/SqlBlock";
+import { pluralize } from "../../lib/text";
 import type { SessionInfo } from "../../types/backend";
 import { toError, type BackendError } from "../../lib/ipc";
 
@@ -10,13 +13,17 @@ interface Props {
   sql: string;
   summary: string;
   atomic: boolean;
+  /** Number of statements in `sql`, when known. */
+  statements?: number;
   commitLabel: string;
+  /** Label of the button that closes without committing. */
+  cancelLabel?: string;
   onCommit: () => Promise<void>;
   onClose: () => void;
 }
 
 /** Shows generated SQL and the exact target before anything is written. */
-export function ReviewChangesDialog({ session, title, sql, summary, atomic, commitLabel, onCommit, onClose }: Props) {
+export function ReviewChangesDialog({ session, title, sql, summary, atomic, statements, commitLabel, cancelLabel = "Cancel", onCommit, onClose }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<BackendError | null>(null);
 
@@ -35,15 +42,18 @@ export function ReviewChangesDialog({ session, title, sql, summary, atomic, comm
     <Dialog
       title={title}
       wide
+      subtitle={[statements !== undefined ? pluralize(statements, "statement") : null, session.connectionName, atomic ? "one transaction" : "no transaction"].filter(Boolean).join(" · ")}
+      tone={session.environment === "production" ? "danger" : undefined}
       onClose={() => !busy && onClose()}
       footer={
         <>
-          <span className="hint">
-            {atomic ? "Runs in one transaction: all changes apply or none do." : "This database cannot run these statements in one transaction."}
-          </span>
+          <button className="btn" onClick={() => void navigator.clipboard.writeText(sql)} disabled={busy}>
+            <Icon name="content_copy" size={14} /> Copy SQL
+          </button>
           <span className="spacer" />
-          <button className="btn" onClick={onClose} disabled={busy}>
-            Cancel
+          <span className="hint">{atomic ? "All changes apply or none do." : "This database cannot run these statements in one transaction."}</span>
+          <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
+            {cancelLabel}
           </button>
           <button
             className={`btn ${session.environment === "production" ? "btn-danger" : "btn-primary"}`}
@@ -62,9 +72,7 @@ export function ReviewChangesDialog({ session, title, sql, summary, atomic, comm
         </span>
       </div>
       <div>{summary}</div>
-      <pre className="code-block" style={{ maxHeight: "45vh" }}>
-        {sql}
-      </pre>
+      <SqlBlock sql={sql} dialect={session.dialect} maxHeight="45vh" />
       {error && (
         <div className="notice notice-error" role="alert">
           {error.message}

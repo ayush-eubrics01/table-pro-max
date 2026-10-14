@@ -9,7 +9,7 @@ export const ICONS = [
   "close", "close_small", "code", "code_blocks", "content_copy", "crop_square", "data_object", "database",
   "delete", "download", "edit", "error", "file_save", "filter_list", "folder_open", "format_align_left",
   "function", "grid_view", "history", "info", "keep", "key", "keyboard_arrow_down", "keyboard_return",
-  "layers", "link_off", "lock", "minimize", "more_horiz", "new_window", "open_in_new", "play_arrow",
+  "layers", "link", "link_off", "lock", "minimize", "more_horiz", "new_window", "open_in_new", "play_arrow",
   "play_circle", "refresh", "right_panel_open", "save", "schedule", "search", "settings", "speed", "star_shine", "stop",
   "system_update_alt", "table", "tag", "terminal", "undo", "unfold_more", "upload", "visibility", "warning",
 ];
