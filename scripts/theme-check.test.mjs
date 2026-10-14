@@ -65,8 +65,9 @@ describe("theme tokens", () => {
     expect(rule).toMatch(/-webkit-appearance:\s*none/);
     // Nothing later may reset the arrow with the background shorthand, and focus keeps its ring.
     const after = app.slice(app.indexOf(rule) + rule.length);
-    expect(after).not.toMatch(/\.select(?![\w-])[^{,]*\{[^}]*\bbackground:/);
-    expect(app).toMatch(/\.select:focus,?[^{]*\{[^}]*box-shadow:/);
+    expect(after).not.toMatch(/\.select(?![\w-])[^{]*\{[^}]*\bbackground:/);
+    expect(app).toMatch(/\.select:focus,?[^{]*\{[^}]*box-shadow:\s*(?!none)[^;]+;/);
+    expect(app).not.toMatch(/\.select:focus[^{]*\{[^}]*box-shadow:\s*none/);
     // Forced colours drop gradient images: hand the arrow back to the system there.
     expect(app).toMatch(/@media \(forced-colors: active\) \{\s*\.select \{[^}]*appearance:\s*auto/);
   });

@@ -1403,14 +1403,15 @@ pre,
 }
 .commit-bar {
   position: absolute;
-  left: 50%;
+  /* Centred between 12px insets: it may use the whole grid width before its buttons wrap. */
+  left: 12px;
+  right: 12px;
+  margin-inline: auto;
+  width: fit-content;
   /* Clear of the grid's horizontal scrollbar and footer. */
   bottom: 52px;
-  max-width: calc(100% - 24px);
-  /* In a narrow grid the buttons wrap under the count instead of spilling out. */
   flex-wrap: wrap;
   justify-content: center;
-  transform: translateX(-50%);
   z-index: 6;
   display: flex;
   align-items: center;

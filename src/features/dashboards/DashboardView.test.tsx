@@ -21,7 +21,7 @@ afterEach(() => {
 });
 
 describe("DashboardView", () => {
-  it("shows the shared Read-only pill, because widgets run on a read-only session", async () => {
+  it("shows the shared Read-only pill", async () => {
     render(<DashboardView ws={ws} tab={tab} active />);
     expect(await screen.findByTitle("Dashboard queries run in a read-only session")).toHaveTextContent("Read-only");
   });

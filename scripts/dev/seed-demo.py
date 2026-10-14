@@ -6,7 +6,8 @@ SQLite connection with a table tab and a query tab) and the theme setting.
 
 Usage: scripts/dev/seed-demo.py <app-data-dir> <light|dark> [active-tab-index]
 <app-data-dir> is $XDG_DATA_HOME/dev.tablepromax.app of an isolated run. The app must have
-started there once so app.db exists. Never point this at a real data folder.
+started there once so app.db exists. Never point this at a real data folder: the script
+refuses any path outside the repo's target/ folder or the system temp folder.
 """
 import datetime
 import json

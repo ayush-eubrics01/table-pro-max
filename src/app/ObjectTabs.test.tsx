@@ -64,6 +64,6 @@ describe("ObjectTabs", () => {
     fireEvent.drop(wrappers[1]!);
     expect(useWorkspaces.getState().workspaces[0]!.tabs.map((t) => t.id)).toEqual(["q1", "t1"]);
     fireEvent(wrappers[1]!, new MouseEvent("auxclick", { bubbles: true, button: 1 }));
-    expect(onClose).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledWith(expect.objectContaining({ id: "q1" }));
   });
 });

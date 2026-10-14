@@ -20,6 +20,7 @@ import { useJobProgress } from "../import-export/useJobProgress";
 import { AiPanel } from "../ai/AiPanel";
 import { queryTarget } from "./queryTarget";
 import { isMacPlatform } from "../../app/WindowControls";
+import { shortcut } from "../../lib/shortcut";
 
 /** Tables named after FROM/JOIN/UPDATE/INTO, resolved against the default schema. */
 export function referencedTables(sql: string, defaultSchema: string): { schema: string; table: string }[] {
@@ -42,7 +43,7 @@ interface Props {
 export function RunButton({ onRun, disabled }: { onRun: () => void; disabled: boolean }) {
   const mod = isMacPlatform() ? "⌘" : "Ctrl";
   return (
-    <button className="btn btn-primary btn-run" onClick={onRun} disabled={disabled} title={`Run current statement or selection (${mod === "⌘" ? "⌘↵" : "Ctrl+Enter"})`}>
+    <button className="btn btn-primary btn-run" onClick={onRun} disabled={disabled} title={`Run current statement or selection (${shortcut("Mod+Enter")})`}>
       <Icon name="play_arrow" size={15} /> Run{" "}
       <span className="kbd" aria-hidden>
         {mod} ↵
@@ -401,7 +402,7 @@ export function QueryTab({ ws, tab, active }: Props) {
     <div className="tab-panel">
       <div className="toolbar" role="toolbar" aria-label="Query tools">
         <RunButton onRun={() => void run("current")} disabled={!!running} />
-        <button className="btn" onClick={() => run("all")} disabled={!!running} title={`Run all statements (${isMacPlatform() ? "⇧⌘↵" : "Ctrl+Shift+Enter"})`}>
+        <button className="btn" onClick={() => run("all")} disabled={!!running} title={`Run all statements (${shortcut("Mod+Shift+Enter")})`}>
           <Icon name="play_circle" size={14} /> Run all
         </button>
         {running && (
@@ -422,7 +423,7 @@ export function QueryTab({ ws, tab, active }: Props) {
         )}
         <span className="sep" />
         {info.capabilities.explain && (
-          <button className="btn btn-ghost" onClick={() => runExplain(false)} title="Explain plan (Ctrl+E)">
+          <button className="btn btn-ghost" onClick={() => runExplain(false)} title={`Explain plan (${shortcut("Mod+E")})`}>
             <Icon name="speed" size={14} /> Explain
           </button>
         )}
@@ -431,10 +432,10 @@ export function QueryTab({ ws, tab, active }: Props) {
             Analyze
           </button>
         )}
-        <button className="btn btn-ghost" onClick={format} aria-label="Format SQL" title="Format (Ctrl+Shift+F)">
+        <button className="btn btn-ghost" onClick={format} aria-label="Format SQL" title={`Format (${shortcut("Mod+Shift+F")})`}>
           <Icon name="format_align_left" size={14} /> Format
         </button>
-        <button className="btn btn-ghost btn-icon" onClick={save} aria-label="Save query" title="Save query (Ctrl+S)">
+        <button className="btn btn-ghost btn-icon" onClick={save} aria-label="Save query" title={`Save query (${shortcut("Mod+S")})`}>
           <Icon name="save" size={14} />
         </button>
         <span className="sep" />

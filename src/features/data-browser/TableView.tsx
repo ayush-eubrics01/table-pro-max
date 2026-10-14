@@ -300,11 +300,11 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
                 }
                 setFiltersOpen(!filtersOpen);
               }}
-              title="Filter rows (Ctrl+F)"
+              title="Filter rows"
             >
               <Icon name="filter_list" size={14} /> Filter{countConditions(filter) > 0 ? ` (${countConditions(filter)})` : ""}
             </button>
-            <button className="btn btn-ghost btn-icon" onClick={() => guard(() => void load())} aria-label="Reload" title="Reload (F5)">
+            <button className="btn btn-ghost btn-icon" onClick={() => guard(() => void load())} aria-label="Reload" title="Reload">
               <Icon name="refresh" size={14} className={loading ? "spin" : undefined} />
             </button>
             {canInsert && (
