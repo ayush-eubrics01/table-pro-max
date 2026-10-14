@@ -34,6 +34,8 @@ describe("TitleBar", () => {
     expect(screen.getByRole("tab", { name: /Connections/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Local PG/ })).toHaveAttribute("aria-selected", "true");
     expect(container.querySelector("header")).toHaveAttribute("data-tauri-drag-region");
+    // Gaps between controls drag the window too (a drag starts only on the element that carries the attribute).
+    for (const sel of [".app-mark", ".titlebar-tabs", ".titlebar-conn-tabs", ".titlebar-actions"]) expect(container.querySelector(sel)).toHaveAttribute("data-tauri-drag-region");
   });
 
   it("opens the palette from the search pill", () => {

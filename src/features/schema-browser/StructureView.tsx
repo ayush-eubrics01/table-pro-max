@@ -124,7 +124,7 @@ export function StructureView({ session, structure, onChanged }: Props) {
                   <td />
                   <td>{o.column.name}</td>
                   <td className="mono">{o.column.dataType}</td>
-                  <td>{o.column.nullable ? "yes" : "no"}</td>
+                  <td className={o.column.nullable ? "nullable" : "required"}>{o.column.nullable ? "nullable" : "required"}</td>
                   <td className="mono">{o.column.default ?? ""}</td>
                   <td />
                   {editable && (

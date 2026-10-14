@@ -80,4 +80,12 @@ describe("Home", () => {
     rerender(<Home appInfo={info(false)} connecting={null} onConnect={() => undefined} />);
     expect(screen.getByText("5 saved · passwords are asked for when connecting")).toBeInTheDocument();
   });
+
+  it("does not promise a keychain on the empty screen when there is none", () => {
+    useConnections.setState({ connections: [] } as never);
+    const info = { version: "0.1.0", dataDir: "/d", logDir: "/l", credentialStore: "unavailable", credentialStoreAvailable: false, platform: "linux" };
+    render(<Home appInfo={info} connecting={null} onConnect={() => undefined} />);
+    expect(screen.getByText(/Passwords are asked for each time you connect\./)).toBeInTheDocument();
+    expect(screen.queryByText(/Passwords go to your system keychain/)).not.toBeInTheDocument();
+  });
 });

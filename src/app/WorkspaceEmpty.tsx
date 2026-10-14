@@ -12,7 +12,7 @@ export function WorkspaceEmpty({ ws }: { ws: Workspace }) {
   // On MySQL the switcher picks the database (shown as the schema).
   const database = s.dialect === "mysql" ? ws.schema : s.database;
   const down = ws.health === "down";
-  const summary = [`${s.server.product} ${s.server.version}`, database, tables === undefined ? null : `${tables} table${tables === 1 ? "" : "s"}`].filter(Boolean).join(" · ");
+  const summary = [`${s.server.product} ${s.server.version}`, database, tables === undefined ? null : `${tables} table${tables === 1 ? "" : "s"}${s.dialect === "postgres" ? ` in ${ws.schema}` : ""}`].filter(Boolean).join(" · ");
   return (
     <div className="ws-empty">
       <div className="ws-empty-inner">

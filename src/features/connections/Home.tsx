@@ -126,7 +126,7 @@ export function Home({ appInfo, onConnect, connecting }: Props) {
 
         <div className="home-toolbar">
           <div style={{ position: "relative", flex: 1, display: "flex" }}>
-            <Icon name="search" size={15} style={{ position: "absolute", left: 10, top: 9, color: "var(--text-faint)" }} />
+            <Icon name="search" size={15} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--text-faint)" }} />
             <input
               className="input"
               style={{ paddingLeft: 32, flex: 1, height: 36 }}
@@ -158,7 +158,10 @@ export function Home({ appInfo, onConnect, connecting }: Props) {
         {connections.length === 0 && (
           <div className="empty" style={{ height: "auto", padding: 48 }}>
             <p>Add a PostgreSQL, MySQL, MariaDB, SQLite, DuckDB or Redis connection to get started.</p>
-            <p className="hint">Connections, history and saved queries stay on this computer. Passwords go to your system keychain.</p>
+            <p className="hint">
+              Connections, history and saved queries stay on this computer.{" "}
+              {appInfo && !appInfo.credentialStoreAvailable ? "Passwords are asked for each time you connect." : "Passwords go to your system keychain."}
+            </p>
             <button className="btn btn-primary" onClick={() => setEditing("new")}>
               New connection
             </button>

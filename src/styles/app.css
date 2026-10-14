@@ -628,6 +628,11 @@ pre,
   font-family: var(--font-code);
   color: var(--text-faint);
 }
+.statusbar .mono {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .statusbar[data-env="production"] .mono,
 .statusbar[data-env="production"] .version {
   color: var(--text-muted);
@@ -907,6 +912,7 @@ pre,
   background: var(--warning);
 }
 .tab-close {
+  flex: none;
   display: inline-flex;
   width: 20px;
   height: 20px;
@@ -1368,7 +1374,9 @@ pre,
 .commit-bar {
   position: absolute;
   left: 50%;
-  bottom: 40px;
+  /* Clear of the grid's horizontal scrollbar and footer. */
+  bottom: 52px;
+  max-width: calc(100% - 24px);
   transform: translateX(-50%);
   z-index: 6;
   display: flex;
@@ -2680,3 +2688,8 @@ pre,
     font: inherit;
   }
   
+
+/* The window drags only from the element that carries data-tauri-drag-region, so the mark's icon lets clicks through. */
+.app-mark .icon {
+  pointer-events: none;
+}

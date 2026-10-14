@@ -137,6 +137,7 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
           <select
             className="db-switch-select"
             aria-label={ws.session.dialect === "mysql" ? "Database" : "Schema"}
+            title={ws.schema}
             value={ws.schema}
             onChange={(e) => setSchema(ws.id, e.target.value).catch((err) => notifyError(err))}
           >

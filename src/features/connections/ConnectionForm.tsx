@@ -431,7 +431,7 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
         </>
       )}
 
-      <details className="form-collapse">
+      <details className="form-collapse" open={!!initial && initial.safetyMode !== "confirm_destructive"}>
         <summary>Safety &amp; timeouts</summary>
         <div className="field-row">
           <label className="field">

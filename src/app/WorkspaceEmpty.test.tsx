@@ -22,7 +22,7 @@ describe("WorkspaceEmpty", () => {
     render(<WorkspaceEmpty ws={loaded} />);
     expect(screen.getByText("Connected")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: profile.name })).toBeInTheDocument();
-    expect(screen.getByText("PostgreSQL 16 · app · 2 tables")).toBeInTheDocument();
+    expect(screen.getByText("PostgreSQL 16 · app · 2 tables in public")).toBeInTheDocument();
   });
 
   it("leaves out the table count until objects have loaded", () => {

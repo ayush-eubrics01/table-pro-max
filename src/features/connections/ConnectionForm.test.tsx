@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/re
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks";
 import type { AppInfo, ConnectionProfile } from "../../types/backend";
 import { ConnectionForm } from "./ConnectionForm";
+import { profile } from "../../test/fixtures";
 
 const appInfo = (available: boolean): AppInfo => ({
   version: "0.1.0",
@@ -121,5 +122,10 @@ describe("ConnectionForm", () => {
     expect(await screen.findByText(/Unsupported URL scheme/)).toBeInTheDocument();
     expect(screen.getByLabelText("Connection URL")).toHaveValue("mongodb://svc@db.internal:27017/shop");
     expect(screen.queryByDisplayValue(/s3cret/)).not.toBeInTheDocument();
+  });
+
+  it("opens Safety & timeouts when editing a connection whose safety is not the default", () => {
+    render(<ConnectionForm appInfo={appInfo(true)} initial={{ ...profile, safetyMode: "read_only" }} onClose={() => undefined} onSaved={() => undefined} />);
+    expect(screen.getByText("Safety & timeouts").closest("details")).toHaveAttribute("open");
   });
 });
