@@ -103,13 +103,13 @@ export function AiPanel({ dialect, getSql, lastError, referencedTables, allTable
 
   return (
     <aside className="ai-panel" aria-label="AI assistant">
-      <div className="ai-panel-head">
-        <Icon name="star_shine" size={14} aria-hidden /> AI assistant
-        <span className="grow" />
+      <header className="side-head">
+        <Icon name="star_shine" size={15} className="side-head-icon" />
+        <h2>AI assistant</h2>
         <button className="btn btn-ghost btn-icon" onClick={onClose} aria-label="Close AI assistant">
-          <Icon name="close" size={14} />
+          <Icon name="close" size={15} />
         </button>
-      </div>
+      </header>
       <div className="ai-panel-body">
         <div className="ai-tasks" role="group" aria-label="What do you need?">
           {TASKS.map((t) => (

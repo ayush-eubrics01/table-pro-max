@@ -10,9 +10,10 @@ interface Props {
   onInsert: (sql: string) => void;
   onOpen: (sql: string) => void;
   refreshKey: number;
+  onClose: () => void;
 }
 
-export function HistoryPanel({ connectionId, onInsert, onOpen, refreshKey }: Props) {
+export function HistoryPanel({ connectionId, onInsert, onOpen, refreshKey, onClose }: Props) {
   const [search, setSearch] = useState("");
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
 
@@ -36,33 +37,40 @@ export function HistoryPanel({ connectionId, onInsert, onOpen, refreshKey }: Pro
   };
 
   return (
-    <div className="detail-panel" aria-label="Query history">
-      <div className="sidebar-section">
-        <input className="input" placeholder="Search history" value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Search history" />
-        <div className="field-row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-          <span className="hint">Double-click to open, click to insert</span>
-          <button className="btn btn-ghost btn-icon" aria-label="Clear history" onClick={clear}>
-            <Icon name="delete" size={14} />
-          </button>
-        </div>
-      </div>
-      {entries.length === 0 && <div className="empty">No queries yet.</div>}
-      {entries.map((e) => (
-        <button
-          key={e.id}
-          className="detail-field"
-          style={{ border: 0, borderBottom: "1px solid var(--grid-line)", background: "none", textAlign: "left", cursor: "pointer" }}
-          onClick={() => onInsert(e.sql)}
-          onDoubleClick={() => onOpen(e.sql)}
-          title={e.error ?? undefined}
-        >
-          <span className="hint">
-            {new Date(e.startedAt).toLocaleString()} · {e.status}
-            {e.durationMs !== null ? ` · ${formatDuration(e.durationMs)}` : ""}
-          </span>
-          <pre style={{ maxHeight: 80, overflow: "hidden", color: e.status === "error" ? "var(--danger)" : undefined }}>{e.sql}</pre>
+    <aside className="history-panel" aria-label="Query history">
+      <header className="side-head">
+        <h2>History</h2>
+        <button className="btn btn-ghost btn-icon" aria-label="Clear history" title="Clear history" onClick={clear}>
+          <Icon name="delete" size={14} />
         </button>
-      ))}
-    </div>
+        <button className="btn btn-ghost btn-icon" aria-label="Close history" onClick={onClose}>
+          <Icon name="close" size={15} />
+        </button>
+      </header>
+      <div className="history-search">
+        <input className="input" placeholder="Search history" value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Search history" />
+        <span className="hint">Click to insert, double-click to open in a new tab</span>
+      </div>
+      <div className="history-list">
+        {entries.length === 0 && <div className="empty">No queries yet.</div>}
+        {entries.map((e) => (
+          <button
+            key={e.id}
+            className="history-entry"
+            data-status={e.status}
+            onClick={() => onInsert(e.sql)}
+            onDoubleClick={() => onOpen(e.sql)}
+            title={e.error ?? undefined}
+          >
+            <span className="meta">
+              <span className="dot" />
+              {new Date(e.startedAt).toLocaleString()}
+              {e.durationMs !== null ? ` · ${formatDuration(e.durationMs)}` : ""}
+            </span>
+            <pre>{e.sql}</pre>
+          </button>
+        ))}
+      </div>
+    </aside>
   );
 }

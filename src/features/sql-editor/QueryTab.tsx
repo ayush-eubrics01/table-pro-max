@@ -497,6 +497,7 @@ export function QueryTab({ ws, tab, active }: Props) {
             refreshKey={historyKey}
             onInsert={(sql) => editor.current?.insertText(sql)}
             onOpen={(sql) => openQuery(ws.id, { sql, title: "From history", dirty: true })}
+            onClose={() => setHistoryOpen(false)}
           />
         )}
         {ai && aiEnabled && (
