@@ -54,7 +54,7 @@ const errorField = StateField.define<DecorationSet>({
   provide: (f) => EditorView.decorations.from(f),
 });
 
-const highlight = HighlightStyle.define([
+export const EDITOR_HIGHLIGHT = HighlightStyle.define([
   { tag: [t.keyword, t.operatorKeyword, t.modifier, t.controlKeyword], color: "var(--syn-keyword)", fontWeight: "500" },
   { tag: [t.string, t.special(t.string)], color: "var(--syn-string)" },
   { tag: [t.number, t.bool, t.null], color: "var(--syn-number)" },
@@ -127,7 +127,7 @@ export function SqlEditor(props: Props) {
           autocompletion({ activateOnTyping: true, maxRenderedOptions: 80 }),
           highlightActiveLine(),
           highlightSelectionMatches(),
-          syntaxHighlighting(highlight),
+          syntaxHighlighting(EDITOR_HIGHLIGHT),
           keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...completionKeymap, indentWithTab]),
           langComp.current.of(sql({ dialect: dialectFor(dialect, mariadb), schema, defaultSchema, upperCaseKeywords: true })),
           wrapComp.current.of(wordWrap ? EditorView.lineWrapping : []),

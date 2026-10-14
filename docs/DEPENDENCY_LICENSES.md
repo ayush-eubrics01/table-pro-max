@@ -48,7 +48,7 @@ check the npm packages' `license` fields before each release.
 |---|---|
 | react, react-dom | MIT |
 | @tauri-apps/api, @tauri-apps/plugin-dialog | Apache-2.0 OR MIT |
-| codemirror, @codemirror/* , @lezer/highlight | MIT |
+| codemirror, @codemirror/* (incl. lang-json), @lezer/highlight, @lezer/json | MIT |
 | @tanstack/react-virtual | MIT |
 | zustand | MIT |
 | sql-formatter | MIT |
