@@ -565,7 +565,7 @@ async fn exercise(t: Target) {
     edit_results(&engine, &sid, &profile, t.password.as_deref(), driver).await;
     lazy_values(&engine, &sid, &t.schema, driver).await;
     fk_round_trip(&engine, &sid, &t.schema, driver).await;
-    restore_points(&engine, &sid, &t.schema, driver).await;
+    restore_points(&engine, &sid, &t.schema, driver, &profile, t.password.as_deref()).await;
 
     // --- cleanup ---
     run(&engine, &sid, "DROP TABLE tpm_it_items; DROP TABLE tpm_it_owners").await;
@@ -573,7 +573,14 @@ async fn exercise(t: Target) {
 }
 
 /// Restore points: planned before anything runs, captured around the statement, restored by review.
-async fn restore_points(engine: &Arc<Engine>, sid: &str, schema: &str, driver: Driver) {
+async fn restore_points(
+    engine: &Arc<Engine>,
+    sid: &str,
+    schema: &str,
+    driver: Driver,
+    profile: &ConnectionProfile,
+    password: Option<&str>,
+) {
     use tpm_core::restore::{RestoreStatus, RestoreStore};
     let store = Arc::new(tpm_core::storage::Storage::open_in_memory().unwrap());
     engine.set_restore_store(store.clone());
@@ -619,6 +626,22 @@ async fn restore_points(engine: &Arc<Engine>, sid: &str, schema: &str, driver: D
     // Confirming runs it anyway.
     let r = engine.run_script(sid, "UPDATE tpm_it_rp_nokey SET a = 1", opts(true), None).await.unwrap();
     assert!(r.statements[0].error.is_none(), "{driver:?}");
+    // A connection with restore points turned off keeps none, and says nothing about them.
+    if driver != Driver::Sqlite && driver != Driver::Duckdb {
+        let off = ConnectionProfile { restore_points: false, ..profile.clone() };
+        let other = engine.open_session(&off, password, None, ConnectOptions::default()).await.expect("connect");
+        let r = engine
+            .run_script(&other.session_id, "UPDATE tpm_it_rp SET qty = qty WHERE id = 3", opts(true), None)
+            .await
+            .unwrap();
+        assert!(r.statements[0].restore.is_none(), "{driver:?}");
+        let r = engine
+            .run_script(&other.session_id, "UPDATE tpm_it_rp_nokey SET a = 1", opts(false), None)
+            .await
+            .unwrap_err();
+        assert!(!r.detail.unwrap_or_default().contains("restore point"), "{driver:?}");
+        engine.close_session(&other.session_id).await;
+    }
     // ... and its message says why there is no restore point.
     let note = r.statements[0].restore.clone().expect("note");
     assert_eq!((note.point_id, note.reason.as_deref()), (None, Some("the table has no primary key")), "{driver:?}");
