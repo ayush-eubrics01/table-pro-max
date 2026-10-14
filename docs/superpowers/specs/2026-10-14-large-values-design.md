@@ -1,137 +1,152 @@
 # Large values on demand: design
 
-Date: 2026-10-14. Status: agreed in conversation, awaiting written-spec review.
+Date: 2026-10-14. Status: agreed in conversation (revised: zero server load for opened
+tables), awaiting written-spec review.
 
 This is the first of three sub-projects. The other two are restore history and foreign-key
 jump, each with its own spec later.
 
 ## Goal
-Opening a table or running a query should stay fast when rows carry big JSON or long text.
-Large values are not loaded until someone asks for them. When asked for, they open in a real
-editor inside the app: JSON is checked before it can be saved, and long text can be edited.
+Opening a table should be near-instant and put no extra load on the database, even when rows
+carry big JSON, transcripts or logs. Potentially large columns aren't read at all while you
+browse. A value is fetched only when you ask for it, and it opens in a real editor inside the
+app. JSON is checked before it can be saved, and long text can be edited.
 
 Success means:
-- A table whose rows hold ~100 KB JSONB values opens a 150-row page without moving those values
-  over the network. The PR reports the before/after numbers.
-- Every large value shows a short preview and its size. One click opens the full value.
-- Every JSON/JSONB value, large or small, is edited in the JSON editor, and invalid JSON can't
-  be saved.
-- Export, sorting and filtering still use full values.
+- Opening a table never selects, measures or previews a deferred column. PostgreSQL leaves
+  those values in TOAST storage: they are not read, de-TOASTed, serialized or sent.
+- A 150-row page of a table whose rows hold ~100 KB JSONB and text values opens as fast as the
+  same table without those columns. The PR reports before/after numbers.
+- Clicking a cell fetches only that column of that row.
+- Every JSON/JSONB value is edited in the JSON editor, and invalid JSON can't be saved.
+- Export, sorting and filtering still work on full values. Query tabs run the user's SQL
+  unchanged.
 
 ## Decisions (made with the maintainer)
 | Topic | Decision |
 |---|---|
-| What is large | Size, not type: any text value longer than a threshold (default 256 characters). Short JSON and short text show inline. |
-| Hidden cell | A short preview (default 80 characters, dimmed, ending "…") and a size tag. |
+| Which columns are deferred | Chosen by type from the schema, never by looking at the data. Deferred by default: unbounded types (see below). Loaded: everything with a bounded size. |
+| Per-column override | Any column can be set to **Always load** or **Don't load**, remembered per connection, table and column. Only column names are stored, never data. |
+| Deferred cell | A neutral **Not loaded** state, distinct from NULL and empty text. No preview, no size, no NULL check. |
+| Opening a value | Fetches that one column for that row, by primary key. Short text then edits inline. Long text and all JSON open the editor. |
+| Load a column | A column-header action fetches that column for the rows on screen, in one query. |
 | Editor | A code editor in a large panel (CodeMirror, as in the SQL tab). No key/value tree. |
-| JSON columns | Always edited in the JSON editor, whatever their size, with validation. |
-| Text | Short text keeps inline editing. Large text opens the text editor, with no format check. |
+| JSON | Always edited in the JSON editor, whatever its size, with validation. |
 | Page size | Opened tables load 150 rows per page by default (was 300). |
-| Query results | The SQL is the user's and is never rewritten. Large values are held in the app's result store and shown as previews; opening one reads it from the store, with no database query. |
-| Export | Always writes full values. |
+| Query results | The user's SQL is never rewritten; the database has already sent every value. Text over 256 characters is shown as a dimmed ~80-character preview and a size, from the app's own result store, at no server cost. Opening one reads the store, with no new query. |
+| Export | Always fetches and writes full values, in its own queries. |
+| Tables without a primary key | No deferral: all columns load as today, since one row's value can't be fetched back reliably. |
 
 ## Non-goals
 - A JSON tree or key/value editor.
-- Rewriting user queries to avoid transferring large values from the database.
-- Deferring values in tables without a primary key (there is no reliable way to fetch one row's
-  value later).
-- Changing binary cells, which already send a 4 KB preview and their size.
+- Rewriting user queries in query tabs.
+- Measuring, previewing or sampling deferred values in opened tables.
+- Deferral in tables without a primary key, or in views (no key to fetch a row by).
 - Dashboards and chart widgets.
 
-## The partial cell
-A new cell kind carries a preview and the full length:
-- Rust: `Cell::Partial { preview: String, length: u64 }` in `model.rs`.
-- IPC: `{"$partial": "<preview>", "length": 18234}`. `length` counts characters.
-- TS mirror in `src/types/backend.ts`. Helpers in `src/lib/cells.ts` (`isPartial`).
+## Which columns are deferred
+Classification uses the type names in the introspected `TableStructure` (no catalog queries
+beyond those already made and cached).
 
-A partial cell is never edited, copied or committed as if it were the value. Every consumer
-either fetches the full value first or treats the cell as read-only.
+| Engine | Deferred by default | Loaded |
+|---|---|---|
+| PostgreSQL / DuckDB | `text`, `character varying` / `varchar` with no length, `json`, `jsonb`, `xml`, `bytea`, any array type (`[]`), `tsvector` | `varchar(n)`, `char(n)`, numbers, booleans, dates and times, `uuid`, enums, `inet` and the other scalar types |
+| MySQL / MariaDB | `text`, `mediumtext`, `longtext`, `json`, `blob`, `mediumblob`, `longblob` | `char`, `varchar(n)`, `tinytext`, `tinyblob`, `binary`, `varbinary`, numbers, dates, `enum`, `set` |
+| SQLite | declared `TEXT`, `BLOB`, `JSON`, `CLOB`, or no declared type | `INTEGER`, `REAL`, `NUMERIC`, and types with an integer, real or numeric affinity |
+
+- Domains and custom types that the adapter can't classify are **loaded**: the risk is only
+  slowness, never a wrong value.
+- **Primary-key columns are never deferred**, whatever their type: they are needed to fetch the
+  rest.
+- **Overrides** take precedence over the defaults. They live in a new metadata table
+  `column_fetch (connection_id, schema, table, column, mode)`, where `mode` is `load` or `defer`.
+  Overrides are cleared with the connection, like its other local metadata.
+- If every non-key column ends up deferred, the page still loads the key columns, so rows can
+  be counted, selected and opened.
 
 ## Opened tables (`browse`)
-- **Columns treated:** text-like columns only, taken from the introspected `TableStructure`:
-  - PostgreSQL / DuckDB: `text`, `character varying`, `character`, `json`, `jsonb`, `xml`, and
-    other types the adapter reports as text-like.
-  - MySQL / MariaDB: `char`, `varchar`, `tinytext`, `text`, `mediumtext`, `longtext`, `json`,
-    `enum` and `set` excluded.
-  - SQLite: columns with TEXT affinity, and columns with no declared type.
-  - Numbers, dates, booleans, UUIDs and binary columns are fetched as today.
-- **Only when the table has a primary key.** Otherwise every column is fetched in full, as
-  today.
-- **Page query:** for each treated column `c`, the select list carries two expressions:
-  - the value: `CASE WHEN <len(c)> > $threshold THEN <left(c, $preview)> ELSE c END`;
-  - its length: `<len(c)>`, aliased to a reserved name that can't clash with a user column.
+- The page query lists the loaded columns explicitly and omits deferred ones:
+  `SELECT t."id"::text AS "id", t."status"::text AS "status" FROM "public"."orders" AS t … LIMIT 150 OFFSET 0`.
+  No `length()`, no `left()`, no `CASE`, no `count(*)`.
+- Sorting and filtering may still name a deferred column: they run inside the database, and the
+  column just isn't returned. Sorting by a large column remains a heavy query, but only when
+  you ask for that sort.
+- `BrowseResult` keeps one entry per table column, in table order. Deferred columns carry
+  `deferred: true` in their `ColumnMeta`, and their cells are a placeholder
+  (`Cell::NotLoaded`, sent as `{"$notLoaded": true}`), so the grid's row shape is unchanged.
+- Default page size: `grid.pageSize` changes from 300 to 150. Only changed settings are stored,
+  so people who never changed it get 150.
 
-  | Engine | `len(c)` | `left(c, n)` |
-  |---|---|---|
-  | PostgreSQL / DuckDB | `length(t.c::text)` | `left(t.c::text, n)` |
-  | MySQL / MariaDB | `CHAR_LENGTH(t.c)` | `LEFT(t.c, n)` |
-  | SQLite | `length(t.c)` | `substr(t.c, 1, n)` |
-
-  The threshold and preview length are written into the SQL as integers. They come from `u32`
-  values in the request, never from text, so nothing user-typed reaches the SQL. Placeholders
-  would shift the numbering of the filter's parameters. Identifiers go through `Dialect::quote_ident` and
-  are checked against the `TableStructure`, as today.
-- **Assembly:** the adapter returns the extra length columns. `browse` folds each pair into one
-  cell (`Partial` when the length is over the threshold, the full `Text` otherwise) and drops
-  the length columns, so the UI sees the table's own columns only.
-- **Default page size:** `grid.pageSize` changes from 300 to 150. Only changed settings are
-  stored, so people who never changed it get 150.
-
-### Fetching one value
-`Engine::fetch_value(session_id, schema, table, key: Vec<ColumnValue>, column) -> Cell`:
-- Runs `SELECT <column> FROM <table> WHERE <pk1> = $1 AND …`, with the PostgreSQL text cast as
-  in `browse`.
-- The key must be the table's full primary key. Columns are checked against the structure.
-- No row → `NotFound` ("This row no longer exists").
-- Runs on the tab's session like every other operation, never concurrently with another.
-
-`Engine::fetch_values(session_id, schema, table, requests)` does the same for several cells at
-once (for Copy of a block). It uses one query per table: `WHERE (pk) IN (…)`, or OR-joined key
-equalities on engines without row values.
+### Fetching values
+- `Engine::fetch_value(session_id, schema, table, key: Vec<ColumnValue>, column) -> Cell`:
+  - runs `SELECT <column> FROM <table> WHERE <pk1> = $1 AND …`, with the PostgreSQL text cast
+    as in `browse`;
+  - the key must be the table's full primary key; columns are checked against the structure;
+    values are bind parameters;
+  - no row → `NotFound` ("This row no longer exists").
+- `Engine::fetch_column(session_id, schema, table, column, keys: Vec<Vec<ColumnValue>>) -> Vec<Cell>`,
+  for **Load this column** and for **Copy** of a block:
+  - one query for the given keys: `WHERE (pk) IN ((…), (…))` on engines with row values,
+    OR-joined key equalities otherwise;
+  - at most one page (150 by default, 1,000 maximum) per call.
+- Both run on the tab's session, through the session lock, never concurrently with another
+  operation on it.
+- The grid caches loaded values by `(column, key)` for the open tab. The cache is cleared by
+  **Reload**, by a commit, and when the table's structure changes. Two clicks on the same cell
+  while it is loading make one request.
 
 ## Query results
 - The result store keeps full rows, as now.
 - When rows go to the UI (the first 500 in `StatementResult.rows`, and every page from
-  `fetch_rows`), any `Cell::Text` longer than the threshold is sent as `Partial`. The preview is
-  cut on a character boundary.
+  `fetch_rows`), any `Cell::Text` longer than `grid.largeValueChars` (default 256) is sent as
+  `Cell::Partial { preview, length }`, serialized as `{"$partial": "<first 80 chars>", "length": 18234}`.
+  The preview is cut on a character boundary, and the work is done in Rust on values already in
+  memory.
 - `Engine::result_value(result_id, row, column) -> Cell` returns the full cell from the store.
   If the result was evicted: `NotFound` ("This result is no longer in memory; run the query
   again").
-- There is no row-count rule. A one-row result behaves the same way, and opening its cell is
-  instant because the value is already local.
-- Editable query results (the previous feature) keep working:
-  - a partial cell can be edited only through the editor, which loads the full value first;
-  - that full value becomes the edit's `original` for the conflict check.
+- Editable query results keep working. A partial cell can be edited only through the editor,
+  which loads the full value first. That full value becomes the edit's `original` for the
+  conflict check.
 
 ## Settings
 **Settings › Data grid** gains:
 - "Rows per page": `grid.pageSize`, default 150.
-- "Hide values longer than": `grid.largeValueChars`, default 256. Minimum 64, maximum 100,000.
+- "Preview query results longer than": `grid.largeValueChars`, default 256, from 64 to 100,000.
+  It applies only to query results; opened tables use the type rules.
 
-The preview length (80 characters) is fixed. The backend receives the threshold with each
-`browse` and query request, so no engine-side state is involved.
+Per-column overrides are set from the column header menu (**Always load**, **Don't load**,
+**Use default**), not in Settings.
 
 ## UI
 ### Grid
-- **Partial cell:** the preview, dimmed, ends in "…". A size tag sits at the right: `18 KB` for
-  JSON, `4,210 chars` for text. The tooltip says "Click to open the full value".
-- **Double-click or Enter opens:**
-  - **JSON column, any size:** the JSON editor;
-  - **partial text:** the text editor;
-  - **anything else:** inline editing, as today.
-
-  JSON columns are `json`/`jsonb` (PostgreSQL, DuckDB) and `json` (MySQL, MariaDB), from the
-  table structure or the result column's type name. SQLite has no JSON type, so its cells follow
-  the text rules.
-- **Copy** (Ctrl+C, context menu, row copy) fetches the full value of every partial cell in the
-  selection first (one request), then copies. It shows a toast with the size, e.g. "Copied
-  18 KB".
+- **Not loaded cell:** the text "Not loaded" in a muted, italic style, distinct from `NULL`
+  (which keeps its own style) and from an empty string. The tooltip says "Click to load".
+- **Partial cell** (query results): the dimmed preview ending "…", and a size tag (`18 KB` for
+  JSON, `4,210 chars` for text).
+- **Click or Enter on a Not loaded cell** loads it. The cell shows a small spinner while the
+  value loads. Then:
+  - **short text** (up to `grid.largeValueChars`), numbers, NULL: shown inline. The cell then
+    behaves like any loaded cell, including inline editing;
+  - **long text:** the cell shows the partial preview and size, and the text editor opens;
+  - **JSON column:** the JSON editor opens.
+- **Double-click or Enter on any JSON/JSONB cell** opens the JSON editor, loaded or not. JSON
+  columns are `json`/`jsonb` (PostgreSQL, DuckDB) and `json` (MySQL, MariaDB), from the table
+  structure or the result column's type name. SQLite has no JSON type, so its cells follow the
+  text rules.
+- **Column header menu** on a deferred column:
+  - **Load this column:** fetches it for the rows on this page, in one query;
+  - **Always load / Don't load / Use default:** the override. Changing it reloads the page.
+  - Deferred column headers carry a small icon whose tooltip reads "Loaded on demand".
+- **Copy** (Ctrl+C, context menu, row copy) first fetches every Not loaded or partial cell in
+  the selection (one request per column), then copies. A toast confirms it, e.g. "Copied 3
+  rows (240 KB)".
 
 ### Value editor panel
 - A large panel over the workspace, about 80% of the window, with a dimmed backdrop. Focus is
   trapped inside it, and Esc closes it, asking first if there are unsaved changes.
-- **Header:** `table · column · <key> = <value>` (or `Query result · column · row n`), the type,
-  and the size.
+- **Header:** `table · column · <key> = <value>` (or `Query result · column · row n`), and the
+  type. The size is shown once the value has loaded.
 - **Body:** CodeMirror with the app's editor theme.
   - **JSON mode:** `@codemirror/lang-json`, highlighting and folding.
   - **Text mode:** plain text with line wrapping.
@@ -146,73 +161,85 @@ The preview length (80 characters) is fixed. The backend receives the threshold 
   - **Save** stores a pending change (amber cell) in the table view's or the query result's
     pending edits. The existing **Review and commit** writes it.
   - Saving an unchanged value does nothing.
-- **Loading:** a spinner while the full value is fetched. On failure, the error and **Retry**.
-- **Read-only:** a read-only connection, a non-editable result column or a table without a key
-  opens the panel read-only, with the reason. **Copy** and **Format** still work.
+- **Loading:** a spinner while the value is fetched. On failure, the error and **Retry**.
+- **Read-only:** a read-only connection, a non-editable result column, or a table opened from a
+  view opens the panel read-only, with the reason. **Copy** and **Format** still work.
 
 ### Row inspector
-A partial field shows the preview, the size and an **Open editor** button. JSON fields open the
-JSON editor, as in the grid.
+- **Not loaded fields:** a **Load** button.
+- **Long text and JSON fields:** **Open editor**, as in the grid.
 
 ## Safety and privacy
 - Values are bind parameters. Identifiers come from `TableStructure` through
   `Dialect::quote_ident`.
-- `fetch_value` and `fetch_values` are reads. They are allowed on read-only connections and pass
-  through the same session lock.
+- `fetch_value`, `fetch_column` and `result_value` are reads. They are allowed on read-only
+  connections and pass through the same session lock.
+- Overrides store column names only. Values are held in memory only, and nothing new is written
+  to disk.
 - The JSON check in the editor is a convenience. PostgreSQL and MySQL also reject invalid JSON
   for their JSON types, and the commit's error is shown as usual.
-- No new network calls. Values stay in memory only. Nothing new is written to disk.
+- No new network calls.
 
 ## Error handling
 | Situation | Behaviour |
 |---|---|
-| Row deleted or key changed before opening | "This row no longer exists". Close, or Retry. |
+| Row deleted or key changed before loading | The cell shows "Row no longer exists". The editor offers Close. |
 | Result evicted from the store | "This result is no longer in memory; run the query again", with **Run again**. |
-| Fetch fails (connection lost) | The error with **Retry**. The grid is unchanged. |
+| Fetch fails (connection lost) | The cell returns to Not loaded, with the error in a toast. The editor shows **Retry**. |
 | Commit conflict (the value changed meanwhile) | The existing conflict error in the review dialog. The edit stays pending. |
 | Invalid JSON rejected by the server | Shown in the review dialog. The edit stays pending. |
 
 ## Testing
 - **Core unit tests:**
-  - the page query per dialect, with the length expression and preview for text-like columns
-    only;
-  - no treatment without a primary key;
-  - `Partial` serialization;
-  - character-safe trimming of result rows;
-  - folding the length columns away.
+  - classification per dialect: defaults, overrides, key columns never deferred, unknown types
+    loaded;
+  - the page query omits deferred columns and contains no length, left or CASE;
+  - the `fetch_value` and `fetch_column` SQL, including composite keys and quoted names;
+  - `NotLoaded` and `Partial` serialization;
+  - character-safe trimming of result rows.
 - **Integration tests** (disposable PostgreSQL, MySQL, MariaDB, SQLite, DuckDB):
-  - `browse` returns `Partial` for long JSON and text, and full values for short ones;
-  - `fetch_value` by primary key, and `NotFound` after a delete;
-  - `fetch_values` for several rows;
+  - `browse` returns NotLoaded for deferred columns, and their values never appear in the
+    response;
+  - an override loads a deferred column;
+  - `fetch_value` by single and composite key, and NotFound after a delete;
+  - `fetch_column` for a page of keys;
   - `result_value`;
   - committing an edited JSON value, with the conflict check;
-  - a table without a primary key returns full values;
-  - export writes full values.
+  - a table without a primary key loads every column;
+  - export writes full values;
+  - a query tab's `SELECT *` returns every column in full.
+- **Server-side proof (PostgreSQL):** in the integration test, after `browse`, the statement the
+  server ran (from `pg_stat_statements` if available, otherwise the SQL `browse` reports) does
+  not name the deferred column.
 - **Frontend tests:**
-  - a partial cell renders with its size;
-  - double-click opens the right editor for JSON, partial text and short text;
+  - Not loaded, NULL and empty render differently;
+  - a click loads a value and shows short text inline;
+  - long text and JSON open the right editor;
   - invalid JSON disables Save;
   - Save becomes a pending change;
-  - Copy fetches full values;
+  - Copy fetches unloaded values;
+  - Load this column makes one request;
+  - an override reloads the page;
   - read-only cells open read-only;
   - Esc with unsaved changes asks first.
-- **Benchmark** (manual, disposable PostgreSQL):
-  - 150 rows, each with a ~100 KB JSONB value;
-  - page-open time and bytes received, before and after;
-  - the numbers go in the PR.
-- **Manual (Xvfb, isolated data dir):** the editor in dark and light, invalid JSON, and
-  save → review → commit in a table and in an editable query result.
+- **Benchmark** (manual, disposable PostgreSQL, never against a user's database):
+  - a table of 150 rows with ~100 KB JSONB and ~100 KB text per row;
+  - page-open time, bytes received, and server execution time (`EXPLAIN (ANALYZE, BUFFERS)` run
+    by hand on the test container), before and after;
+  - the numbers go in the PR, separating the server, network and client savings.
+- **Manual (Xvfb, isolated data dir):** the editor in dark and light, invalid JSON, Load this
+  column, overrides, and save → review → commit in a table and in an editable query result.
 - **Docs:**
   - a `FEATURE_MATRIX.md` row "Large values on demand";
-  - a `DATABASE_ADAPTERS.md` note on the length and preview SQL per engine;
+  - a `DATABASE_ADAPTERS.md` section with the type rules per engine;
   - the new settings;
   - `DEPENDENCY_LICENSES.md` for `@codemirror/lang-json`.
 
 ## Risks
-- **PostgreSQL still reads large values server-side.** `length()` and `left()` on a JSONB value
-  make the server de-TOAST and serialize it. The saving is network transfer and everything after
-  it, not the server's read. The benchmark shows the real gain.
-- **Type lists per engine.** An unusual text-like type (a domain over text, a MySQL charset
-  variant) might be missed. It is then fetched in full, as today: slower, but never wrong.
-- **Wider page queries.** Two expressions per text column make the SQL longer. It is still one
-  round trip.
+- **PostgreSQL `text` used for short columns.** Schemas that use plain `text` for names and
+  emails will show those columns as Not loaded until they are set to **Always load**. The
+  override is one click from the header and is remembered.
+- **Type lists per engine.** An unusual text-like type might be missed. It is then loaded in
+  full, as today: slower, but never wrong.
+- **Query results still transfer full values from the database.** The user's SQL is theirs. The
+  saving there is on the client side only, and the docs say so.
