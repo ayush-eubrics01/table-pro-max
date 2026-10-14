@@ -73,6 +73,20 @@ Values cross IPC as text (`null | string | {"$bytes": hex, size}`), using the se
 text representation. That avoids precision loss in JavaScript and supports every type,
 including extension types.
 
+## Editing query results
+
+After a row-returning statement, `engine.rs` (`editing_for`) asks the adapter for each result
+column's origin (`schema.table.column`, reported by the database itself) and loads the
+introspected `TableStructure` of every origin table. `result_edit.rs` then decides, per table,
+whether it can be edited in this result: a real table (not a view) with a primary key whose
+columns all appear in the result. Everything else gets a reason ("Computed column", "Add `id`
+to the SELECT to edit `users`", "Read-only connection", …) that the grid shows on hover. The
+frontend keeps pending edits keyed by table, key values and column, so a source cell shown in
+several result cells has one edit. Commit goes through `apply_change_sets`: one `ChangeSet` per
+touched table, statements built by the same `changes::build_statements` as the table view
+(primary-key `WHERE`, original-value check, one row expected), all in one transaction, with the
+same backend confirmation and read-only rules as `apply_changes`.
+
 ## Driver choices
 
 | Database | Library | Notes |

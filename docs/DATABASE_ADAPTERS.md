@@ -76,6 +76,22 @@ Every driver implements `tpm_core::adapters::Session` (`crates/tpm-core/src/adap
   A statement that cannot be wrapped runs as is, and the wrapper never runs a statement twice.
 * Read-only sessions run each statement inside `BEGIN TRANSACTION READ ONLY`.
 
+## Column origins (editable query results)
+
+A query result cell can be edited only when the database says which table column it came
+from. No SQL is parsed. A column with no origin (an expression, aggregate, literal or function)
+stays read-only. The rule that decides editability is in `result_edit.rs`.
+
+| Engine | Mechanism | Cost |
+|---|---|---|
+| MySQL / MariaDB | The text-protocol column definitions carry `schema`, `org_table` and `org_name`. An empty `org_table` means no origin. | none |
+| PostgreSQL | `Session::describe_origins` calls `Client::prepare(sql)` (describe only, never executes) and reads each column's `table_oid` and `column_id`. OIDs resolve to names with one catalog query per new table, cached per session. Skipped on read-only sessions; a failed prepare means no origins. | one round-trip per row-returning statement |
+| SQLite | rusqlite feature `column_metadata` (`SQLITE_ENABLE_COLUMN_METADATA`): `column_database_name`, `column_table_name`, `column_origin_name`. Views report their base table. | none |
+| DuckDB | Not available. Query results are read-only; opened tables can still be edited. | none |
+
+Derived tables and `UNION` results usually report no origin on MySQL, so those columns are
+read-only, which is the safe outcome.
+
 ## SQL Server (evaluated, not implemented)
 * `tiberius` (MIT/Apache-2.0) is a maintained async TDS client with rustls support and
   `QueryStream` result streaming. Gaps to handle: no built-in cancel API (would need an
