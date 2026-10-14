@@ -63,11 +63,15 @@ describe("theme tokens", () => {
     expect(rule).toMatch(/background-image:[^;]*var\(--text-muted\)/);
     expect(rule).toMatch(/padding-right:\s*30px/);
     expect(rule).toMatch(/-webkit-appearance:\s*none/);
+    // Nothing later may reset the arrow with the background shorthand, and focus keeps its ring.
+    const after = app.slice(app.indexOf(rule) + rule.length);
+    expect(after).not.toMatch(/\.select(?![\w-])[^{,]*\{[^}]*\bbackground:/);
+    expect(app).toMatch(/\.select:focus,?[^{]*\{[^}]*box-shadow:/);
     // Forced colours drop gradient images: hand the arrow back to the system there.
     expect(app).toMatch(/@media \(forced-colors: active\) \{\s*\.select \{[^}]*appearance:\s*auto/);
   });
 
-  it("app.css uses no color-mix() either", () => {
+  it("no source file uses color-mix()", () => {
     const walk = (dir) =>
       readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]));
     const offenders = walk("src")

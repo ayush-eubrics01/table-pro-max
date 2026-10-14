@@ -1446,7 +1446,7 @@ pre,
   display: flex;
   flex-direction: column;
   min-height: 0;
-  /* The history panel scrolls the panel itself; the inspector scrolls .detail-fields. */
+  /* Anything else using the panel scrolls the panel itself; the inspector scrolls .detail-fields. */
   overflow: auto;
 }
 .detail-head {

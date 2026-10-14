@@ -28,9 +28,13 @@ describe("DataGrid", () => {
   });
 
   it("adds scroll space under the last row when asked", () => {
-    const { container } = render(<DataGrid ariaLabel="Rows" columns={columns} rowCount={2} getRow={(i) => rows[i]} sort={[]} bottomInset={56} />);
-    const sized = container.querySelector(".grid > div:not(.grid-header)") as HTMLElement | null;
-    expect(sized?.style.height).toMatch(/px$/);
-    expect(parseInt(sized!.style.height, 10)).toBeGreaterThanOrEqual(56);
+    const height = (inset?: number) => {
+      const { container, unmount } = render(<DataGrid ariaLabel="Rows" columns={columns} rowCount={2} getRow={(i) => rows[i]} sort={[]} bottomInset={inset} />);
+      const sized = container.querySelector(".grid > div:not(.grid-header)") as HTMLElement;
+      const h = parseInt(sized.style.height, 10);
+      unmount();
+      return h;
+    };
+    expect(height(56) - height()).toBe(56);
   });
 });
