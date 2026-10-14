@@ -8,6 +8,7 @@ import { confirmAction, notify, notifyError } from "../../stores/ui";
 import { useSettings } from "../../stores/settings";
 import { DataGrid, type CellPos, type GridHandle, type GridSelection } from "../data-grid/DataGrid";
 import { ValueEditor } from "../value-editor/ValueEditor";
+import { linkFilter, linkLabel, tableLinks } from "./fkLinks";
 import type { MenuEntry } from "../../components/Menu";
 import { FilterBuilder } from "../filters/FilterBuilder";
 import { FilterChips } from "../filters/FilterChips";
@@ -49,7 +50,7 @@ type View = "data" | "structure" | "definition";
 /** Keys per fetch_column call: well under the backend's 1,000 and SQLite's expression depth. */
 const FETCH_CHUNK = 200;
 
-export function TableView({ session, schema, table, onReconnect, onDirtyChange, onOpenSql, initialFilter }: Props) {
+export function TableView({ session, schema, table, onReconnect, onDirtyChange, onOpenSql, initialFilter, onOpenTable }: Props) {
   const pageSizeSetting = useSettings((s) => s.settings["grid.pageSize"]);
   const checkConflicts = useSettings((s) => s.settings["grid.checkConflicts"]);
   const largeValueChars = useSettings((s) => s.settings["grid.largeValueChars"]);
@@ -420,9 +421,39 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
     await load();
   };
 
+  // ---- following foreign keys ------------------------------------------------------------
+
+  const fkByColumn = useMemo(() => (structure ? tableLinks(structure) : []), [structure]);
+
+  const cellLink = (row: number, col: number) => {
+    if (!onOpenTable || row >= rows.length) return null; // new rows have nothing to follow yet
+    const link = fkByColumn[col]?.[0];
+    const cells = getRow(row);
+    if (!link || !cells) return null;
+    const label = linkLabel(link, cells);
+    const filter = linkFilter(link, cells);
+    if (!label || !filter) return null;
+    return { label, open: () => onOpenTable(link.fk.refSchema, link.fk.refTable, filter) };
+  };
+
   const contextItems = (sel: GridSelection) => {
     const first = sel.rows[0];
+    const active = sel.active;
+    const links = active && active.row < rows.length && onOpenTable ? (fkByColumn[active.col] ?? []) : [];
+    const activeCells = active ? getRow(active.row) : undefined;
+    const refItems = links.flatMap((link) => {
+      const filter = activeCells ? linkFilter(link, activeCells) : null;
+      if (!filter) return [];
+      return [
+        {
+          label: links.length > 1 ? `Open referenced row in ${link.fk.refTable}` : "Open referenced row",
+          onSelect: () => onOpenTable!(link.fk.refSchema, link.fk.refTable, filter),
+        },
+      ];
+    });
     return [
+      ...refItems,
+      ...(refItems.length ? (["separator"] as const) : []),
       {
         label: "Copy as SQL IN list",
         onSelect: () =>
@@ -655,6 +686,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
                   headerItems={headerItems}
                   isLoading={(r, c) => loadingCells.has(`${r}:${c}`)}
                   largeValueChars={largeValueChars}
+                  cellLink={cellLink}
                   rowNumberOffset={offset}
                   bottomInset={nPending > 0 ? 56 : 0}
                 />
