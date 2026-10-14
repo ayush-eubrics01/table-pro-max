@@ -55,17 +55,34 @@ pub type Row = Vec<Cell>;
 /// the server according to the target column type.
 pub type Param = Option<String>;
 
+/// Where a result column comes from, as reported by the database (absent for expressions).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnOrigin {
+    pub schema: String,
+    pub table: String,
+    pub column: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnMeta {
     pub name: String,
     /// Server type name when known (empty for drivers that do not report it).
     pub type_name: String,
+    /// Base table column this result column was read from, when the driver reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ColumnOrigin>,
 }
 
 impl ColumnMeta {
     pub fn new(name: impl Into<String>, type_name: impl Into<String>) -> Self {
-        Self { name: name.into(), type_name: type_name.into() }
+        Self { name: name.into(), type_name: type_name.into(), origin: None }
+    }
+
+    pub fn with_origin(mut self, origin: Option<ColumnOrigin>) -> Self {
+        self.origin = origin;
+        self
     }
 }
 
@@ -88,9 +105,10 @@ pub enum StatementOutcome {
     Affected { rows_affected: u64 },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ObjectKind {
+    #[default]
     Table,
     View,
     MaterializedView,
@@ -170,7 +188,7 @@ pub struct TriggerInfo {
     pub definition: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableStructure {
     pub schema: String,
