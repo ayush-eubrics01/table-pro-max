@@ -2,7 +2,7 @@ import { useState } from "react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { BrowseRequest, Cell, ColumnMeta, Dialect, ExportFormat, ExportOptions, StatementResult } from "../../types/backend";
 import { api, toError } from "../../lib/ipc";
-import { cellCopy } from "../../lib/cells";
+import { cellCopy, needsFetch } from "../../lib/cells";
 import { uid, formatCount } from "../../lib/text";
 import { Dialog } from "../../components/Dialog";
 import { notify } from "../../stores/ui";
@@ -40,6 +40,11 @@ export function ExportDialog({ source, onClose }: { source: ExportSource; onClos
         : `${source.request.schema}.${source.request.table}${source.filtered ? " with the current filter and sort" : ", all rows"}`;
 
   const run = async () => {
+    // Rows from the grid must hold full values; a placeholder would be written as an empty string.
+    if (source.kind === "rows" && source.rows.some((r) => r.some((c) => needsFetch(c)))) {
+      setError("Some values are not loaded yet, so these rows can't be exported as they are. Load them first, or export the whole table.");
+      return;
+    }
     const ext = FORMATS.find((f) => f.value === format)!.ext;
     const base = source.kind === "table" ? source.request.table : "export";
     const path = await saveDialog({ defaultPath: `${base}.${ext}`, filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });

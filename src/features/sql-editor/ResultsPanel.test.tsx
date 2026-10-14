@@ -180,4 +180,29 @@ describe("editable results", () => {
     fireEvent.click(within(details).getByRole("button", { name: "Open editor" }));
     expect(await screen.findByRole("dialog", { name: /Query result · email · row 1/ })).toBeInTheDocument();
   });
+
+  it("reopening a value shows its pending edit, not the value as the query returned it", async () => {
+    const big = "y".repeat(1000);
+    mockIPC((cmd) => (cmd === "result_value" ? big : null));
+    const st: StatementResult = { ...editable, rows: [["1", { $partial: "y".repeat(80), length: 1000 }, "2"]], totalRows: 1 };
+    render(
+      <>
+        <ResultsPanel result={scriptOf(st)} running={false} dialect="postgres" session={session} />
+        <Overlays />
+      </>,
+    );
+    const open = async () => {
+      fireEvent.doubleClick(screen.getAllByText(/chars$/)[0]!.closest(".grid-cell")!);
+      await screen.findByRole("dialog", { name: /Query result · email · row 1/ });
+      await waitFor(() => expect(document.querySelector(".value-editor .cm-editor")).not.toBeNull());
+      return EditorView.findFromDOM(document.querySelector(".value-editor .cm-editor") as HTMLElement)!;
+    };
+    let v = await open();
+    await waitFor(() => expect(v.state.doc.length).toBe(1000));
+    act(() => v.dispatch({ changes: { from: 0, to: 1, insert: "z" } }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("1 pending change")).toBeInTheDocument();
+    v = await open();
+    await waitFor(() => expect(v.state.doc.toString().startsWith("z")).toBe(true));
+  });
 });

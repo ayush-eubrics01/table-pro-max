@@ -124,6 +124,8 @@ export function validateJson(text: string): JsonCheck {
     format(text);
     return { ok: true };
   } catch (e) {
+    // Pathologically deep nesting exhausts the parser's stack; report it, don't crash the editor.
+    if (e instanceof RangeError) return { ok: false, line: 1, column: 1, message: "Nested too deeply to check" };
     if (!(e instanceof JsonError)) throw e;
     return { ok: false, ...position(text, e.pos), message: e.message };
   }

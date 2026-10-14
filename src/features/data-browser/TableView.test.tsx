@@ -295,4 +295,99 @@ describe("large values in opened tables", () => {
     expect(await screen.findByText(/This row no longer exists/)).toBeInTheDocument();
     expect(screen.getAllByText("Not loaded")).toHaveLength(2);
   });
+
+  const menuOnRow = async (text: string) => {
+    fireEvent.mouseDown(screen.getByText(text).closest(".grid-cell")!);
+    fireEvent.contextMenu(screen.getByText(text).closest(".grid-cell")!);
+  };
+
+  it("row copies and export fetch deferred values first (never empty placeholders)", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: write }, configurable: true });
+    page = [["2", "two", NL, NL]];
+    view();
+    await screen.findAllByText("Not loaded");
+    // IN list of the selected cells: title through doc, both still Not loaded.
+    fireEvent.mouseDown(screen.getByText("two").closest(".grid-cell")!);
+    fireEvent.mouseDown(screen.getAllByText("Not loaded")[1]!.closest(".grid-cell")!, { shiftKey: true });
+    fireEvent.contextMenu(screen.getByText("two").closest(".grid-cell")!);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Copy as SQL IN list" }));
+    await waitFor(() => expect(write).toHaveBeenLastCalledWith("'two', 'short', NULL"));
+    await menuOnRow("two");
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Copy rows as TSV" }));
+    await waitFor(() => expect(write).toHaveBeenLastCalledWith("id\ttitle\tbody\tdoc\n2\ttwo\tshort\t"));
+    calls = [];
+    await menuOnRow("two");
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Export selected rows…" }));
+    expect(await screen.findByRole("dialog", { name: /Export/ })).toBeInTheDocument();
+    expect(calls.some((c) => c.cmd === "fetch_column")).toBe(false); // already loaded by the copies above
+  });
+
+  it("Export selected rows loads Not loaded values before the dialog opens", async () => {
+    page = [["2", "two", NL, NL]];
+    view();
+    await screen.findAllByText("Not loaded");
+    await menuOnRow("two");
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Export selected rows…" }));
+    expect(await screen.findByRole("dialog", { name: /Export/ })).toBeInTheDocument();
+    expect(calls.filter((c) => c.cmd === "fetch_column").map((c) => c.args.column)).toEqual(["body", "doc"]);
+  });
+
+  it("Duplicate row copies deferred values instead of dropping them", async () => {
+    page = [["2", "two", NL, NL]];
+    view();
+    await screen.findAllByText("Not loaded");
+    await menuOnRow("two");
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Duplicate row" }));
+    await waitFor(() => expect(screen.getAllByText("short")).toHaveLength(2));
+  });
+
+  it("a fetch that finishes after a reload is dropped, not written into the new page", async () => {
+    let release: (v: unknown) => void = () => {};
+    mockIPC((cmd) => {
+      calls.push({ cmd, args: {} });
+      if (cmd === "table_structure") return docsStructure;
+      if (cmd === "list_column_fetch") return [];
+      if (cmd === "browse_table")
+        return { columns: [{ name: "id", typeName: "int4" }, { name: "title", typeName: "varchar" }, { name: "body", typeName: "text", deferred: true }, { name: "doc", typeName: "jsonb", deferred: true }], rows: [["1", "one", NL, NL]], sql: "SELECT …", durationMs: 1, hasMore: false };
+      if (cmd === "fetch_value") return new Promise((r) => (release = r));
+      return null;
+    });
+    view();
+    fireEvent.click((await screen.findAllByText("Not loaded"))[0]!.closest(".grid-cell")!);
+    await waitFor(() => expect(calls.some((c) => c.cmd === "fetch_value")).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    await waitFor(() => expect(calls.filter((c) => c.cmd === "browse_table")).toHaveLength(2));
+    await act(async () => release("STALE VALUE"));
+    expect(screen.queryByText("STALE VALUE")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Not loaded")).toHaveLength(2);
+  });
+
+  it("loads a big page's column in chunks the backend accepts", async () => {
+    page = Array.from({ length: 450 }, (_, i) => [String(i + 1), `t${i}`, NL, NL]);
+    fetched = {};
+    view();
+    await screen.findAllByText("t0");
+    fireEvent.contextMenu(screen.getByRole("columnheader", { name: /body/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Load this column" }));
+    await waitFor(() => expect(calls.filter((c) => c.cmd === "fetch_column")).toHaveLength(3));
+    expect(Math.max(...calls.filter((c) => c.cmd === "fetch_column").map((c) => (c.args.keys as unknown[]).length))).toBeLessThanOrEqual(200);
+  });
+
+  it("says so when copying fails, instead of leaving the clipboard stale", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "table_structure") return docsStructure;
+      if (cmd === "list_column_fetch") return [];
+      if (cmd === "browse_table")
+        return { columns: [{ name: "id", typeName: "int4" }, { name: "title", typeName: "varchar" }, { name: "body", typeName: "text", deferred: true }, { name: "doc", typeName: "jsonb", deferred: true }], rows: [["2", "two", NL, NL]], sql: "SELECT …", durationMs: 1, hasMore: false };
+      if (cmd === "fetch_column") throw { kind: "network", message: "connection lost" };
+      return null;
+    });
+    view();
+    await screen.findAllByText("Not loaded");
+    fireEvent.mouseDown(screen.getByText("two").closest(".grid-cell")!);
+    fireEvent.mouseDown(screen.getAllByText("Not loaded")[0]!.closest(".grid-cell")!, { shiftKey: true });
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "c", ctrlKey: true });
+    expect(await screen.findByText(/connection lost/)).toBeInTheDocument();
+  });
 });

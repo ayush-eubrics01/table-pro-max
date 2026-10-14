@@ -111,7 +111,7 @@ function Field({
       ) : onOpenEditor && (isPartial(value) || isJsonType(column.dataType) || isLargeText(value, largeValueChars)) ? (
         <div>
           <pre className={value === null ? "hint" : undefined}>
-            {typeof value === "string" ? previewText(value) + (Array.from(value).length > 80 ? "…" : "") : cellDisplay(value)}
+            {typeof value === "string" ? previewText(value) + (value.length > previewText(value).length ? "…" : "") : cellDisplay(value)}
           </pre>
           <button className="btn btn-ghost" onClick={onOpenEditor}>
             Open editor

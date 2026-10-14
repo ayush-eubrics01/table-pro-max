@@ -31,8 +31,10 @@ pub fn defer_by_default(driver: Driver, data_type: &str) -> bool {
 }
 
 pub fn deferred_columns(driver: Driver, s: &TableStructure, load: &[String], defer: &[String]) -> Vec<bool> {
-    if s.primary_key().is_empty() {
-        // Without a key a value can't be fetched back for one row: load everything, as before.
+    let pk = s.primary_key();
+    // Without a usable key a value can't be fetched back for one row: load everything, as before.
+    // Binary keys don't survive the round trip as a text parameter.
+    if pk.is_empty() || pk.iter().any(|c| is_binary_type(&c.data_type)) {
         return vec![false; s.columns.len()];
     }
     s.columns
@@ -49,6 +51,12 @@ pub fn deferred_columns(driver: Driver, s: &TableStructure, load: &[String], def
             }
         })
         .collect()
+}
+
+fn is_binary_type(data_type: &str) -> bool {
+    let t = data_type.trim().to_ascii_lowercase();
+    let base = t.split(['(', ' ']).next().unwrap_or("");
+    matches!(base, "bytea" | "binary" | "varbinary" | "blob" | "tinyblob" | "mediumblob" | "longblob")
 }
 
 pub fn expand_deferred(
@@ -176,6 +184,17 @@ mod tests {
             vec![false, false, true, true],
             "a key column cannot be deferred"
         );
+    }
+
+    #[test]
+    fn binary_keys_defer_nothing() {
+        // A binary key can't be sent back as a text parameter, so values could never be fetched.
+        let pg = table(vec![col("id", "bytea", Some(1)), col("body", "text", None)]);
+        assert_eq!(deferred_columns(Driver::Postgres, &pg, &[], &[]), vec![false, false]);
+        let my = table(vec![col("id", "binary(16)", Some(1)), col("body", "longtext", None)]);
+        assert_eq!(deferred_columns(Driver::Mysql, &my, &[], &[]), vec![false, false]);
+        let sq = table(vec![col("id", "BLOB", Some(1)), col("body", "TEXT", None)]);
+        assert_eq!(deferred_columns(Driver::Sqlite, &sq, &[], &[]), vec![false, false]);
     }
 
     #[test]

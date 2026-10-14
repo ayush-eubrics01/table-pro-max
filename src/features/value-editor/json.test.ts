@@ -17,6 +17,15 @@ describe("validateJson", () => {
   });
 });
 
+describe("deep nesting", () => {
+  it("reports too-deep documents as invalid instead of throwing", () => {
+    const deep = "[".repeat(200_000) + "]".repeat(200_000);
+    const r = validateJson(deep);
+    expect(r.ok).toBe(false);
+    expect(() => formatJson(deep)).toThrow();
+  });
+});
+
 describe("formatJson", () => {
   it("indents with two spaces and never changes literals", () => {
     const src = '{"big":12345678901234567890,"f":1.0,"s":"\\u00e9\\n","b":[true,null],"o":{}}';

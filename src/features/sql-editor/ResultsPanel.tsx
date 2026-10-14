@@ -139,8 +139,10 @@ function ResultGrid({
         mode={isJsonType(columnType(valueAt.col)) ? "json" : "text"}
         load={async () => {
           const full = await fullValue(valueAt.row, valueAt.col);
+          // The row as loaded (with the full value) stays the edit's original; the editor shows
+          // what the grid shows: a pending or committed edit takes precedence.
           fullRow.current = (rows[valueAt.row] ?? []).map((v, i) => (i === valueAt.col ? full : v));
-          return full;
+          return displayCell(edits, applied, st, fullRow.current, valueAt.col);
         }}
         readOnlyReason={valueReason}
         nullable

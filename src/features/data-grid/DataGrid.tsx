@@ -4,7 +4,7 @@ import { Icon } from "../../components/Icon";
 import type { Cell, SortSpec } from "../../types/backend";
 import { cellDisplay, cellTone, formatBytes, isBinary, isLargeText, isNotLoaded, isNumericType, isPartial, needsFetch, previewText, sizeLabel, toTsv } from "../../lib/cells";
 import { ContextMenu, useContextMenu, type MenuEntry } from "../../components/Menu";
-import { notify } from "../../stores/ui";
+import { notify, notifyError } from "../../stores/ui";
 import { pluralize } from "../../lib/text";
 
 export interface GridColumn {
@@ -243,7 +243,14 @@ export function DataGrid(props: DataGridProps) {
         const row = getRow(r);
         return selection.cols.map((c) => (row ? (row[c] ?? null) : null));
       });
-      const fetched = await fillPlaceholders(data, selection.rows, selection.cols);
+      let fetched: number;
+      try {
+        fetched = await fillPlaceholders(data, selection.rows, selection.cols);
+      } catch (e) {
+        // Never leave a stale clipboard behind silently.
+        notifyError(e, "Could not copy");
+        return;
+      }
       const header = withHeader ? selection.cols.map((c) => columns[c]!.name) : undefined;
       const text = toTsv(data, header);
       await navigator.clipboard.writeText(text);
@@ -426,7 +433,9 @@ export function DataGrid(props: DataGridProps) {
               rows.push(r);
             }
           }
-          void fillPlaceholders(vals, rows, [col]).then(() => navigator.clipboard.writeText(toTsv(vals)));
+          void fillPlaceholders(vals, rows, [col])
+            .then(() => navigator.clipboard.writeText(toTsv(vals)))
+            .catch((e) => notifyError(e, "Could not copy"));
         },
       },
       ...(headerItems ? (["separator", ...headerItems(col)] as MenuEntry[]) : []),

@@ -42,6 +42,9 @@ interface Props {
 
 type View = "data" | "structure" | "definition";
 
+/** Keys per fetch_column call: well under the backend's 1,000 and SQLite's expression depth. */
+const FETCH_CHUNK = 200;
+
 export function TableView({ session, schema, table, onReconnect, onDirtyChange, onOpenSql }: Props) {
   const pageSizeSetting = useSettings((s) => s.settings["grid.pageSize"]);
   const checkConflicts = useSettings((s) => s.settings["grid.checkConflicts"]);
@@ -106,6 +109,9 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
   const load = useCallback(
     async (opts: { offset?: number; sort?: SortSpec[]; filter?: GroupNode; pageSize?: number } = {}) => {
       const seq = ++loadSeq.current;
+      // Fetches started for the previous page must not land in this one (see putCells).
+      inflight.current.clear();
+      setLoadingCells(new Set());
       setLoading(true);
       setError(null);
       try {
@@ -227,10 +233,13 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
     [structure, rows],
   );
 
-  /** Puts fetched values into the page: the page is the cache, and any reload clears it. */
-  const putCells = (updates: { row: number; col: number; value: Cell }[]) =>
+  /**
+   * Puts fetched values into the page: the page is the cache, and any reload clears it. `seq` is
+   * the load the fetch started under; a value for an older page is dropped (rows are by index).
+   */
+  const putCells = (updates: { row: number; col: number; value: Cell }[], seq: number) =>
     setPage((p) => {
-      if (!p || updates.length === 0) return p;
+      if (!p || updates.length === 0 || seq !== loadSeq.current) return p;
       const next = p.rows.map((r) => r.slice());
       for (const u of updates) if (next[u.row]) next[u.row]![u.col] = u.value;
       return { ...p, rows: next };
@@ -240,11 +249,13 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
     const k = `${row}:${col}`;
     const existing = inflight.current.get(k);
     if (existing) return existing;
+    const seq = loadSeq.current;
     setLoadingCells((s) => new Set(s).add(k));
     const p = api
       .fetchValue(session.sessionId, schema, table, keyOf(row), columns[col]!.name)
       .then((value) => {
-        putCells([{ row, col, value }]);
+        if (seq !== loadSeq.current) return undefined; // the page changed meanwhile
+        putCells([{ row, col, value }], seq);
         return value as Cell | undefined;
       })
       .catch((e) => {
@@ -283,28 +294,59 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
     return false;
   };
 
-  /** Full values for copying: Not loaded cells are fetched, one request per column. */
-  const loadFull = async (cells: CellPos[]): Promise<Cell[]> => {
+  /**
+   * Full values for the given cells: Not loaded ones are fetched by key, per column, in chunks the
+   * backend accepts. With `strict` (copy, export, duplicate) a row that no longer exists is an
+   * error rather than a silently empty value.
+   */
+  const fetchCells = async (cells: CellPos[], strict: boolean): Promise<Cell[]> => {
+    const seq = loadSeq.current;
     const out: Cell[] = cells.map((p) => getRow(p.row)?.[p.col] ?? null);
     const byCol = new Map<number, number[]>();
     cells.forEach((p, i) => {
       const c = getRow(p.row)?.[p.col];
       if (c !== undefined && isNotLoaded(c) && p.row < rows.length) byCol.set(p.col, [...(byCol.get(p.col) ?? []), i]);
     });
+    let missing = 0;
     for (const [col, idx] of byCol) {
-      const got = await api.fetchColumn(session.sessionId, schema, table, columns[col]!.name, idx.map((i) => keyOf(cells[i]!.row)));
-      const updates: { row: number; col: number; value: Cell }[] = [];
-      got.forEach((f, k) => {
-        if (!f.found) return;
-        out[idx[k]!] = f.value;
-        updates.push({ row: cells[idx[k]!]!.row, col, value: f.value });
-      });
-      putCells(updates);
+      for (let start = 0; start < idx.length; start += FETCH_CHUNK) {
+        const part = idx.slice(start, start + FETCH_CHUNK);
+        const got = await api.fetchColumn(session.sessionId, schema, table, columns[col]!.name, part.map((i) => keyOf(cells[i]!.row)));
+        const updates: { row: number; col: number; value: Cell }[] = [];
+        got.forEach((f, k) => {
+          if (!f.found) {
+            missing++;
+            return;
+          }
+          out[part[k]!] = f.value;
+          updates.push({ row: cells[part[k]!]!.row, col, value: f.value });
+        });
+        putCells(updates, seq);
+      }
     }
+    if (strict && missing > 0) throw new Error(`${pluralize(missing, "value")} could not be loaded: those rows no longer exist. Reload the table and try again.`);
     return out;
   };
+  const loadFull = (cells: CellPos[]) => fetchCells(cells, true);
 
-  const loadColumn = (col: number) => void loadFull(rows.map((_, r) => ({ row: r, col }))).catch((e) => notifyError(e, "Could not load the column"));
+  /** Whole rows with every Not loaded value fetched (row copies, export, duplicate). */
+  const fullRows = async (rowIdx: number[]): Promise<Cell[][]> => {
+    const cells = rowIdx.flatMap((r) => columns.map((_, c) => ({ row: r, col: c })));
+    const flat = await fetchCells(cells, true);
+    return rowIdx.map((_, i) => flat.slice(i * columns.length, (i + 1) * columns.length));
+  };
+
+  /** A copy of a row as a new pending row, with its Not loaded values fetched first. */
+  const duplicateRow = (row: number) =>
+    void (row < rows.length ? fullRows([row]).then(([r]) => r) : Promise.resolve(getRow(row)))
+      .then((r) => addRow(r))
+      .catch((e) => notifyError(e, "Could not duplicate the row"));
+
+  const loadColumn = (col: number) =>
+    void fetchCells(
+      rows.map((_, r) => ({ row: r, col })),
+      false,
+    ).catch((e) => notifyError(e, "Could not load the column"));
 
   const setOverride = (column: string, mode: FetchMode | null) =>
     guard(() => {
@@ -379,36 +421,48 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
     return [
       {
         label: "Copy as SQL IN list",
-        onSelect: () => {
-          const vals = sel.rows.flatMap((r) => sel.cols.map((c) => getRow(r)?.[c] ?? null));
-          void navigator.clipboard.writeText(vals.map((v) => (v === null ? "NULL" : `'${cellCopy(v).replace(/'/g, "''")}'`)).join(", "));
-        },
+        onSelect: () =>
+          void loadFull(sel.rows.flatMap((r) => sel.cols.map((c) => ({ row: r, col: c }))))
+            .then((vals) => navigator.clipboard.writeText(vals.map((v) => (v === null ? "NULL" : `'${cellCopy(v).replace(/'/g, "''")}'`)).join(", ")))
+            .catch((e) => notifyError(e, "Could not copy")),
       },
       {
         label: "Export selected rows…",
         disabled: sel.rows.length === 0,
         onSelect: () =>
-          setExportSource({
-            kind: "rows",
-            dialect: session.dialect,
-            label: `${pluralize(sel.rows.length, "selected row")} from ${schema}.${table}`,
-            columns: columns.map((c) => ({ name: c.name, typeName: c.dataType })),
-            rows: sel.rows.map((r) => getRow(r) ?? []),
-          }),
+          void fullRows(sel.rows)
+            .then((full) =>
+              setExportSource({
+                kind: "rows",
+                dialect: session.dialect,
+                label: `${pluralize(sel.rows.length, "selected row")} from ${schema}.${table}`,
+                columns: columns.map((c) => ({ name: c.name, typeName: c.dataType })),
+                rows: full,
+              }),
+            )
+            .catch((e) => notifyError(e, "Could not export")),
       },
       {
         label: "Copy rows as TSV",
         onSelect: () =>
-          void navigator.clipboard.writeText(
-            toTsv(
-              sel.rows.map((r) => getRow(r) ?? []),
-              columns.map((c) => c.name),
-            ),
-          ),
+          void fullRows(sel.rows)
+            .then((full) =>
+              navigator.clipboard.writeText(
+                toTsv(
+                  full,
+                  columns.map((c) => c.name),
+                ),
+              ),
+            )
+            .catch((e) => notifyError(e, "Could not copy")),
       },
       "separator" as const,
       { label: "Set to NULL", onSelect: () => setNull(sel), disabled: !sel.rows.some((r) => sel.cols.some((c) => canEdit(r, c))) },
-      { label: "Duplicate row", onSelect: () => first !== undefined && addRow(getRow(first)), disabled: !canInsert || first === undefined },
+      {
+        label: "Duplicate row",
+        onSelect: () => first !== undefined && duplicateRow(first),
+        disabled: !canInsert || first === undefined,
+      },
       {
         label: sel.rows.every((r) => pending.deleted.includes(r)) && sel.rows.length > 0 ? "Restore rows" : "Delete rows",
         onSelect: () => deleteSelected(sel),
@@ -463,7 +517,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
                   aria-label="Duplicate row"
                   title="Duplicate selected row"
                   disabled={selection.rows.length === 0}
-                  onClick={() => selection.rows[0] !== undefined && addRow(getRow(selection.rows[0]))}
+                  onClick={() => selection.rows[0] !== undefined && duplicateRow(selection.rows[0])}
                 >
                   <Icon name="content_copy" size={14} />
                 </button>
@@ -680,8 +734,9 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
           load={async () => {
             const c = getRow(editorAt.row)?.[editorAt.col] ?? null;
             if (c !== null && isNotLoaded(c)) {
+              const seq = loadSeq.current;
               const v = await api.fetchValue(session.sessionId, schema, table, keyOf(editorAt.row), columns[editorAt.col]!.name);
-              putCells([{ row: editorAt.row, col: editorAt.col, value: v }]);
+              putCells([{ row: editorAt.row, col: editorAt.col, value: v }], seq);
               return v;
             }
             return c;

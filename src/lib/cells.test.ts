@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { cellCopy, cellDisplay, cellParam, cellTone, isLargeText, isNotLoaded, isPartial, needsFetch, previewText, sizeLabel } from "./cells";
 
 describe("cellTone", () => {
@@ -34,5 +34,17 @@ describe("placeholder cells", () => {
     expect(isLargeText("x".repeat(257), 256)).toBe(true);
     expect(isLargeText("x".repeat(256), 256)).toBe(false);
     expect(previewText("y".repeat(300))).toBe("y".repeat(80));
+  });
+});
+
+describe("previewText", () => {
+  it("reads only the first characters of a long value, keeping surrogate pairs whole", () => {
+    const huge = "😀".repeat(5) + "x".repeat(5_000_000);
+    const spy = vi.spyOn(Array, "from");
+    const p = previewText(huge);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+    expect(p.startsWith("😀".repeat(5))).toBe(true);
+    expect(Array.from(p)).toHaveLength(80);
   });
 });

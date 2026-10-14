@@ -25,7 +25,14 @@ export function isLargeText(c: Cell | undefined, limit: number): c is string {
 }
 
 export function previewText(s: string): string {
-  return Array.from(s).slice(0, PREVIEW_CHARS).join("");
+  // Walk only the first PREVIEW_CHARS code points: values can be megabytes long.
+  let out = "";
+  let n = 0;
+  for (const ch of s) {
+    if (n++ === PREVIEW_CHARS) break;
+    out += ch;
+  }
+  return out;
 }
 
 export function sizeLabel(typeName: string, length: number): string {
