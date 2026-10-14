@@ -1878,6 +1878,123 @@ pre,
   top: var(--titlebar-height);
 }
 
+/* ---- settings ------------------------------------------------------------ */
+
+.settings-dialog {
+  width: min(880px, 94vw);
+  height: min(620px, 88vh);
+  display: flex;
+  flex-direction: column;
+}
+.settings-dialog .dialog-body {
+  padding: 0;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.settings-layout {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.settings-layout nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border-right: 1px solid var(--border-hairline);
+  background: var(--surface-panel);
+  overflow: auto;
+}
+.settings-layout nav button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.settings-layout nav button:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+.settings-layout nav button[aria-current="true"] {
+  color: var(--text);
+  background: var(--surface-active);
+}
+.settings-content {
+  overflow: auto;
+  padding: 18px 24px;
+  min-width: 0;
+}
+.settings-content h3 {
+  margin: 0 0 8px;
+  font-size: var(--text-md);
+  font-weight: 650;
+}
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border-hairline);
+}
+.setting-text {
+  min-width: 0;
+}
+.setting-label {
+  font-weight: 500;
+}
+.setting-desc {
+  margin-top: 2px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.setting-control {
+  flex: none;
+  max-width: 55%;
+}
+.setting-number {
+  width: 120px;
+  text-align: right;
+}
+.setting-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 14px 0;
+}
+.shortcut-list {
+  margin: 0;
+}
+.shortcut-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-hairline);
+}
+.shortcut-list dt {
+  color: var(--text);
+}
+.shortcut-list dd {
+  margin: 0;
+}
+.about-network {
+  margin: 16px 0 0;
+}
+
 /* ---- palette ------------------------------------------------------------- */
 
 .palette {
