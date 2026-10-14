@@ -786,7 +786,12 @@ impl Engine {
     }
 
     /// Which cells of a result can be edited (see result_edit.rs). Never fails: problems make cells read-only.
-    async fn editing_for(&self, handle: &Arc<SessionHandle>, session_id: &str, cols: &[ColumnMeta]) -> crate::result_edit::ResultEditing {
+    async fn editing_for(
+        &self,
+        handle: &Arc<SessionHandle>,
+        session_id: &str,
+        cols: &[ColumnMeta],
+    ) -> crate::result_edit::ResultEditing {
         use crate::result_edit::{not_editable, origin_tables, result_editing};
         if handle.profile.read_only() {
             return not_editable(cols, "Read-only connection");

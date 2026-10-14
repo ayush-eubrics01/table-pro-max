@@ -569,7 +569,12 @@ async fn exercise(t: Target) {
 
 /// Edit query results across two tables in one transaction; refuse on conflict; block where the rule says so.
 async fn edit_results(engine: &Engine, sid: &str, profile: &ConnectionProfile, password: Option<&str>, driver: Driver) {
-    let r = run(engine, sid, "SELECT i.id, i.name, o.id, o.name FROM tpm_it_items i JOIN tpm_it_owners o ON o.id = i.owner_id ORDER BY i.id").await;
+    let r = run(
+        engine,
+        sid,
+        "SELECT i.id, i.name, o.id, o.name FROM tpm_it_items i JOIN tpm_it_owners o ON o.id = i.owner_id ORDER BY i.id",
+    )
+    .await;
     let st = &r.statements[0];
     let editing = st.editing.clone().expect("editing info");
     if driver == Driver::Duckdb {
@@ -655,7 +660,8 @@ async fn edit_results(engine: &Engine, sid: &str, profile: &ConnectionProfile, p
 async fn origins(engine: &Engine, sid: &str, driver: Driver) {
     let r = run(engine, sid, "SELECT i.id, i.name AS label, o.name, i.price * 2 AS doubled, count(*) OVER () AS n FROM tpm_it_items i JOIN tpm_it_owners o ON o.id = i.owner_id").await;
     let cols = r.statements[0].columns.clone().expect("columns");
-    let tables: Vec<Option<(String, String)>> = cols.iter().map(|c| c.origin.as_ref().map(|o| (o.table.clone(), o.column.clone()))).collect();
+    let tables: Vec<Option<(String, String)>> =
+        cols.iter().map(|c| c.origin.as_ref().map(|o| (o.table.clone(), o.column.clone()))).collect();
     if driver == Driver::Duckdb {
         assert!(tables.iter().all(Option::is_none), "duckdb reports no origins: {tables:?}");
         return;

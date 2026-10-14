@@ -14,7 +14,9 @@ use serde::Serialize;
 use crate::config::{ConnectionProfile, Driver};
 use crate::dialect::Dialect;
 use crate::error::Result;
-use crate::model::{Capabilities, ColumnOrigin, DbObject, ObjectKind, Param, RowSet, ServerInfo, StatementOutcome, TableStructure};
+use crate::model::{
+    Capabilities, ColumnOrigin, DbObject, ObjectKind, Param, RowSet, ServerInfo, StatementOutcome, TableStructure,
+};
 
 #[cfg(feature = "duckdb")]
 pub mod duckdb;

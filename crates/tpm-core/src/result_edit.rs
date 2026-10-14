@@ -45,7 +45,11 @@ pub fn origin_tables(columns: &[ColumnMeta]) -> Vec<(String, String)> {
 }
 
 pub fn not_editable(columns: &[ColumnMeta], reason: &str) -> ResultEditing {
-    ResultEditing { tables: vec![], columns: vec![None; columns.len()], read_only: vec![ReadOnlyReason { column: None, reason: reason.into() }] }
+    ResultEditing {
+        tables: vec![],
+        columns: vec![None; columns.len()],
+        read_only: vec![ReadOnlyReason { column: None, reason: reason.into() }],
+    }
 }
 
 pub fn result_editing(columns: &[ColumnMeta], structures: &[TableStructure]) -> ResultEditing {
@@ -82,11 +86,15 @@ pub fn result_editing(columns: &[ColumnMeta], structures: &[TableStructure]) -> 
             }
         }
         if repeated {
-            blocked.push(((schema, table.clone()), format!("{table} appears more than once, so rows cannot be told apart")));
+            blocked.push((
+                (schema, table.clone()),
+                format!("{table} appears more than once, so rows cannot be told apart"),
+            ));
             continue;
         }
         if !missing.is_empty() {
-            blocked.push(((schema, table.clone()), format!("Add {} to the SELECT to edit {table}", missing.join(", "))));
+            blocked
+                .push(((schema, table.clone()), format!("Add {} to the SELECT to edit {table}", missing.join(", "))));
             continue;
         }
         let idx = e.tables.len();
@@ -124,7 +132,11 @@ mod tests {
     use crate::model::{ColumnInfo, ColumnMeta, ColumnOrigin, ObjectKind, TableStructure};
 
     fn col(name: &str, origin: Option<(&str, &str, &str)>) -> ColumnMeta {
-        ColumnMeta::new(name, "").with_origin(origin.map(|(s, t, c)| ColumnOrigin { schema: s.into(), table: t.into(), column: c.into() }))
+        ColumnMeta::new(name, "").with_origin(origin.map(|(s, t, c)| ColumnOrigin {
+            schema: s.into(),
+            table: t.into(),
+            column: c.into(),
+        }))
     }
     fn table(schema: &str, name: &str, kind: ObjectKind, cols: &[(&str, Option<u32>)]) -> TableStructure {
         TableStructure {
@@ -152,9 +164,16 @@ mod tests {
 
     #[test]
     fn single_table_with_key_is_editable_and_computed_columns_are_not() {
-        let cols = vec![col("id", Some(("public", "users", "id"))), col("mail", Some(("public", "users", "email"))), col("n", None)];
+        let cols = vec![
+            col("id", Some(("public", "users", "id"))),
+            col("mail", Some(("public", "users", "email"))),
+            col("n", None),
+        ];
         let e = result_editing(&cols, &[users()]);
-        assert_eq!(e.tables, vec![EditableTable { schema: "public".into(), table: "users".into(), key_columns: vec![0] }]);
+        assert_eq!(
+            e.tables,
+            vec![EditableTable { schema: "public".into(), table: "users".into(), key_columns: vec![0] }]
+        );
         assert_eq!(e.columns, vec![Some(0), Some(0), None]);
         assert!(e.read_only.iter().any(|r| r.column == Some(2) && r.reason == "Computed column"));
     }
@@ -165,12 +184,16 @@ mod tests {
         let e = result_editing(&cols, &[users()]);
         assert!(e.tables.is_empty());
         assert_eq!(e.columns, vec![None]);
-        assert_eq!(e.read_only[0], ReadOnlyReason { column: Some(0), reason: "Add id to the SELECT to edit users".into() });
+        assert_eq!(
+            e.read_only[0],
+            ReadOnlyReason { column: Some(0), reason: "Add id to the SELECT to edit users".into() }
+        );
     }
 
     #[test]
     fn join_is_editable_per_table() {
-        let orders = table("public", "orders", ObjectKind::Table, &[("id", Some(1)), ("status", None), ("user_id", None)]);
+        let orders =
+            table("public", "orders", ObjectKind::Table, &[("id", Some(1)), ("status", None), ("user_id", None)]);
         let cols = vec![
             col("id", Some(("public", "orders", "id"))),
             col("status", Some(("public", "orders", "status"))),
@@ -199,7 +222,11 @@ mod tests {
         let t = table("public", "pairs", ObjectKind::Table, &[("b", Some(2)), ("a", Some(1)), ("v", None)]);
         let only_a = vec![col("a", Some(("public", "pairs", "a"))), col("v", Some(("public", "pairs", "v")))];
         assert!(result_editing(&only_a, std::slice::from_ref(&t)).tables.is_empty());
-        let both = vec![col("v", Some(("public", "pairs", "v"))), col("b", Some(("public", "pairs", "b"))), col("a", Some(("public", "pairs", "a")))];
+        let both = vec![
+            col("v", Some(("public", "pairs", "v"))),
+            col("b", Some(("public", "pairs", "b"))),
+            col("a", Some(("public", "pairs", "a"))),
+        ];
         assert_eq!(result_editing(&both, &[t]).tables[0].key_columns, vec![2, 1]);
     }
 

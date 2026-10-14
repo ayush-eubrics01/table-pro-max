@@ -112,7 +112,9 @@ fn run_query(conn: &Connection, sql: &str, params: &[Param], max_rows: usize) ->
         .map(|(m, c)| {
             // SQLite reports the base table column (through views too); None for expressions.
             let origin = match (m.database_name(), m.table_name(), m.origin_name()) {
-                (Some(d), Some(t), Some(o)) => Some(ColumnOrigin { schema: d.into(), table: t.into(), column: o.into() }),
+                (Some(d), Some(t), Some(o)) => {
+                    Some(ColumnOrigin { schema: d.into(), table: t.into(), column: o.into() })
+                }
                 _ => None,
             };
             ColumnMeta::new(c.name(), c.decl_type().unwrap_or("")).with_origin(origin)

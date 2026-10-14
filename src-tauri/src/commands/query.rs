@@ -196,12 +196,21 @@ pub async fn apply_changes(
 }
 
 #[tauri::command]
-pub async fn preview_change_sets(state: State<'_, AppState>, session_id: String, sets: Vec<ChangeSet>) -> Result<ChangePreview> {
+pub async fn preview_change_sets(
+    state: State<'_, AppState>,
+    session_id: String,
+    sets: Vec<ChangeSet>,
+) -> Result<ChangePreview> {
     state.engine.preview_change_sets(&session_id, &sets).await
 }
 
 #[tauri::command]
-pub async fn apply_change_sets(state: State<'_, AppState>, session_id: String, sets: Vec<ChangeSet>, confirmed: bool) -> Result<Vec<u64>> {
+pub async fn apply_change_sets(
+    state: State<'_, AppState>,
+    session_id: String,
+    sets: Vec<ChangeSet>,
+    confirmed: bool,
+) -> Result<Vec<u64>> {
     let r = state.engine.apply_change_sets(&session_id, &sets, confirmed).await;
     tracing::info!(session = %session_id, ok = r.is_ok(), tables = sets.len(), "applied result changes");
     r
