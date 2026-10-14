@@ -3,6 +3,7 @@
 
 use tauri::State;
 use tpm_core::error::Result;
+use tpm_core::restore::{RestorePoint, RestorePointSummary, RestoreStore};
 use tpm_core::storage::{ColumnFetch, Dashboard, FetchMode, FilterPreset, HistoryEntry, SavedQuery};
 
 use crate::state::AppState;
@@ -130,4 +131,21 @@ pub fn set_column_fetch(
     mode: Option<FetchMode>,
 ) -> Result<()> {
     state.storage.set_column_fetch(&connection_id, &schema, &table, &column, mode)
+}
+
+// ---- restore points (copies of changed rows, kept on this computer) ---------------------
+
+#[tauri::command]
+pub fn list_restore_points(state: State<'_, AppState>, connection_id: String) -> Result<Vec<RestorePointSummary>> {
+    state.storage.list_restore_points(&connection_id)
+}
+
+#[tauri::command]
+pub fn get_restore_point(state: State<'_, AppState>, id: String) -> Result<RestorePoint> {
+    state.storage.get(&id)
+}
+
+#[tauri::command]
+pub fn delete_restore_point(state: State<'_, AppState>, id: String) -> Result<()> {
+    state.storage.delete(&[id])
 }

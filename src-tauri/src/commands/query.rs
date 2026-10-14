@@ -219,6 +219,29 @@ pub async fn apply_change_sets(
 }
 
 #[tauri::command]
+pub async fn preview_restore(
+    state: State<'_, AppState>,
+    session_id: String,
+    point_id: String,
+    rows: Option<Vec<usize>>,
+) -> Result<ChangePreview> {
+    state.engine.preview_restore(&session_id, &point_id, rows).await
+}
+
+#[tauri::command]
+pub async fn apply_restore(
+    state: State<'_, AppState>,
+    session_id: String,
+    point_id: String,
+    rows: Option<Vec<usize>>,
+    confirmed: bool,
+) -> Result<Vec<u64>> {
+    let r = state.engine.apply_restore(&session_id, &point_id, rows, confirmed).await;
+    tracing::info!(session = %session_id, ok = r.is_ok(), "applied a restore point");
+    r
+}
+
+#[tauri::command]
 pub fn preview_create_table(
     state: State<'_, AppState>,
     session_id: String,

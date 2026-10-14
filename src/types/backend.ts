@@ -272,6 +272,7 @@ export interface StatementResult {
   rowsAffected?: number;
   error?: AppError;
   editing?: ResultEditing;
+  restore?: RestoreNote;
 }
 
 export interface ScriptResult {
@@ -619,4 +620,45 @@ export interface UpdateProgress {
   jobId: string;
   downloaded: number;
   total: number | null;
+}
+
+// ---- restore points (restore.rs) -------------------------------------------------------
+
+export type RestoreKind = "update" | "delete" | "truncate" | "drop_table" | "drop_column" | "grid_edit" | "restore";
+export type RestoreStatus = "pending" | "kept" | "restored";
+
+export interface RestorePointSummary {
+  id: string;
+  connectionId: string;
+  createdAt: string;
+  status: RestoreStatus;
+  restoredAt: string | null;
+  kind: RestoreKind;
+  schema: string;
+  table: string;
+  statement: string;
+  rowCount: number;
+  bytes: number;
+}
+
+export interface RestoreData {
+  columns: string[];
+  types: string[];
+  keyColumns: string[];
+  /** Rows before the change, values as text. */
+  before: (string | null)[][];
+  /** Per before row: its values after the change, or null when it was deleted. */
+  after: ((string | null)[] | null)[];
+  ddl: string | null;
+  columnType: string | null;
+}
+
+export interface RestorePoint extends RestorePointSummary {
+  data: RestoreData;
+}
+
+/** Whether a statement kept a restore point, or why not. */
+export interface RestoreNote {
+  pointId?: string;
+  reason?: string;
 }

@@ -18,6 +18,8 @@ import type {
   BrowseRequest,
   BrowseResult,
   ChangePreview,
+  RestorePoint,
+  RestorePointSummary,
   ChangeSet,
   ConnectionProfile,
   DbObject,
@@ -170,6 +172,14 @@ export const api = {
     call<number[]>("apply_changes", { sessionId, changes, confirmed: true }),
   previewChangeSets: (sessionId: string, sets: ChangeSet[]) => call<ChangePreview>("preview_change_sets", { sessionId, sets }),
   applyChangeSets: (sessionId: string, sets: ChangeSet[]) => call<number[]>("apply_change_sets", { sessionId, sets, confirmed: true }),
+  // Restore points: `rows` are indexes into the point's rows, null for all of them.
+  listRestorePoints: (connectionId: string) => call<RestorePointSummary[]>("list_restore_points", { connectionId }),
+  getRestorePoint: (id: string) => call<RestorePoint>("get_restore_point", { id }),
+  deleteRestorePoint: (id: string) => call<void>("delete_restore_point", { id }),
+  previewRestore: (sessionId: string, pointId: string, rows: number[] | null) =>
+    call<ChangePreview>("preview_restore", { sessionId, pointId, rows }),
+  applyRestore: (sessionId: string, pointId: string, rows: number[] | null) =>
+    call<number[]>("apply_restore", { sessionId, pointId, rows, confirmed: true }),
   previewCreateTable: (sessionId: string, request: { schema: string; name: string; columns: ColumnDef[] }) =>
     call<string[]>("preview_create_table", { sessionId, request }),
   previewAlterTable: (sessionId: string, schema: string, table: string, ops: AlterOp[]) =>
