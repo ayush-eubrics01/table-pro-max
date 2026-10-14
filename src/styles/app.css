@@ -2425,6 +2425,25 @@ pre,
   grid-template-columns: 320px 1fr;
   min-height: 0;
 }
+.redis-keys-meta {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: 2px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.redis-keys-meta .grow {
+  flex: 1;
+}
+.tree-item.redis-key {
+  padding-left: 8px;
+}
+.tree-item.redis-key .driver-mark {
+  min-width: 40px;
+  height: 18px;
+  font-size: 10px;
+}
 .redis-console {
   flex: 1;
   display: flex;

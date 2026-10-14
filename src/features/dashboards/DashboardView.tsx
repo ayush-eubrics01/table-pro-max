@@ -177,7 +177,9 @@ export function DashboardView({ ws, tab, active }: { ws: Workspace; tab: Dashboa
           <Icon name="refresh" size={14} />
         </button>
         <span className="grow" />
-        <span className="meta">Read-only session</span>
+        <span className="access-pill ro" title="Dashboard queries run in a read-only session">
+          <Icon name="lock" size={13} /> Read-only
+        </span>
         <button className="btn btn-primary" onClick={() => setEditing("new")}>
           <Icon name="add" size={14} /> Widget
         </button>
