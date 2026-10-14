@@ -48,6 +48,8 @@ export interface DataGridProps {
   contextItems?: (sel: GridSelection) => MenuEntry[];
   onDeleteKey?: (sel: GridSelection) => void;
   rowNumberOffset?: number;
+  /** Extra scroll space below the last row (px), e.g. under a floating bar. */
+  bottomInset?: number;
   ref?: Ref<GridHandle>;
   ariaLabel: string;
 }
@@ -81,6 +83,7 @@ export function DataGrid(props: DataGridProps) {
     contextItems,
     onDeleteKey,
     rowNumberOffset = 0,
+    bottomInset,
     ref,
     ariaLabel,
   } = props;
@@ -384,7 +387,7 @@ export function DataGrid(props: DataGridProps) {
   ];
 
   const totalWidth = ROWNUM_WIDTH + colVirtualizer.getTotalSize();
-  const totalHeight = HEADER_HEIGHT + rowVirtualizer.getTotalSize();
+  const totalHeight = HEADER_HEIGHT + rowVirtualizer.getTotalSize() + (bottomInset ?? 0);
   const activeId = focus ? `cell-${focus.row}-${focus.col}` : undefined;
 
   return (

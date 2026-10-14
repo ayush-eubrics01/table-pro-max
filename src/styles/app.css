@@ -1209,8 +1209,8 @@ pre,
 .grid-footer {
   display: flex;
   align-items: center;
-  gap: var(--space-4);
-  height: 28px;
+  gap: var(--space-3);
+  height: 32px;
   padding: 0 var(--space-3);
   border-top: 1px solid var(--border);
   font-size: var(--text-sm);
@@ -1220,6 +1220,106 @@ pre,
 }
 .grid-footer .grow {
   flex: 1;
+}
+
+.access-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.access-pill.ro {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.filter-chips {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px var(--space-3);
+  border-bottom: 1px solid var(--border-hairline);
+  color: var(--text-faint);
+  flex: none;
+}
+.filter-chips ul {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.filter-chips li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.filter-chips .logic {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border-input);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  max-width: 360px;
+}
+.chip .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chip:hover {
+  border-color: var(--border-strong);
+}
+.grid-area {
+  position: relative;
+}
+.commit-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 40px;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 6px 6px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-panel);
+  box-shadow: var(--shadow-pop);
+  white-space: nowrap;
+}
+.commit-bar .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warning);
+}
+.btn-link {
+  border: 0;
+  background: none;
+  padding: 0 4px;
+  color: var(--accent);
+  cursor: pointer;
+}
+.btn-link:hover {
+  text-decoration: underline;
 }
 
 /* ---- detail panel -------------------------------------------------------- */

@@ -8,6 +8,7 @@ import { confirmAction, notify, notifyError } from "../../stores/ui";
 import { useSettings } from "../../stores/settings";
 import { DataGrid, type GridHandle, type GridSelection } from "../data-grid/DataGrid";
 import { FilterBuilder } from "../filters/FilterBuilder";
+import { FilterChips } from "../filters/FilterChips";
 import { countConditions, emptyGroup, newCondition, type GroupNode } from "../filters/filterModel";
 import {
   EMPTY_PENDING,
@@ -302,11 +303,6 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
             <button className="btn btn-ghost btn-icon" onClick={() => guard(() => void load())} aria-label="Reload" title="Reload (F5)">
               <Icon name="refresh" size={14} className={loading ? "spin" : undefined} />
             </button>
-            {readOnlyReason ? (
-              <span className="meta" title={readOnlyReason}>
-                <Icon name="lock" size={12} /> {readOnlyReason}
-              </span>
-            ) : null}
             {canInsert && (
               <>
                 <span className="sep" />
@@ -356,19 +352,10 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
               </button>
             )}
             <span className="grow" />
-            {nPending > 0 && (
-              <>
-                <span className="meta" role="status">
-                  {pluralize(nPending, "pending change")}
-                </span>
-                <button className="btn" onClick={() => setPending(EMPTY_PENDING)}>
-                  <Icon name="undo" size={14} /> Discard
-                </button>
-                <button className="btn btn-primary" onClick={openReview}>
-                  Review and commit
-                </button>
-              </>
-            )}
+            <span className={`access-pill ${readOnlyReason ? "ro" : ""}`} title={readOnlyReason ?? "Edits stay pending until you review and commit them"}>
+              <Icon name={readOnlyReason ? "lock" : "edit"} size={13} />
+              {readOnlyReason ? "Read-only" : "Writable"}
+            </span>
             <button
               className="btn btn-ghost btn-icon"
               aria-pressed={detailOpen}
@@ -398,6 +385,15 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
 
       {view === "data" && (
         <>
+          {!filtersOpen && (
+            <FilterChips
+              filter={filter}
+              onEdit={() => {
+                setDraftFilter(filter);
+                setFiltersOpen(true);
+              }}
+            />
+          )}
           {filtersOpen && structure && (
             <FilterBuilder
               columns={structure.columns}
@@ -423,7 +419,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
             </div>
           )}
           <div className="split-h" style={{ minHeight: 0 }}>
-            <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0 }}>
+            <div className="grid-area" style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0 }}>
               {structure && page && (
                 <DataGrid
                   ref={gridRef}
@@ -441,7 +437,20 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
                   contextItems={contextItems}
                   onDeleteKey={(sel) => deleteSelected(sel)}
                   rowNumberOffset={offset}
+                  bottomInset={nPending > 0 ? 56 : 0}
                 />
+              )}
+              {nPending > 0 && (
+                <div className="commit-bar" role="region" aria-label="Pending changes">
+                  <span className="dot" />
+                  <span role="status">{pluralize(nPending, "pending change")}</span>
+                  <button className="btn btn-ghost" onClick={() => setPending(EMPTY_PENDING)}>
+                    <Icon name="undo" size={14} /> Discard
+                  </button>
+                  <button className="btn btn-primary" onClick={openReview}>
+                    Review and commit
+                  </button>
+                </div>
               )}
               {!page && !error && <div className="empty">{loading ? <div className="spinner" /> : null}</div>}
               <div className="grid-footer">
@@ -474,7 +483,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
                     </option>
                   ))}
                 </select>
-                <button className="btn btn-ghost" onClick={countRows}>
+                <button className="btn btn-link" onClick={countRows}>
                   Count rows
                 </button>
                 <span className="grow" />

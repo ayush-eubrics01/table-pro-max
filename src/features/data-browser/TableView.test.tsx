@@ -110,6 +110,18 @@ describe("TableView", () => {
     const cell = await screen.findByText("ada@example.com");
     fireEvent.doubleClick(cell.closest(".grid-cell")!);
     expect(screen.queryByLabelText("Edit email")).not.toBeInTheDocument();
-    expect(screen.getByText("This connection is read-only")).toBeInTheDocument();
+    expect(screen.getByTitle("This connection is read-only")).toHaveTextContent("Read-only");
+  });
+
+  it("shows the access pill, and pending changes in a floating bar", async () => {
+    renderView();
+    expect(await screen.findByText("Writable")).toBeInTheDocument();
+    const editor = await openEditor("ada@example.com");
+    fireEvent.change(editor, { target: { value: "new@example.com" } });
+    fireEvent.keyDown(editor, { key: "Enter" });
+    const bar = await screen.findByRole("region", { name: "Pending changes" });
+    expect(bar).toHaveTextContent("1 pending change");
+    expect(within(bar).getByRole("button", { name: /Discard/ })).toBeInTheDocument();
+    expect(within(bar).getByRole("button", { name: "Review and commit" })).toBeInTheDocument();
   });
 });
