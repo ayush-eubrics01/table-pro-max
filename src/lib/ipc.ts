@@ -159,6 +159,7 @@ export const api = {
   browseTable: (sessionId: string, request: BrowseRequest) => call<BrowseResult>("browse_table", { sessionId, request }),
   fetchValue: (sessionId: string, schema: string, table: string, key: { column: string; value: string | null }[], column: string) =>
     call<Cell>("fetch_value", { sessionId, schema, table, key, column }),
+  resultValue: (resultId: string, row: number, col: number) => call<Cell>("result_value", { resultId, row, col }),
   fetchColumn: (sessionId: string, schema: string, table: string, column: string, keys: { column: string; value: string | null }[][]) =>
     call<FetchedCell[]>("fetch_column", { sessionId, schema, table, column, keys }),
   countRows: (sessionId: string, schema: string, table: string, filter: FilterNode | null) =>

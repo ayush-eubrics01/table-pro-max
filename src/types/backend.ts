@@ -248,6 +248,8 @@ export interface RunOptions {
   timeoutSecs?: number;
   maxRows?: number;
   baseOffset?: number;
+  /** Send text longer than this many characters as a preview (query results). */
+  largeValueChars?: number;
 }
 
 export interface StatementResult {

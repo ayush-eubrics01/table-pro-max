@@ -460,12 +460,13 @@ impl Session for PgSession {
             .unwrap_or(true))
     }
 
-    async fn describe_origins(&mut self, sql: &str) -> Result<Vec<Option<ColumnOrigin>>> {
+    async fn describe(&mut self, sql: &str) -> Result<Vec<super::DescribedColumn>> {
         // Describe only: prepare parses and analyses the statement but never executes it.
         self.origin_names.clear();
         let stmt = self.client.prepare(sql).await.map_err(map_error)?;
         let cols: Vec<(Option<u32>, Option<i16>)> =
             stmt.columns().iter().map(|c| (c.table_oid(), c.column_id())).collect();
+        let types: Vec<String> = stmt.columns().iter().map(|c| c.type_().name().to_string()).collect();
         let missing: Vec<u32> = {
             let mut m: Vec<u32> = cols
                 .iter()
@@ -497,13 +498,17 @@ impl Session for PgSession {
         }
         Ok(cols
             .into_iter()
-            .map(|(t, a)| match (t, a) {
-                (Some(t), Some(a)) => self.origin_names.get(&(t, a)).map(|(s, tb, c)| ColumnOrigin {
-                    schema: s.clone(),
-                    table: tb.clone(),
-                    column: c.clone(),
-                }),
-                _ => None,
+            .zip(types)
+            .map(|((t, a), type_name)| super::DescribedColumn {
+                origin: match (t, a) {
+                    (Some(t), Some(a)) => self.origin_names.get(&(t, a)).map(|(s, tb, c)| ColumnOrigin {
+                        schema: s.clone(),
+                        table: tb.clone(),
+                        column: c.clone(),
+                    }),
+                    _ => None,
+                },
+                type_name,
             })
             .collect())
     }

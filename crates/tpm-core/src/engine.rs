@@ -81,6 +81,8 @@ struct StoredResult {
     columns: Vec<ColumnMeta>,
     rows: Vec<Row>,
     approx_bytes: usize,
+    /// Text longer than this is sent to the UI as a preview (see large_values.rs).
+    preview_over: Option<usize>,
 }
 
 #[derive(Default)]
@@ -136,6 +138,10 @@ pub struct RunOptions {
     /// Byte offset of `sql` within the editor buffer, for error positions.
     #[serde(default)]
     pub base_offset: usize,
+    /// Send text longer than this many characters to the UI as a preview (query results).
+    /// `None` sends full values.
+    #[serde(default)]
+    pub large_value_chars: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -554,6 +560,7 @@ impl Engine {
                         base + stmt.sql.len(),
                         duration_ms,
                         outcomes,
+                        opts.large_value_chars.map(|n| n as usize),
                     ),
                     Err(mut e) => {
                         // Map the server's character position to a byte offset in the editor.
@@ -657,6 +664,7 @@ impl Engine {
         end: usize,
         duration_ms: u64,
         outcomes: Vec<StatementOutcome>,
+        preview_over: Option<usize>,
     ) -> Vec<StatementResult> {
         let mut out = Vec::new();
         for o in outcomes {
@@ -682,7 +690,11 @@ impl Engine {
                     r.total_rows = Some(rows.rows.len());
                     r.truncated = rows.truncated;
                     r.columns = Some(rows.columns.clone());
-                    r.rows = Some(rows.rows.iter().take(FIRST_PAGE_ROWS).cloned().collect());
+                    let first: Vec<Row> = rows.rows.iter().take(FIRST_PAGE_ROWS).cloned().collect();
+                    r.rows = Some(match preview_over {
+                        Some(n) => crate::large_values::preview_rows(&first, n),
+                        None => first,
+                    });
                     {
                         let approx_bytes = rows.rows.iter().map(approx_row_bytes).sum();
                         lock(&self.results).insert(
@@ -692,6 +704,7 @@ impl Engine {
                                 columns: rows.columns,
                                 rows: rows.rows,
                                 approx_bytes,
+                                preview_over,
                             },
                         );
                     }
@@ -710,7 +723,25 @@ impl Engine {
             .results
             .get(result_id)
             .ok_or_else(|| AppError::not_found("This result is no longer available; run the query again"))?;
-        Ok(r.rows.iter().skip(offset).take(limit.min(10_000)).cloned().collect())
+        let page: Vec<Row> = r.rows.iter().skip(offset).take(limit.min(10_000)).cloned().collect();
+        Ok(match r.preview_over {
+            Some(n) => crate::large_values::preview_rows(&page, n),
+            None => page,
+        })
+    }
+
+    /// The full value of one result cell, from memory (opening a previewed value).
+    pub fn result_value(&self, result_id: &str, row: usize, col: usize) -> Result<Cell> {
+        let store = lock(&self.results);
+        let r = store
+            .results
+            .get(result_id)
+            .ok_or_else(|| AppError::not_found("This result is no longer in memory; run the query again"))?;
+        r.rows
+            .get(row)
+            .and_then(|cells| cells.get(col))
+            .cloned()
+            .ok_or_else(|| AppError::not_found("That cell is outside this result"))
     }
 
     /// All rows and columns of a stored result (for export).
@@ -815,8 +846,7 @@ impl Engine {
             return;
         }
         let sql = sql.to_string();
-        let fut = self
-            .with_session(&handle.info.session_id, move |s| Box::pin(async move { s.describe_origins(&sql).await }));
+        let fut = self.with_session(&handle.info.session_id, move |s| Box::pin(async move { s.describe(&sql).await }));
         tokio::pin!(fut);
         let found = match tokio::time::timeout(DESCRIBE_TIMEOUT, &mut fut).await {
             Ok(Ok(found)) => found,
@@ -835,7 +865,10 @@ impl Engine {
                 && found.len() == rows.columns.len()
             {
                 for (c, f) in rows.columns.iter_mut().zip(found.iter()) {
-                    c.origin = f.clone();
+                    c.origin = f.origin.clone();
+                    if c.type_name.is_empty() {
+                        c.type_name = f.type_name.clone();
+                    }
                 }
             }
         }

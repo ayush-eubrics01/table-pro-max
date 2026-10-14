@@ -323,3 +323,8 @@ pub async fn fetch_column(
 ) -> Result<Vec<FetchedCell>> {
     state.engine.fetch_column(&session_id, &schema, &table, &column, &keys).await
 }
+
+#[tauri::command]
+pub fn result_value(state: State<'_, AppState>, result_id: String, row: usize, col: usize) -> Result<Cell> {
+    state.engine.result_value(&result_id, row, col)
+}

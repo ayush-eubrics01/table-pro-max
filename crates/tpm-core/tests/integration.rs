@@ -642,6 +642,36 @@ async fn lazy_values(engine: &Arc<Engine>, sid: &str, schema: &str, driver: Driv
     // A query tab returns every column in full.
     let r = run(engine, sid, "SELECT * FROM tpm_it_docs WHERE id = 1").await;
     assert_eq!(r.statements[0].rows.as_ref().unwrap()[0][2].as_text().map(str::len), Some(100_000), "{driver:?}");
+    // Query results: long text goes to the UI as a preview; the full value stays in memory.
+    let opts = RunOptions { confirmed: true, large_value_chars: Some(256), ..Default::default() };
+    let r = engine.run_script(sid, "SELECT id, body, title FROM tpm_it_docs WHERE id = 1", opts, None).await.unwrap();
+    let st = &r.statements[0];
+    match &st.rows.as_ref().unwrap()[0][1] {
+        Cell::Partial { preview, length } => {
+            assert_eq!(*length, 100_000);
+            assert_eq!(preview.chars().count(), 80);
+        }
+        other => panic!("{driver:?}: expected a preview, got {other:?}"),
+    }
+    assert_eq!(st.rows.as_ref().unwrap()[0][2], Cell::Text("one".into()), "short values untouched");
+    let rid = st.result_id.clone().unwrap();
+    assert_eq!(engine.result_value(&rid, 0, 1).unwrap().as_text().map(str::len), Some(100_000));
+    assert!(matches!(engine.fetch_rows(&rid, 0, 10).unwrap()[0][1], Cell::Partial { .. }), "later pages too");
+    let (_, full) = engine.result_snapshot(&rid).unwrap();
+    assert_eq!(full[0][1].as_text().map(str::len), Some(100_000), "export reads full rows");
+    engine.release_results(std::slice::from_ref(&rid));
+    assert_eq!(
+        engine.result_value(&rid, 0, 1).unwrap_err().message,
+        "This result is no longer in memory; run the query again"
+    );
+    if driver == Driver::Postgres {
+        let r = run(engine, sid, "SELECT doc FROM tpm_it_docs WHERE id = 1").await;
+        assert_eq!(
+            r.statements[0].columns.as_ref().unwrap()[0].type_name,
+            "jsonb",
+            "writable PG results learn their types"
+        );
+    }
     // Deleted between page and click.
     run(engine, sid, "DELETE FROM tpm_it_docs WHERE id = 2").await;
     let err = engine.fetch_value(sid, schema, "tpm_it_docs", key("2"), "body").await.unwrap_err();
