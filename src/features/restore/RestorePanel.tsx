@@ -264,7 +264,7 @@ function PointDetail({
           sql={review.sql}
           atomic={review.atomic}
           statements={review.statements}
-          summary={`Put back ${review.rows ? `${pluralize(review.rows.length, "chosen row")}` : "the rows"} of ${point.schema}.${point.table}. ${noKey ? "" : "Rows already back as they were are skipped; "}A row changed since then stops the restore.`}
+          summary={`Put back ${review.rows ? `${pluralize(review.rows.length, "chosen row")}` : "the rows"} of ${point.schema}.${point.table}. ${noKey ? "A row" : "Rows already back as they were are skipped; a row"} changed since then stops the restore.`}
           splitHint="The column or table comes back first, then its rows."
           commitLabel="Restore"
           cancelLabel="Cancel"
