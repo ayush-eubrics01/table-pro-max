@@ -95,4 +95,21 @@ describe("TitleBar", () => {
     const restore = await screen.findByRole("button", { name: "Restore" });
     expect(restore.querySelector("path")?.getAttribute("d")).toBe(ICON_PATHS.filter_none);
   });
+
+  it("keeps the close button outside the tab, and activates tabs with Enter or Space only from the tab", () => {
+    useWorkspaces.setState({ activeId: null } as never);
+    render(<TitleBar mac={false} onCloseWorkspace={() => undefined} />);
+    const close = screen.getByRole("button", { name: "Disconnect Local PG" });
+    expect(close.closest('[role="tab"]')).toBeNull();
+    fireEvent.keyDown(close, { key: "Enter" });
+    expect(useWorkspaces.getState().activeId).toBeNull();
+    fireEvent.keyDown(screen.getByRole("tab", { name: /Local PG/ }), { key: " " });
+    expect(useWorkspaces.getState().activeId).toBe("ws-1");
+  });
+
+  it("shows ⌘ in tooltips on macOS", () => {
+    render(<TitleBar mac onCloseWorkspace={() => undefined} />);
+    expect(screen.getByRole("button", { name: "Settings" })).toHaveAttribute("title", "Settings (⌘,)");
+    expect(screen.getByRole("button", { name: /New window/ }).getAttribute("title")).toContain("⌘");
+  });
 });

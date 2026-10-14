@@ -470,7 +470,7 @@ pre,
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 8px 0 12px;
+  padding: 0 8px 0 0;
   border: 0;
   border-radius: 8px 8px 0 0;
   background: transparent;
@@ -484,12 +484,29 @@ pre,
 .titlebar-tabs > .tb-tab {
   flex: none;
   min-width: 0;
+  padding-left: 12px;
+}
+.tb-tab-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  align-self: stretch;
+  padding-left: 12px;
+  border-radius: 8px 8px 0 0;
+}
+.tb-tab:focus-visible,
+.tb-tab-main:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
 }
 .tb-tab:hover {
   color: var(--text);
   background: var(--surface-hover);
 }
-.tb-tab[aria-selected="true"] {
+.tb-tab[aria-selected="true"],
+.tb-tab[data-selected] {
   background: var(--bg);
   color: var(--text);
 }
@@ -884,16 +901,23 @@ pre,
   color: var(--text);
   background: var(--surface-hover);
 }
-.tab:focus-visible {
+.tab-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  align-self: stretch;
+}
+.tab-main:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: -2px;
 }
-.tab[aria-selected="true"] {
+.tab[data-selected] {
   background: var(--surface);
   color: var(--text);
   box-shadow: inset 0 -2px 0 var(--accent);
 }
-.tab[aria-selected="true"] > .icon:first-child {
+.tab[data-selected] .tab-main > .icon:first-child {
   color: var(--accent);
 }
 .tab.dragging {

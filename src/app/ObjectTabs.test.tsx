@@ -40,6 +40,13 @@ describe("ObjectTabs", () => {
   it("is 38 px tall and keeps the focus ring inside the strip", () => {
     const css = readFileSync("src/styles/app.css", "utf8");
     expect(css).toMatch(/\.tabbar\s*\{[^}]*height:\s*var\(--tabs-height\)/);
-    expect(css).toMatch(/\.tab:focus-visible\s*\{[^}]*outline-offset:\s*-2px/);
+    expect(css).toMatch(/\.tab-main:focus-visible\s*\{[^}]*outline-offset:\s*-2px/);
+  });
+
+  it("keeps close buttons outside the tabs and activates a tab with Space", () => {
+    render(<ObjectTabs ws={ws} dirtyTables={{}} onClose={() => undefined} />);
+    expect(screen.getByRole("button", { name: "Close orders" }).closest('[role="tab"]')).toBeNull();
+    fireEvent.keyDown(screen.getByRole("tab", { name: /Query 1/ }), { key: " " });
+    expect(useWorkspaces.getState().workspaces[0]!.activeTabId).toBe("q1");
   });
 });
