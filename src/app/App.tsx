@@ -168,9 +168,6 @@ export function App() {
         e.preventDefault();
         if (e.shiftKey) ws.reopenClosed(current.id);
         else ws.openQuery(current.id);
-      } else if (key === "w" && current?.activeTabId) {
-        e.preventDefault();
-        ws.closeTab(current.id, current.activeTabId);
       } else if (e.key === "Tab" && current && current.tabs.length > 1) {
         e.preventDefault();
         const i = current.tabs.findIndex((t) => t.id === current.activeTabId);
