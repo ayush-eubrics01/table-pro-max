@@ -17,6 +17,7 @@ databases themselves.
 | Destructive statements | `sqlparser` classification; policy enforced in the backend (confirm or block), not only in the UI; target connection shown before high-risk runs | `safety.rs`, `engine.rs` | `safety::*`, integration confirmation test |
 | Read-only connections | Enforced by the database session plus a policy layer that blocks statements trying to switch it off | adapters, `safety.rs` | integration: `nextval` refused by the server; raw session INSERT refused |
 | Grid edits overwriting others' changes | Optimistic concurrency: each UPDATE must match the loaded values and affect exactly one row, otherwise the transaction rolls back | `changes.rs`, adapters `apply` | integration "stale original value" |
+| Restore points (copies of rows) | Before a change, the affected rows are copied into the local app database (`restore_points`, not encrypted, never sent anywhere); kept 7 days and within size limits, removed with their connection, and can be turned off per connection; none on read-only connections. The capture `SELECT` re-uses the user's own WHERE in the statement's transaction; restores are generated with bind parameters and run only after the review dialog, with the same conflict check as grid edits, and are refused on read-only connections | `restore_plan.rs`, `restore.rs`, `storage.rs`, `engine.rs` | `restore_plan::*`, `restore::*`, `storage::restore_points_*`, integration `restore_points` |
 | SSH host identity | Host keys verified against `~/.ssh/known_hosts` (read only) and the app's own known-hosts file; unknown hosts are refused until the user confirms the SHA-256 fingerprint; a changed key is always refused with a MITM warning; SSH secrets use the same keychain/ask model as DB passwords (separate account) | `ssh.rs`, `connectFlow.tsx` | `ssh::known_hosts_trust_round_trip`, integration `ssh_tunnel` |
 | TLS downgrade | Verification is on in every mode except the explicit "require (no verification)", which is labelled with a warning | `adapters/tls.rs`, `config.rs` | `config::libpq_require_does_not_claim_verification` |
 | Webview privileges | Capabilities: `core:default`; dialog open, save, message, ask and confirm; and, for the custom title bar, window set-title, minimise, toggle-maximise, is-maximised, close and start-dragging (`allow-is-maximized` and `allow-internal-toggle-maximize` are already in `core:default` and are listed to document what the title bar needs). No fs, shell or http plugins; the updater and opener plugins are used from Rust only and grant the webview nothing. CSP `default-src 'self'`; `connect-src` limited to IPC | `src-tauri/capabilities/default.json`, `tauri.conf.json` | review (see residual risks) |
@@ -36,6 +37,9 @@ databases themselves.
   read-only connection, use a role that only has `SELECT`.
 * **MySQL read-only** uses `SET SESSION TRANSACTION READ ONLY`, which does not cover temporary
   tables or some administrative statements.
+* **Restore points hold table data on disk.** They are copies of changed rows in the app
+  database, unencrypted, readable by anyone who can read the user's files, for up to 7 days by
+  default (Settings › Safety). Turn them off per connection where that is not acceptable.
 * **In-memory secrets**: passwords held for "ask every time" stay in process memory until the
   app exits and are not zeroized.
 * **AI providers receive what you send.** With AI turned on, the previewed SQL, error text and

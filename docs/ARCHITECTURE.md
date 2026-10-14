@@ -102,6 +102,27 @@ touched table, statements built by the same `changes::build_statements` as the t
 same backend confirmation and read-only rules as `apply_changes`. It refuses to run while the
 session has a transaction the user opened, since its own BEGIN/COMMIT would end it.
 
+## Restore points
+
+Before a script runs, `run_script` plans each write (`restore_plan.rs`): UPDATE, DELETE, TRUNCATE,
+DROP TABLE and ALTER … DROP COLUMN get a capture plan (the table, its alias and the statement's
+own WHERE, re-emitted by sqlparser); joins, WITH, ORDER BY/LIMIT, key changes, tables without a
+key (UPDATE, DROP COLUMN) and binary columns off PostgreSQL get a reason instead. The server
+names the table (PostgreSQL `to_regclass`, otherwise the current schema or database), and a
+`count(*)` checks the row limit. Every reason joins the destructive-statement confirmation, so a
+script asks once. At run time `run_captured` wraps the statement in its own transaction (none
+for MySQL DDL, which commits implicitly; inside the user's transaction, a PostgreSQL savepoint
+guards the reads): read the rows `FOR UPDATE` as text, run the statement, read the updated rows
+by key, commit. A read that fails leaves the statement to run without a restore point and says
+why in its message. The engine saves points through `RestoreStore` (implemented by `Storage`,
+which purges by age and total size). Points made inside the user's transaction are pending: kept
+on COMMIT, deleted on ROLLBACK, reconnect or close, and on a COMMIT after a PostgreSQL error
+(the server rolls back). Grid commits read before and after rows inside their own transaction.
+Restoring (`restore.rs`) turns a point into DDL (a dropped table's definition, ADD COLUMN) plus
+change sets: updates whose conflict check is the value the change left behind, re-inserts for
+deleted rows. They run through `apply_change_sets`, which keeps a point of the restore itself.
+Rows already back as they were are skipped first.
+
 ## Driver choices
 
 | Database | Library | Notes |
