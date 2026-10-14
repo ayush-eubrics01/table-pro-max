@@ -170,7 +170,7 @@ export function Home({ appInfo, onConnect, connecting }: Props) {
 
         {groups.map(([env, items]) => (
           <section key={env} className="conn-group" aria-label={envLabel(env)}>
-            <h2 className="conn-group-head" style={envStyle(env)}>
+            <h2 className="conn-group-head" style={envStyle(env)} aria-label={`${envLabel(env)}, ${items.length} connection${items.length === 1 ? "" : "s"}`}>
               <span className="env-dot" />
               {envLabel(env)}
               <span className="count">{items.length}</span>
@@ -181,14 +181,13 @@ export function Home({ appInfo, onConnect, connecting }: Props) {
                   Boolean,
                 );
                 return (
+                  // A plain container: keyboard users reach the Connect and Edit buttons; a click anywhere
+                  // else on the card still connects for pointer users.
                   <div
                     key={p.id}
                     className="conn-card"
-                    role="button"
-                    tabIndex={0}
                     style={envStyle(p.environment)}
-                    onClick={() => onConnect(p)}
-                    onKeyDown={(e) => e.key === "Enter" && e.target === e.currentTarget && onConnect(p)}
+                    onClick={(e) => !(e.target as HTMLElement).closest("button") && onConnect(p)}
                     onContextMenu={(e) =>
                       menu.open(e, [
                         { label: "Connect", onSelect: () => onConnect(p) },
@@ -199,7 +198,6 @@ export function Home({ appInfo, onConnect, connecting }: Props) {
                         { label: "Delete…", danger: true, onSelect: () => void onDelete(p) },
                       ])
                     }
-                    aria-label={`Connect to ${p.name}`}
                   >
                     <div className="conn-card-top">
                       <span className="driver-mark" title={driverLabel(p.driver)}>
@@ -229,9 +227,9 @@ export function Home({ appInfo, onConnect, connecting }: Props) {
                       >
                         <Icon name="edit" size={15} />
                       </button>
-                      <span className="connect-link">
+                      <button className="connect-link" aria-label={`Connect to ${p.name}`} onClick={() => onConnect(p)}>
                         Connect <Icon name="chevron_right" size={16} />
-                      </span>
+                      </button>
                     </div>
                   </div>
                 );
