@@ -92,10 +92,12 @@ pub fn result_editing(columns: &[ColumnMeta], structures: &[TableStructure]) -> 
         let idx = e.tables.len();
         e.tables.push(EditableTable { schema: schema.clone(), table: table.clone(), key_columns });
         for (i, c) in columns.iter().enumerate() {
-            if let Some(o) = &c.origin {
-                if o.schema == schema && o.table == table && s.columns.iter().any(|sc| sc.name == o.column) {
-                    e.columns[i] = Some(idx);
-                }
+            if let Some(o) = &c.origin
+                && o.schema == schema
+                && o.table == table
+                && s.columns.iter().any(|sc| sc.name == o.column)
+            {
+                e.columns[i] = Some(idx);
             }
         }
     }
@@ -196,7 +198,7 @@ mod tests {
     fn composite_keys_need_every_part_and_keep_key_order() {
         let t = table("public", "pairs", ObjectKind::Table, &[("b", Some(2)), ("a", Some(1)), ("v", None)]);
         let only_a = vec![col("a", Some(("public", "pairs", "a"))), col("v", Some(("public", "pairs", "v")))];
-        assert!(result_editing(&only_a, &[t.clone()]).tables.is_empty());
+        assert!(result_editing(&only_a, std::slice::from_ref(&t)).tables.is_empty());
         let both = vec![col("v", Some(("public", "pairs", "v"))), col("b", Some(("public", "pairs", "b"))), col("a", Some(("public", "pairs", "a")))];
         assert_eq!(result_editing(&both, &[t]).tables[0].key_columns, vec![2, 1]);
     }
