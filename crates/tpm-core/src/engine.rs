@@ -116,6 +116,8 @@ fn approx_row_bytes(row: &Row) -> usize {
             Cell::Null => 8,
             Cell::Text(t) => t.len() + 24,
             Cell::Bytes(b) => b.len() + 24,
+            Cell::NotLoaded => 8,
+            Cell::Partial { preview, .. } => preview.len() + 24,
         })
         .sum()
 }
@@ -1405,8 +1407,6 @@ fn build_select_unchecked(
     Ok(q)
 }
 
-/// Statement that switches the default schema, or `None` where names are not resolved
-/// through a default schema (SQLite searches main, temp and attached databases itself).
 /// Whether a successful transaction-control statement leaves a transaction open (`Some(true)`),
 /// ends it (`Some(false)`), or neither (savepoints, `SET TRANSACTION`).
 fn txn_effect(sql: &str) -> Option<bool> {
@@ -1420,6 +1420,8 @@ fn txn_effect(sql: &str) -> Option<bool> {
     }
 }
 
+/// Statement that switches the default schema, or `None` where names are not resolved
+/// through a default schema (SQLite searches main, temp and attached databases itself).
 pub fn default_schema_sql(driver: crate::config::Driver, schema: &str) -> Result<Option<String>> {
     use crate::config::Driver;
     Ok(match driver {

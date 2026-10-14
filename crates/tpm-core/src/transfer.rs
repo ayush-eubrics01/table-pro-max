@@ -24,6 +24,14 @@ pub const MAX_FIELD_BYTES: usize = 64 * 1024 * 1024;
 /// Excel's hard row limit (including the header).
 const XLSX_MAX_ROWS: u64 = 1_048_576;
 
+/// Export rows must hold full values. Placeholders (`NotLoaded`, `Partial`) belong to the grid only.
+fn ensure_full_rows(rows: &[Row]) -> Result<()> {
+    if rows.iter().flatten().any(|c| matches!(c, Cell::NotLoaded | Cell::Partial { .. })) {
+        return Err(AppError::internal("Export received placeholder values instead of full rows"));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExportFormat {
@@ -150,6 +158,7 @@ impl<W: Write + Send> RowSink for CsvSink<W> {
         Ok(())
     }
     fn write_rows(&mut self, rows: &[Row]) -> Result<()> {
+        ensure_full_rows(rows)?;
         for row in rows {
             let fields: Vec<String> =
                 row.iter().map(|c| c.to_export_string().unwrap_or_else(|| self.null_text.clone())).collect();
@@ -178,6 +187,7 @@ impl<W: Write + Send> RowSink for JsonSink<W> {
         Ok(())
     }
     fn write_rows(&mut self, rows: &[Row]) -> Result<()> {
+        ensure_full_rows(rows)?;
         for row in rows {
             let mut obj = serde_json::Map::with_capacity(self.columns.len());
             for (name, cell) in self.columns.iter().zip(row) {
@@ -253,6 +263,7 @@ impl<W: Write + Send> RowSink for SqlSink<W> {
         Ok(())
     }
     fn write_rows(&mut self, rows: &[Row]) -> Result<()> {
+        ensure_full_rows(rows)?;
         for row in rows {
             let values: Vec<String> = row
                 .iter()
@@ -263,6 +274,7 @@ impl<W: Write + Send> RowSink for SqlSink<W> {
                         Dialect::Postgres => format!("'\\x{}'::bytea", hex::encode(b)),
                         _ => format!("X'{}'", hex::encode(b)),
                     },
+                    Cell::NotLoaded | Cell::Partial { .. } => unreachable!("rejected by ensure_full_rows"),
                 })
                 .collect();
             self.pending.push(format!("({})", values.join(", ")));
@@ -312,6 +324,7 @@ impl RowSink for XlsxSink {
         Ok(())
     }
     fn write_rows(&mut self, rows: &[Row]) -> Result<()> {
+        ensure_full_rows(rows)?;
         if self.row as u64 + rows.len() as u64 > XLSX_MAX_ROWS {
             return Err(AppError::file("Excel supports at most 1,048,576 rows; use CSV for larger exports"));
         }
@@ -338,6 +351,7 @@ impl RowSink for XlsxSink {
                         ws.write_string(self.row, col, format!("\\x{}", hex::encode(&b[..b.len().min(16_000)])))
                             .map_err(xlsx_err)?;
                     }
+                    Cell::NotLoaded | Cell::Partial { .. } => unreachable!("rejected by ensure_full_rows"),
                 }
             }
             self.row += 1;
