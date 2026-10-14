@@ -470,7 +470,13 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
         </>
       )}
 
-      <details className="form-collapse" open={!!initial && initial.safetyMode !== "confirm_destructive"}>
+      <details
+        className="form-collapse"
+        open={
+          !!initial &&
+          (initial.safetyMode !== "confirm_destructive" || initial.connectTimeoutSecs !== 10 || initial.queryTimeoutSecs !== 0 || initial.keepaliveSecs !== 60)
+        }
+      >
         <summary>Safety &amp; timeouts</summary>
         <div className="field-row">
           <label className="field">

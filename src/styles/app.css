@@ -1407,6 +1407,9 @@ pre,
   /* Clear of the grid's horizontal scrollbar and footer. */
   bottom: 52px;
   max-width: calc(100% - 24px);
+  /* In a narrow grid the buttons wrap under the count instead of spilling out. */
+  flex-wrap: wrap;
+  justify-content: center;
   transform: translateX(-50%);
   z-index: 6;
   display: flex;
@@ -1564,9 +1567,11 @@ pre,
   overflow-x: auto;
   flex: none;
 }
-.results-tablist {
-  display: flex;
-  gap: 4px;
+.results-title {
+  margin: 0;
+  padding: 0 10px;
+  font-size: var(--text-sm);
+  font-weight: 600;
 }
 .results-tabs button {
   height: 26px;

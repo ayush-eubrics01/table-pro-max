@@ -42,7 +42,7 @@ interface Props {
 export function RunButton({ onRun, disabled }: { onRun: () => void; disabled: boolean }) {
   const mod = isMacPlatform() ? "⌘" : "Ctrl";
   return (
-    <button className="btn btn-primary btn-run" onClick={onRun} disabled={disabled} title={`Run current statement or selection (${mod}+Enter)`}>
+    <button className="btn btn-primary btn-run" onClick={onRun} disabled={disabled} title={`Run current statement or selection (${mod === "⌘" ? "⌘↵" : "Ctrl+Enter"})`}>
       <Icon name="play_arrow" size={15} /> Run{" "}
       <span className="kbd" aria-hidden>
         {mod} ↵
@@ -54,11 +54,7 @@ export function RunButton({ onRun, disabled }: { onRun: () => void; disabled: bo
 export function PlanTabs({ onBack }: { onBack: () => void }) {
   return (
     <div className="results-tabs">
-      <div className="results-tablist" role="tablist" aria-label="Plan">
-        <button role="tab" aria-selected="true">
-          Plan
-        </button>
-      </div>
+      <h2 className="results-title">Plan</h2>
       <button onClick={onBack}>Back to results</button>
     </div>
   );
@@ -405,7 +401,7 @@ export function QueryTab({ ws, tab, active }: Props) {
     <div className="tab-panel">
       <div className="toolbar" role="toolbar" aria-label="Query tools">
         <RunButton onRun={() => void run("current")} disabled={!!running} />
-        <button className="btn" onClick={() => run("all")} disabled={!!running} title={`Run all statements (${isMacPlatform() ? "⌘" : "Ctrl"}+Shift+Enter)`}>
+        <button className="btn" onClick={() => run("all")} disabled={!!running} title={`Run all statements (${isMacPlatform() ? "⇧⌘↵" : "Ctrl+Shift+Enter"})`}>
           <Icon name="play_circle" size={14} /> Run all
         </button>
         {running && (

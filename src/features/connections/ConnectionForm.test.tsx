@@ -159,4 +159,15 @@ describe("ConnectionForm", () => {
     fireEvent.keyDown(within(engines).getByRole("radio", { name: /PostgreSQL/ }), { key: "ArrowRight", ctrlKey: true });
     expect(within(engines).getByRole("radio", { name: /PostgreSQL/ })).toHaveAttribute("aria-checked", "true");
   });
+
+  it("puts the password from a home-screen URL into the password field", async () => {
+    render(<ConnectionForm appInfo={appInfo(true)} initialUrl="postgres://svc:s3cret@db.internal:6543/shop" onClose={() => undefined} onSaved={() => undefined} />);
+    await waitFor(() => expect(screen.getByDisplayValue("db.internal")).toBeInTheDocument());
+    expect(screen.getByLabelText("Password")).toHaveValue("s3cret");
+  });
+
+  it("opens Safety & timeouts when a timeout is not the default", () => {
+    render(<ConnectionForm appInfo={appInfo(true)} initial={{ ...profile, queryTimeoutSecs: 30 }} onClose={() => undefined} onSaved={() => undefined} />);
+    expect(screen.getByText("Safety & timeouts").closest("details")).toHaveAttribute("open");
+  });
 });
