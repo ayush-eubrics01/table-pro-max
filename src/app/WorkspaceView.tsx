@@ -4,6 +4,7 @@ import { useWorkspaces, type Tab, type Workspace } from "../stores/workspaces";
 import { usePendingEdits } from "../stores/pendingEdits";
 import { Sidebar } from "../features/database-explorer/Sidebar";
 import { ObjectTabs } from "./ObjectTabs";
+import { WorkspaceEmpty } from "./WorkspaceEmpty";
 import { TableView } from "../features/data-browser/TableView";
 import { QueryTab } from "../features/sql-editor/QueryTab";
 import { DefinitionView } from "../features/schema-browser/DefinitionView";
@@ -15,7 +16,7 @@ import { confirmAction, notifyError } from "../stores/ui";
 import { connectWithPrompt, reconnectWithPrompt } from "../features/connections/connectFlow";
 
 export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean }) {
-  const { closeTab, openQuery, update } = useWorkspaces.getState();
+  const { closeTab, update } = useWorkspaces.getState();
   const [dirtyTables, setDirtyTables] = useState<Record<string, boolean>>({});
   const [sidebarWidth, setSidebarWidth] = useState(264);
 
@@ -97,17 +98,7 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
       </div>
       <div className="main">
         <ObjectTabs ws={ws} dirtyTables={dirtyTables} onClose={(t) => void requestClose(t)} />
-        {ws.tabs.length === 0 && (
-          <div className="empty">
-            <p>Open a table from the sidebar, or start a query.</p>
-            <button className="btn btn-primary" onClick={() => openQuery(ws.id)}>
-              New query
-            </button>
-            <p className="hint">
-              <span className="kbd">Ctrl+P</span> opens anything · <span className="kbd">Ctrl+T</span> new query
-            </p>
-          </div>
-        )}
+        {ws.tabs.length === 0 && <WorkspaceEmpty ws={ws} />}
         {ws.tabs.map((t) => (
           <div key={t.id} className="tab-panel" style={{ display: ws.activeTabId === t.id ? "flex" : "none" }} role="tabpanel">
             {t.kind === "table" && (
