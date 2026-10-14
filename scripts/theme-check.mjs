@@ -104,6 +104,7 @@ export const PAIRS = [
   ["--accent-text", ["--accent", "--accent-strong"], 4.5],
   ["--danger-text", ["--danger"], 4.5],
   ["--text", ROW_TINTS, 4.5],
+  ["--text", ["--editor-active-line", "--search-match"], 4.5],
   ["--syn-keyword", CODE_BG, 4.5],
   ["--syn-string", CODE_BG, 4.5],
   ["--syn-number", CODE_BG, 4.5],
