@@ -28,6 +28,8 @@ export interface ConnectionProfile {
   queryTimeoutSecs: number;
   keepaliveSecs: number;
   ssh?: SshConfig | null;
+  /** Keep restore points (copies of changed rows, on this computer). On when absent. */
+  restorePoints?: boolean;
 }
 
 export interface SshConfig {
@@ -250,6 +252,10 @@ export interface RunOptions {
   baseOffset?: number;
   /** Send text longer than this many characters as a preview (query results). */
   largeValueChars?: number;
+  /** Row limit for one restore point; over it, the run asks first. */
+  restoreMaxRows?: number;
+  /** Size limit for one restore point, in MB; over it, none is kept. */
+  restoreMaxMb?: number;
 }
 
 export interface StatementResult {

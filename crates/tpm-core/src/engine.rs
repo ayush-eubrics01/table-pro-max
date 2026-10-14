@@ -69,6 +69,8 @@ struct SessionHandle {
     broken: AtomicBool,
     /// The user ran BEGIN/START TRANSACTION in this session and has not yet ended it.
     open_txn: AtomicBool,
+    /// Restore points made inside that transaction: kept on COMMIT, deleted on ROLLBACK.
+    pending_restore: Mutex<Vec<String>>,
 }
 
 struct RunningTask {
@@ -142,7 +144,34 @@ pub struct RunOptions {
     /// `None` sends full values.
     #[serde(default)]
     pub large_value_chars: Option<u32>,
+    /// Row limit for one restore point (default 100,000); over it, the user is asked first.
+    #[serde(default)]
+    pub restore_max_rows: Option<u64>,
+    /// Size limit for one restore point in MB (default 50); over it, none is kept.
+    #[serde(default)]
+    pub restore_max_mb: Option<u64>,
 }
+
+/// A statement's restore point, resolved against its table before the script runs.
+#[derive(Clone)]
+struct ResolvedCapture {
+    plan: crate::restore_plan::CapturePlan,
+    structure: TableStructure,
+}
+
+#[derive(Clone)]
+enum CaptureState {
+    /// Not a statement restore points cover, or restore points are off.
+    Off,
+    Planned(ResolvedCapture),
+    /// No restore point; `ask` when the user must confirm before it runs.
+    Skipped {
+        reason: String,
+        ask: bool,
+    },
+}
+
+const DUCKDB_TXN: &str = "inside a transaction on DuckDB";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -226,6 +255,8 @@ pub struct Engine {
     limiter: Semaphore,
     known_hosts: Option<crate::ssh::KnownHosts>,
     redis: Mutex<HashMap<String, Arc<tokio::sync::Mutex<crate::redis_kv::RedisSession>>>>,
+    /// Where restore points are kept (the app's local storage); without one, none are made.
+    restore_store: Mutex<Option<Arc<dyn crate::restore::RestoreStore>>>,
 }
 
 impl Default for Engine {
@@ -250,6 +281,7 @@ impl Engine {
             limiter: Semaphore::new(MAX_CONCURRENT_EXECUTIONS),
             known_hosts: None,
             redis: Mutex::new(HashMap::new()),
+            restore_store: Mutex::new(None),
         }
     }
 
@@ -266,6 +298,15 @@ impl Engine {
         let key = russh::keys::PublicKey::from_openssh(openssh_key.trim())
             .map_err(|e| AppError::invalid_config(format!("Invalid host key: {e}")))?;
         known.trust(host, port, &key)
+    }
+
+    /// Where restore points are kept (the app's local storage); without one, none are made.
+    pub fn set_restore_store(&self, store: Arc<dyn crate::restore::RestoreStore>) {
+        *lock(&self.restore_store) = Some(store);
+    }
+
+    fn restore_store(&self) -> Option<Arc<dyn crate::restore::RestoreStore>> {
+        lock(&self.restore_store).clone()
     }
 
     /// Opens the SSH tunnel (when configured) and then the database connection through it.
@@ -332,6 +373,7 @@ impl Engine {
             session: tokio::sync::Mutex::new(Some(session)),
             broken: AtomicBool::new(false),
             open_txn: AtomicBool::new(false),
+            pending_restore: Mutex::new(Vec::new()),
         });
         lock(&self.sessions).insert(info.session_id.clone(), handle);
         Ok(info)
@@ -516,7 +558,27 @@ impl Engine {
     ) -> Result<ScriptResult> {
         let handle = self.handle(session_id)?;
         let analysis = analyze_script(sql, handle.info.dialect, handle.profile.safety_mode);
-        Self::enforce_policy(&analysis, opts.confirmed, &handle.info)?;
+        if let PolicyDecision::Block { reason } = &analysis.decision {
+            return Err(AppError::new(ErrorKind::PolicyViolation, reason));
+        }
+        // Plan restore points before anything runs, so one confirmation covers every reason.
+        let _captures = self.plan_restore_points(&handle, &analysis, opts.restore_max_rows.unwrap_or(100_000)).await;
+        let mut reasons = match &analysis.decision {
+            PolicyDecision::Confirm { reasons } => reasons.clone(),
+            _ => vec![],
+        };
+        for (i, c) in _captures.iter().enumerate() {
+            if let CaptureState::Skipped { reason, ask: true } = c {
+                reasons.push(format!("Statement {}: can't keep a restore point ({reason})", i + 1));
+            }
+        }
+        if !reasons.is_empty() && !opts.confirmed {
+            return Err(AppError::new(
+                ErrorKind::ConfirmationRequired,
+                format!("Confirm execution on {} ({})", handle.info.connection_name, handle.info.target),
+            )
+            .with_detail(reasons.join("\n")));
+        }
 
         let task_id = opts.task_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -617,6 +679,158 @@ impl Engine {
             duration_ms: started.elapsed().as_millis() as u64,
             cancelled: cancelled.load(Ordering::SeqCst),
         })
+    }
+
+    // ---- restore points: planning -------------------------------------------------
+
+    fn restore_enabled(&self, handle: &SessionHandle) -> bool {
+        handle.profile.restore_points
+            && !handle.profile.read_only()
+            && handle.profile.driver != crate::config::Driver::Redis
+            && self.restore_store().is_some()
+    }
+
+    /// A read made for restore points that must not disturb the user's open transaction: on
+    /// PostgreSQL inside one it runs under a savepoint (a failed statement would abort the
+    /// transaction); DuckDB has no savepoints, so nothing is read there.
+    async fn restore_read(
+        &self,
+        handle: &Arc<SessionHandle>,
+        sql: String,
+        params: Vec<Param>,
+        max_rows: usize,
+    ) -> Result<RowSet> {
+        let in_txn = handle.open_txn.load(Ordering::SeqCst);
+        let driver = handle.profile.driver;
+        if in_txn && driver == crate::config::Driver::Duckdb {
+            return Err(AppError::unsupported(DUCKDB_TXN));
+        }
+        let guard = in_txn && driver == crate::config::Driver::Postgres;
+        self.with_session(&handle.info.session_id, move |s| {
+            Box::pin(async move {
+                if guard {
+                    s.execute("SAVEPOINT tpm_restore", 0).await?;
+                }
+                let r = s.query(&sql, &params, max_rows).await;
+                if guard {
+                    if r.is_err() {
+                        s.execute("ROLLBACK TO SAVEPOINT tpm_restore", 0).await?;
+                    }
+                    s.execute("RELEASE SAVEPOINT tpm_restore", 0).await?;
+                }
+                r
+            })
+        })
+        .await
+    }
+
+    /// The schema and name of the table a statement names, as the server resolves it.
+    /// `Ok(None)` when no such table exists (the statement will fail, or is `IF EXISTS`).
+    async fn resolve_table(
+        &self,
+        handle: &Arc<SessionHandle>,
+        t: &crate::restore_plan::TableRef,
+    ) -> Result<Option<(String, String)>> {
+        use crate::config::Driver;
+        let first = |rs: &RowSet, i: usize| {
+            rs.rows.first().and_then(|r| r.get(i)).and_then(|c| c.as_text()).map(str::to_string)
+        };
+        match handle.profile.driver {
+            Driver::Postgres => {
+                let rs = self
+                    .restore_read(
+                        handle,
+                        "SELECT n.nspname::text, c.relname::text FROM pg_class c \
+                         JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = to_regclass($1)"
+                            .into(),
+                        vec![Some(t.sql.clone())],
+                        1,
+                    )
+                    .await?;
+                Ok(first(&rs, 0).zip(first(&rs, 1)))
+            }
+            driver => {
+                let schema = match (&t.schema, driver) {
+                    (Some(s), _) => s.clone(),
+                    (None, Driver::Mysql | Driver::Mariadb) => {
+                        let rs = self.restore_read(handle, "SELECT DATABASE()".into(), vec![], 1).await?;
+                        first(&rs, 0).unwrap_or_else(|| handle.info.database.clone())
+                    }
+                    (None, Driver::Duckdb) => {
+                        let rs = self.restore_read(handle, "SELECT current_schema()".into(), vec![], 1).await?;
+                        first(&rs, 0).unwrap_or_else(|| "main".into())
+                    }
+                    (None, _) => "main".into(),
+                };
+                Ok(Some((schema, t.name.clone())))
+            }
+        }
+    }
+
+    /// Resolves a capture plan against its table and the row limit. `Ok(None)`: the table does
+    /// not exist, so there is nothing to keep. `Err`: the reason there can't be a restore point.
+    async fn resolve_capture(
+        &self,
+        handle: &Arc<SessionHandle>,
+        mut plan: crate::restore_plan::CapturePlan,
+        max_rows: u64,
+    ) -> std::result::Result<Option<ResolvedCapture>, String> {
+        use crate::restore_plan::{TABLE_UNREADABLE, UNREADABLE, count_select, structure_reason};
+        let session_id = handle.info.session_id.clone();
+        let (schema, table) = match self.resolve_table(handle, &plan.table).await {
+            Ok(Some(found)) => found,
+            Ok(None) => return Ok(None),
+            Err(e) if e.message.contains(DUCKDB_TXN) => return Err(DUCKDB_TXN.into()),
+            Err(_) => return Err(TABLE_UNREADABLE.into()),
+        };
+        let structure = match self.table_structure(&session_id, &schema, &table, true).await {
+            Ok(s) => s,
+            Err(e) if e.kind == ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(TABLE_UNREADABLE.into()),
+        };
+        if let Some(r) = structure_reason(&plan, &structure, handle.profile.driver) {
+            return Err(r);
+        }
+        plan.table.schema = Some(schema);
+        plan.table.name = table;
+        let rs = self.restore_read(handle, count_select(&plan), vec![], 1).await.map_err(|_| UNREADABLE.to_string())?;
+        let n: u64 =
+            rs.rows.first().and_then(|r| r.first()).and_then(|c| c.as_text()).and_then(|t| t.parse().ok()).unwrap_or(0);
+        if n > max_rows {
+            return Err(format!("affects {n} rows, more than {max_rows}"));
+        }
+        Ok(Some(ResolvedCapture { plan, structure }))
+    }
+
+    /// Plans a restore point for each statement of a script (see restore_plan.rs).
+    async fn plan_restore_points(
+        &self,
+        handle: &Arc<SessionHandle>,
+        analysis: &ScriptAnalysis,
+        max_rows: u64,
+    ) -> Vec<CaptureState> {
+        use crate::restore_plan::{PlanOutcome, plan_statement};
+        let mut out = vec![CaptureState::Off; analysis.statements.len()];
+        if !self.restore_enabled(handle) {
+            return out;
+        }
+        for (i, stmt) in analysis.statements.iter().enumerate() {
+            if stmt.class < crate::safety::StatementClass::Write {
+                continue;
+            }
+            out[i] = match plan_statement(&stmt.sql, handle.info.dialect) {
+                PlanOutcome::None => CaptureState::Off,
+                PlanOutcome::Unsupported(reason) => CaptureState::Skipped { reason, ask: true },
+                PlanOutcome::Capture(plan) => match self.resolve_capture(handle, plan, max_rows).await {
+                    Ok(Some(rc)) => CaptureState::Planned(rc),
+                    Ok(None) => CaptureState::Off,
+                    // DuckDB in a transaction: said in the statement's message, not asked about.
+                    Err(reason) if reason == DUCKDB_TXN => CaptureState::Skipped { reason, ask: false },
+                    Err(reason) => CaptureState::Skipped { reason, ask: true },
+                },
+            };
+        }
+        out
     }
 
     async fn execute_one(

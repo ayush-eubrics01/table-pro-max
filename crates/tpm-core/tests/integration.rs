@@ -565,10 +565,62 @@ async fn exercise(t: Target) {
     edit_results(&engine, &sid, &profile, t.password.as_deref(), driver).await;
     lazy_values(&engine, &sid, &t.schema, driver).await;
     fk_round_trip(&engine, &sid, &t.schema, driver).await;
+    restore_points(&engine, &sid, &t.schema, driver).await;
 
     // --- cleanup ---
     run(&engine, &sid, "DROP TABLE tpm_it_items; DROP TABLE tpm_it_owners").await;
     engine.close_all().await;
+}
+
+/// Restore points: planned before anything runs, captured around the statement, restored by review.
+async fn restore_points(engine: &Arc<Engine>, sid: &str, schema: &str, driver: Driver) {
+    let store = Arc::new(tpm_core::storage::Storage::open_in_memory().unwrap());
+    engine.set_restore_store(store.clone());
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rp").await;
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rp_nokey").await;
+    run(engine, sid, "CREATE TABLE tpm_it_rp (id integer PRIMARY KEY, status varchar(20), qty integer)").await;
+    run(engine, sid, "INSERT INTO tpm_it_rp VALUES (1, 'paid', 5), (2, 'paid', 7), (3, 'new', 1)").await;
+    run(engine, sid, "CREATE TABLE tpm_it_rp_nokey (a integer)").await;
+
+    // Planning: one confirmation names every statement that can't keep a restore point.
+    let opts = |confirmed| RunOptions { confirmed, ..Default::default() };
+    let err = engine
+        .run_script(
+            sid,
+            "UPDATE tpm_it_rp_nokey SET a = 1; DELETE FROM tpm_it_rp ORDER BY id LIMIT 1",
+            opts(false),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::ConfirmationRequired, "{driver:?}");
+    let detail = err.detail.clone().unwrap_or_default();
+    // Statement 1 is destructive (no WHERE) *and* can't keep a restore point; one confirmation names both.
+    assert!(detail.contains("UPDATE without a WHERE clause changes every row"), "{driver:?}: {detail}");
+    assert!(
+        detail.contains("Statement 1: can't keep a restore point (the table has no primary key)"),
+        "{driver:?}: {detail}"
+    );
+    assert!(detail.contains("Statement 2: can't keep a restore point ("), "{driver:?}: {detail}");
+    if matches!(driver, Driver::Mysql | Driver::Mariadb) {
+        assert!(
+            detail.contains("Statement 2: can't keep a restore point (uses ORDER BY or LIMIT)"),
+            "{driver:?}: {detail}"
+        );
+    }
+    // Over the row limit.
+    let small = RunOptions { confirmed: false, restore_max_rows: Some(2), ..Default::default() };
+    let err = engine.run_script(sid, "UPDATE tpm_it_rp SET qty = 0 WHERE qty > 0", small, None).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::ConfirmationRequired, "{driver:?}");
+    assert!(err.detail.unwrap_or_default().contains("affects 3 rows, more than 2"), "{driver:?}");
+    // A capturable statement within the limits needs no confirmation.
+    engine.run_script(sid, "UPDATE tpm_it_rp SET qty = qty WHERE id = 3", opts(false), None).await.unwrap();
+    // Confirming runs it anyway.
+    let r = engine.run_script(sid, "UPDATE tpm_it_rp_nokey SET a = 1", opts(true), None).await.unwrap();
+    assert!(r.statements[0].error.is_none(), "{driver:?}");
+    let _ = store; // continued below
+    run(engine, sid, "DROP TABLE tpm_it_rp_nokey").await;
+    run(engine, sid, "DROP TABLE tpm_it_rp").await;
 }
 
 /// Following a foreign key: the referenced columns are known (even when the DDL left them

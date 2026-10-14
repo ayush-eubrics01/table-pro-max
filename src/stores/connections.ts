@@ -62,5 +62,6 @@ export function newProfile(driver: ConnectionProfile["driver"] = "postgres"): Co
     queryTimeoutSecs: 0,
     keepaliveSecs: 60,
     ssh: null,
+    restorePoints: true,
   };
 }

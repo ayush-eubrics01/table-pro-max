@@ -44,10 +44,20 @@ pub fn run() {
                 tracing::info!(removed = n, "pruned query history");
             }
 
+            // Restore points past their keep period or the size limit (settings) go at startup.
+            if let Ok(n) = storage.purge_restore_points()
+                && n > 0
+            {
+                tracing::info!(removed = n, "purged restore points");
+            }
+
             let keyring = detect_keyring();
+            let storage = Arc::new(storage);
+            let engine = Arc::new(Engine::with_known_hosts(data_dir.join("known_hosts")));
+            engine.set_restore_store(storage.clone());
             app.manage(AppState {
-                engine: Arc::new(Engine::with_known_hosts(data_dir.join("known_hosts"))),
-                storage: Arc::new(storage),
+                engine,
+                storage,
                 keyring,
                 session_secrets: Arc::new(MemoryStore::default()),
                 data_dir,
