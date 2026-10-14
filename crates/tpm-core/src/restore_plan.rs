@@ -174,11 +174,15 @@ pub fn structure_reason(plan: &CapturePlan, s: &TableStructure, driver: Driver) 
     {
         return Some(CHANGES_KEY.into());
     }
-    // PostgreSQL reads bytea back as \x hex text, which round-trips; other engines would not.
-    if driver != Driver::Postgres && s.columns.iter().any(|c| is_binary_type(&c.data_type)) {
+    if has_binary_columns(s, driver) {
         return Some(BINARY.into());
     }
     None
+}
+
+/// PostgreSQL reads bytea back as `\x` hex text, which round-trips; other engines would not.
+pub fn has_binary_columns(s: &TableStructure, driver: Driver) -> bool {
+    driver != Driver::Postgres && s.columns.iter().any(|c| is_binary_type(&c.data_type))
 }
 
 fn from_sql(plan: &CapturePlan) -> String {

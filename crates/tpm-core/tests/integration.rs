@@ -719,6 +719,81 @@ async fn restore_points(engine: &Arc<Engine>, sid: &str, schema: &str, driver: D
     assert!(dt.data.ddl.as_deref().unwrap_or("").to_ascii_uppercase().contains("CREATE"), "{driver:?}");
     run(engine, sid, "CREATE TABLE tpm_it_rp (id integer PRIMARY KEY, status varchar(20), qty integer)").await;
     run(engine, sid, "DROP TABLE tpm_it_rp_nokey").await;
+
+    // Restoring chosen rows: only those change.
+    run(engine, sid, "INSERT INTO tpm_it_rp VALUES (1, 'paid', 5), (2, 'paid', 7)").await;
+    let r = engine.run_script(sid, "UPDATE tpm_it_rp SET status = 'x', qty = 0", opts(true), None).await.unwrap();
+    let pid = r.statements[0].restore.as_ref().unwrap().point_id.clone().unwrap();
+    let p = store.get(&pid).unwrap();
+    let idx = |id: &str| p.data.before.iter().position(|r| r[0].as_deref() == Some(id)).unwrap();
+    let preview = engine.preview_restore(sid, &pid, Some(vec![idx("2")])).await.unwrap();
+    assert_eq!(preview.statement_count, 1, "{driver:?}: {}", preview.sql);
+    assert!(engine.apply_restore(sid, &pid, Some(vec![idx("2")]), false).await.is_err(), "needs the review");
+    engine.apply_restore(sid, &pid, Some(vec![idx("2")]), true).await.unwrap();
+    let rows =
+        run(engine, sid, "SELECT id, status, qty FROM tpm_it_rp ORDER BY id").await.statements[0].rows.clone().unwrap();
+    assert_eq!(text(&rows[0][1]), "x", "row 1 untouched ({driver:?})");
+    assert_eq!((text(&rows[1][1]), text(&rows[1][2])), ("paid", "7"), "{driver:?}");
+    assert_eq!(store.get(&pid).unwrap().status, RestoreStatus::Restored);
+    // Someone changed row 1 since: nothing is written.
+    run(engine, sid, "UPDATE tpm_it_rp SET qty = 42 WHERE id = 1").await;
+    let err = engine.apply_restore(sid, &pid, Some(vec![idx("1")]), true).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Conflict, "{driver:?}");
+    let rows =
+        run(engine, sid, "SELECT status, qty FROM tpm_it_rp WHERE id = 1").await.statements[0].rows.clone().unwrap();
+    assert_eq!((text(&rows[0][0]), text(&rows[0][1])), ("x", "42"), "{driver:?}");
+    // A DELETE comes back by re-inserting.
+    let r = engine.run_script(sid, "DELETE FROM tpm_it_rp WHERE id = 2", opts(true), None).await.unwrap();
+    let did = r.statements[0].restore.as_ref().unwrap().point_id.clone().unwrap();
+    engine.apply_restore(sid, &did, None, true).await.unwrap();
+    let back = run(engine, sid, "SELECT status FROM tpm_it_rp WHERE id = 2").await;
+    assert_eq!(text(&back.statements[0].rows.as_ref().unwrap()[0][0]), "paid", "{driver:?}");
+    // A grid commit keeps a restore point; restoring keeps one of its own (an undo of the restore).
+    let set = ChangeSet {
+        schema: schema.into(),
+        table: "tpm_it_rp".into(),
+        changes: vec![
+            RowChange::Update {
+                key: vec![ColumnValue { column: "id".into(), value: Some("2".into()) }],
+                edits: vec![ColumnEdit {
+                    column: "status".into(),
+                    value: EditValue::Value { value: Some("grid".into()) },
+                    original: Some(Some("paid".into())),
+                }],
+            },
+            RowChange::Delete { key: vec![ColumnValue { column: "id".into(), value: Some("1".into()) }] },
+        ],
+        check_conflicts: true,
+    };
+    engine.apply_changes(sid, &set, true).await.unwrap();
+    let conn = engine.session_info(sid).unwrap().connection_id;
+    let list = store.list_restore_points(&conn).unwrap();
+    let grid = list.iter().find(|g| g.kind == tpm_core::restore::RestoreKind::GridEdit).expect("grid edit point");
+    assert_eq!(grid.row_count, 2, "{driver:?}");
+    assert!(list.iter().any(|g| g.kind == tpm_core::restore::RestoreKind::Restore), "{driver:?}");
+    engine.apply_restore(sid, &grid.id, None, true).await.unwrap();
+    let rows =
+        run(engine, sid, "SELECT id, status, qty FROM tpm_it_rp ORDER BY id").await.statements[0].rows.clone().unwrap();
+    assert_eq!(rows.len(), 2, "{driver:?}");
+    assert_eq!((text(&rows[0][1]), text(&rows[0][2])), ("x", "42"), "row 1 re-inserted ({driver:?})");
+    assert_eq!(text(&rows[1][1]), "paid", "row 2 put back ({driver:?})");
+    // A dropped column comes back with its values, and a dropped table with its rows.
+    let r = engine.run_script(sid, "ALTER TABLE tpm_it_rp DROP COLUMN qty", opts(true), None).await.unwrap();
+    let cid = r.statements[0].restore.as_ref().unwrap().point_id.clone().unwrap();
+    let preview = engine.preview_restore(sid, &cid, None).await.unwrap();
+    assert!(preview.sql.contains("ADD COLUMN"), "{driver:?}: {}", preview.sql);
+    engine.apply_restore(sid, &cid, None, true).await.unwrap();
+    let rows = run(engine, sid, "SELECT qty FROM tpm_it_rp ORDER BY id").await.statements[0].rows.clone().unwrap();
+    assert_eq!((text(&rows[0][0]), text(&rows[1][0])), ("42", "7"), "{driver:?}");
+    let r = engine.run_script(sid, "DROP TABLE tpm_it_rp", opts(true), None).await.unwrap();
+    let tid = r.statements[0].restore.as_ref().unwrap().point_id.clone().unwrap();
+    let preview = engine.preview_restore(sid, &tid, None).await.unwrap();
+    assert!(preview.sql.to_ascii_uppercase().contains("CREATE"), "{driver:?}: {}", preview.sql);
+    engine.apply_restore(sid, &tid, None, true).await.unwrap();
+    let rows =
+        run(engine, sid, "SELECT id, status, qty FROM tpm_it_rp ORDER BY id").await.statements[0].rows.clone().unwrap();
+    assert_eq!(rows.len(), 2, "{driver:?}");
+    assert_eq!((text(&rows[1][1]), text(&rows[1][2])), ("paid", "7"), "{driver:?}");
     run(engine, sid, "DROP TABLE tpm_it_rp").await;
 }
 
