@@ -13,6 +13,7 @@ export function WindowControls() {
   useEffect(() => {
     let alive = true;
     let unlisten: (() => void) | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const refresh = () =>
       getCurrentWindow()
         .isMaximized()
@@ -20,8 +21,12 @@ export function WindowControls() {
         .catch(() => undefined);
     try {
       void refresh();
+      // Resizing fires many events; ask once the resize settles.
       void getCurrentWindow()
-        .onResized(() => void refresh())
+        .onResized(() => {
+          clearTimeout(timer);
+          timer = setTimeout(() => void refresh(), 150);
+        })
         .then((u) => {
           if (alive) unlisten = u;
           else u();
@@ -32,6 +37,7 @@ export function WindowControls() {
     }
     return () => {
       alive = false;
+      clearTimeout(timer);
       unlisten?.();
     };
   }, []);
@@ -47,7 +53,7 @@ export function WindowControls() {
         title={maximized ? "Restore" : "Maximize"}
         onClick={() => void getCurrentWindow().toggleMaximize()}
       >
-        <Icon name="crop_square" size={14} />
+        <Icon name={maximized ? "filter_none" : "crop_square"} size={14} />
       </button>
       <button className="window-control close" aria-label="Close" title="Close" onClick={() => void getCurrentWindow().close()}>
         <Icon name="close" size={16} />

@@ -80,4 +80,39 @@ describe("SettingsDialog", () => {
     fireEvent.click(screen.getByText("Wrap long lines in the editor"));
     expect(useSettings.getState().settings["editor.wordWrap"]).toBe(!DEFAULT_SETTINGS["editor.wordWrap"]);
   });
+
+  it("keeps a typed number when the dialog closes before the field loses focus", () => {
+    const { unmount } = render(<SettingsDialog appInfo={appInfo} onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "Editor" }));
+    fireEvent.change(screen.getByLabelText("Editor font size"), { target: { value: "16" } });
+    unmount();
+    expect(useSettings.getState().settings["editor.fontSize"]).toBe(16);
+  });
+
+  it("does not write old numbers back after Reset to defaults", async () => {
+    useSettings.setState({ settings: { ...DEFAULT_SETTINGS, "editor.fontSize": 20 } });
+    mockIPC((cmd) => (cmd === "update_status" ? { currentVersion: "0.1.0", lastCheck: null, auto: "unset" } : null));
+    const onClose = vi.fn();
+    const { rerender } = render(
+      <>
+        <SettingsDialog appInfo={appInfo} onClose={onClose} />
+        <Overlays />
+      </>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Editor" }));
+    expect(screen.getByLabelText("Editor font size")).toHaveValue("20");
+    fireEvent.click(screen.getByRole("button", { name: "Reset to defaults" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Reset settings" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    rerender(<Overlays />);
+    expect(useSettings.getState().settings["editor.fontSize"]).toBe(DEFAULT_SETTINGS["editor.fontSize"]);
+  });
+
+  it("drops a cleared number when the dialog closes", () => {
+    const { unmount } = render(<SettingsDialog appInfo={appInfo} onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "History" }));
+    fireEvent.change(screen.getByLabelText("Maximum history entries"), { target: { value: "" } });
+    unmount();
+    expect(useSettings.getState().settings["history.maxEntries"]).toBe(DEFAULT_SETTINGS["history.maxEntries"]);
+  });
 });

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { AppInfo, ConnectionProfile, Driver, ServerInfo, SshConfig } from "../../types/backend";
+import { withoutPassword } from "../../lib/url";
 import { api, toError, type BackendError } from "../../lib/ipc";
 import { DRIVERS, ENVIRONMENTS, SAFETY_MODES, envStyle, isFileDriver } from "../../lib/env";
 import { Icon } from "../../components/Icon";
@@ -49,25 +50,25 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
     });
   };
 
-  const importFrom = async (source: string) => {
+  const importFrom = async (source: string): Promise<boolean> => {
     setError(null);
     try {
       const parsed = await api.parseUrl(source);
       setP(fixMode({ ...parsed.profile, id: p.id, name: p.name || parsed.profile.name, environment: p.environment, safetyMode: p.safetyMode }));
       if (parsed.password) setPassword(parsed.password);
       setUrl("");
+      return true;
     } catch (e) {
       setError(toError(e));
+      return false;
     }
   };
   const importUrl = () => importFrom(url);
 
-  // A URL pasted on the home screen is parsed straight away; the field is cleared on success.
+  // A URL pasted on the home screen is parsed straight away. If it cannot be read, the URL field
+  // gets it back for editing, but without its password, which never reaches the screen.
   useEffect(() => {
-    if (initialUrl) {
-      setUrl(initialUrl);
-      void importFrom(initialUrl);
-    }
+    if (initialUrl) void importFrom(initialUrl).then((ok) => !ok && setUrl(withoutPassword(initialUrl)));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const validName = p.name.trim() || (sqlite ? p.filePath?.split(/[\\/]/).pop() : `${p.database || p.host}`) || "";
@@ -430,7 +431,7 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
         </>
       )}
 
-      <details className="form-collapse">
+      <details className="form-collapse" open={!!initial && initial.safetyMode !== "confirm_destructive"}>
         <summary>Safety &amp; timeouts</summary>
         <div className="field-row">
           <label className="field">

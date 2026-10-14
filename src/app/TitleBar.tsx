@@ -27,12 +27,12 @@ export function TitleBar({ mac, onCloseWorkspace }: Props) {
   return (
     <header className="titlebar" data-tauri-drag-region data-mac={mac || undefined}>
       <div className="titlebar-brand" data-tauri-drag-region>
-        <span className="app-mark" aria-hidden>
+        <span className="app-mark" aria-hidden data-tauri-drag-region>
           <Icon name="table" size={14} />
         </span>
         <span data-tauri-drag-region>Table Pro Max</span>
       </div>
-      <nav className="titlebar-tabs" role="tablist" aria-label="Open connections">
+      <nav className="titlebar-tabs" role="tablist" aria-label="Open connections" data-tauri-drag-region>
         <button className="tb-tab" role="tab" aria-selected={activeId === null} onClick={() => activate(null)}>
           <Icon name="grid_view" size={15} />
           <span className="label">Connections</span>
@@ -40,6 +40,7 @@ export function TitleBar({ mac, onCloseWorkspace }: Props) {
         {/* Only the connection tabs scroll, so Connections stays reachable; the wheel scrolls sideways. */}
         <div
           className="titlebar-conn-tabs"
+          data-tauri-drag-region
           ref={tabs}
           onWheel={(e) => {
             if (e.deltaY !== 0 && e.deltaX === 0) e.currentTarget.scrollLeft += e.deltaY;
@@ -74,7 +75,7 @@ export function TitleBar({ mac, onCloseWorkspace }: Props) {
         </div>
       </nav>
       <div className="titlebar-drag" data-tauri-drag-region />
-      <div className="titlebar-actions">
+      <div className="titlebar-actions" data-tauri-drag-region>
         <button className="search-pill" aria-label="Search tables, actions and connections" onClick={() => useUi.getState().setPaletteOpen(true)}>
           <Icon name="search" size={14} />
           <span>Search tables, actions…</span>

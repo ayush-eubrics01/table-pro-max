@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/re
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks";
 import type { AppInfo, ConnectionProfile } from "../../types/backend";
 import { ConnectionForm } from "./ConnectionForm";
+import { profile } from "../../test/fixtures";
 
 const appInfo = (available: boolean): AppInfo => ({
   version: "0.1.0",
@@ -19,6 +20,7 @@ beforeEach(() => {
   saved = null;
   mockIPC((cmd, args) => {
     const a = args as Record<string, unknown>;
+    if (cmd === "parse_url" && String((args as { url: string }).url).startsWith("mongodb:")) throw { kind: "invalid_config", message: "Unsupported URL scheme: mongodb" };
     if (cmd === "parse_url")
       return {
         profile: {
@@ -113,5 +115,17 @@ describe("ConnectionForm", () => {
     await waitFor(() => expect(screen.getByDisplayValue("6543")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("radio", { name: /PostgreSQL/ }));
     expect(screen.getByDisplayValue("6543")).toBeInTheDocument();
+  });
+
+  it("drops the password from a home-screen URL it cannot read", async () => {
+    render(<ConnectionForm appInfo={appInfo(true)} initialUrl="mongodb://svc:s3cret@db.internal:27017/shop" onClose={() => undefined} onSaved={() => undefined} />);
+    expect(await screen.findByText(/Unsupported URL scheme/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Connection URL")).toHaveValue("mongodb://svc@db.internal:27017/shop");
+    expect(screen.queryByDisplayValue(/s3cret/)).not.toBeInTheDocument();
+  });
+
+  it("opens Safety & timeouts when editing a connection whose safety is not the default", () => {
+    render(<ConnectionForm appInfo={appInfo(true)} initial={{ ...profile, safetyMode: "read_only" }} onClose={() => undefined} onSaved={() => undefined} />);
+    expect(screen.getByText("Safety & timeouts").closest("details")).toHaveAttribute("open");
   });
 });

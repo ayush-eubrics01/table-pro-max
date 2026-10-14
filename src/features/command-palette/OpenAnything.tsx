@@ -57,7 +57,12 @@ export function OpenAnything({ onConnect }: { onConnect: (p: ConnectionProfile) 
     return out;
   }, [workspaces, activeId, connections, saved]);
 
-  const results = useMemo(() => rank(items, debounced, (i) => i.label), [items, debounced]);
+  // Without a query, actions and connections come first so the 60-item cap never hides them.
+  const results = useMemo(() => {
+    if (debounced.trim()) return rank(items, debounced, (i) => i.label);
+    const first: Item[] = items.filter((i) => i.kind === "action" || i.kind === "connection");
+    return rank([...first, ...items.filter((i) => !first.includes(i))], "", (i) => i.label);
+  }, [items, debounced]);
   const groups = useMemo(() => groupResults(results, debounced.trim() !== ""), [results, debounced]);
   // Keyboard order follows the displayed (grouped) order.
   const flat = useMemo(() => groups.flatMap((g) => g.items), [groups]);
