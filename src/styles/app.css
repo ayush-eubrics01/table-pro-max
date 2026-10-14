@@ -1352,39 +1352,90 @@ pre,
 .detail-panel {
   width: 320px;
   flex: none;
-  border-left: 1px solid var(--border);
-  background: var(--bg);
-  overflow: auto;
+  border-left: 1px solid var(--border-hairline);
+  background: var(--surface-panel);
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  /* The history panel scrolls the panel itself; the inspector scrolls .detail-fields. */
+  overflow: auto;
+}
+.detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 10px 10px 10px 14px;
+  border-bottom: 1px solid var(--border-hairline);
+}
+.detail-head h2 {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+.detail-head .sub {
+  font-family: var(--font-code);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.detail-empty {
+  margin: 0;
+  padding: var(--space-4) 14px;
+  color: var(--text-muted);
+}
+.detail-fields {
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
 }
 .detail-field {
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--grid-line);
+  padding: 10px 14px;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: 6px;
 }
 .detail-field label {
-  font-size: var(--text-sm);
-  font-weight: 600;
   display: flex;
-  justify-content: space-between;
-  gap: var(--space-3);
+  align-items: baseline;
+  gap: 6px;
+  font-size: var(--text-sm);
+}
+.detail-field label .name {
+  font-weight: 600;
 }
 .detail-field label .type {
+  font-family: var(--font-code);
+  font-size: var(--text-xs);
   color: var(--text-faint);
-  font-weight: 400;
+}
+.detail-field label .edited {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--warning);
 }
 .detail-field textarea {
-  min-height: 28px;
+  min-height: 32px;
+  font-family: var(--font-code);
+  font-size: var(--text-sm);
+}
+.detail-field textarea.is-edited {
+  border-color: var(--warning);
+  background: var(--edited-bg);
 }
 .detail-field pre {
   margin: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
   white-space: pre-wrap;
   word-break: break-all;
   font-size: var(--text-sm);
   user-select: text;
+}
+.detail-field .btn-ghost {
+  height: 24px;
+  font-size: var(--text-xs);
 }
 
 /* ---- editor & results ---------------------------------------------------- */

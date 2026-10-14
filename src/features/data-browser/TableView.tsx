@@ -496,6 +496,10 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
                 row={activeRow}
                 editable={(c) => selection.active !== null && canEdit(selection.active.row, c)}
                 onEdit={(c, v) => selection.active && onEdit(selection.active.row, c, v)}
+                heading={selection.active ? `Row ${offset + selection.active.row + 1}` : "Inspector"}
+                subheading={table}
+                isEdited={(c) => selection.active !== null && selection.active.row < rows.length && pending.edits[selection.active.row]?.[c] !== undefined}
+                onClose={() => setDetailOpen(false)}
               />
             )}
           </div>
