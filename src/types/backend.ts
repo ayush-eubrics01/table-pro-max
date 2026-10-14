@@ -327,6 +327,12 @@ export interface BrowseRequest {
   deferColumns?: string[];
 }
 
+export type FetchMode = "load" | "defer";
+export interface ColumnFetch {
+  column: string;
+  mode: FetchMode;
+}
+
 export interface FetchedCell {
   found: boolean;
   value: Cell;

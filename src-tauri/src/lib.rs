@@ -142,6 +142,8 @@ pub fn run() {
             commands::library::save_query,
             commands::library::delete_saved_query,
             commands::library::list_filter_presets,
+            commands::library::list_column_fetch,
+            commands::library::set_column_fetch,
             commands::library::save_filter_preset,
             commands::library::delete_filter_preset,
             commands::library::list_dashboards,

@@ -67,7 +67,31 @@ const MIGRATIONS: &[&str] = &[
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE workspace (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
     "#,
+    r#"
+    CREATE TABLE column_fetch (
+        connection_id TEXT NOT NULL,
+        schema_name TEXT NOT NULL,
+        table_name TEXT NOT NULL,
+        column_name TEXT NOT NULL,
+        mode TEXT NOT NULL CHECK (mode IN ('load', 'defer')),
+        PRIMARY KEY (connection_id, schema_name, table_name, column_name)
+    );
+    "#,
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FetchMode {
+    Load,
+    Defer,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnFetch {
+    pub column: String,
+    pub mode: FetchMode,
+}
 
 pub struct Storage {
     conn: Mutex<Connection>,
@@ -236,7 +260,11 @@ impl Storage {
     }
 
     pub fn delete_connection(&self, id: &str) -> Result<()> {
-        self.lock()?.execute("DELETE FROM connections WHERE id = ?1", [id])?;
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM connections WHERE id = ?1", [id])?;
+        tx.execute("DELETE FROM column_fetch WHERE connection_id = ?1", [id])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -359,6 +387,53 @@ impl Storage {
 
     pub fn delete_saved_query(&self, id: &str) -> Result<()> {
         self.lock()?.execute("DELETE FROM saved_queries WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    // ---- column fetch overrides (column names only, never values) --------------------
+
+    pub fn list_column_fetch(&self, connection_id: &str, schema: &str, table: &str) -> Result<Vec<ColumnFetch>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT column_name, mode FROM column_fetch WHERE connection_id = ?1 AND schema_name = ?2 AND table_name = ?3 ORDER BY column_name",
+        )?;
+        let rows = stmt.query_map(params![connection_id, schema, table], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (column, mode) = row?;
+            let mode = if mode == "load" { FetchMode::Load } else { FetchMode::Defer };
+            out.push(ColumnFetch { column, mode });
+        }
+        Ok(out)
+    }
+
+    pub fn set_column_fetch(
+        &self,
+        connection_id: &str,
+        schema: &str,
+        table: &str,
+        column: &str,
+        mode: Option<FetchMode>,
+    ) -> Result<()> {
+        let conn = self.lock()?;
+        match mode {
+            None => {
+                conn.execute(
+                    "DELETE FROM column_fetch WHERE connection_id = ?1 AND schema_name = ?2 AND table_name = ?3 AND column_name = ?4",
+                    params![connection_id, schema, table, column],
+                )?;
+            }
+            Some(m) => {
+                let m = if m == FetchMode::Load { "load" } else { "defer" };
+                conn.execute(
+                    "INSERT INTO column_fetch (connection_id, schema_name, table_name, column_name, mode) VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT DO UPDATE SET mode = excluded.mode",
+                    params![connection_id, schema, table, column, m],
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -513,6 +588,22 @@ impl Storage {
 mod tests {
     use super::*;
     use crate::config::{Driver, parse_connection_url};
+
+    #[test]
+    fn column_fetch_overrides_are_per_table_and_removed_with_the_connection() {
+        let s = Storage::open_in_memory().unwrap();
+        s.set_column_fetch("c1", "public", "docs", "body", Some(FetchMode::Load)).unwrap();
+        s.set_column_fetch("c1", "public", "docs", "title", Some(FetchMode::Defer)).unwrap();
+        s.set_column_fetch("c1", "public", "docs", "body", Some(FetchMode::Defer)).unwrap(); // replaces
+        s.set_column_fetch("c1", "public", "other", "body", Some(FetchMode::Load)).unwrap();
+        let got = s.list_column_fetch("c1", "public", "docs").unwrap();
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().any(|f| f.column == "body" && f.mode == FetchMode::Defer));
+        s.set_column_fetch("c1", "public", "docs", "title", None).unwrap();
+        assert_eq!(s.list_column_fetch("c1", "public", "docs").unwrap().len(), 1);
+        s.delete_connection("c1").unwrap();
+        assert!(s.list_column_fetch("c1", "public", "other").unwrap().is_empty());
+    }
 
     #[test]
     fn migrates_and_reopens() {

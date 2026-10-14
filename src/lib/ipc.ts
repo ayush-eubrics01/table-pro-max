@@ -25,6 +25,8 @@ import type {
   ExplainResult,
   FilterNode,
   FilterPreset,
+  ColumnFetch,
+  FetchMode,
   HistoryEntry,
   ObjectKind,
   Row,
@@ -239,6 +241,9 @@ export const api = {
     call<FilterPreset[]>("list_filter_presets", { connectionId, schema, table }),
   saveFilterPreset: (preset: FilterPreset) => call<void>("save_filter_preset", { preset }),
   deleteFilterPreset: (id: string) => call<void>("delete_filter_preset", { id }),
+  listColumnFetch: (connectionId: string, schema: string, table: string) => call<ColumnFetch[]>("list_column_fetch", { connectionId, schema, table }),
+  setColumnFetch: (connectionId: string, schema: string, table: string, column: string, mode: FetchMode | null) =>
+    call<void>("set_column_fetch", { connectionId, schema, table, column, mode }),
   // AI assistance (off unless enabled in Settings)
   aiStatus: () => call<AiStatus>("ai_status"),
   aiSetKey: (provider: AiProvider, key: string | null) => call<void>("ai_set_key", { request: { provider, key } }),
