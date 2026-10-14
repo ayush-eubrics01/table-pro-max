@@ -1948,6 +1948,12 @@ pre,
 .table td.mono {
   font-size: var(--text-xs);
 }
+.table td.row-actions {
+  white-space: nowrap;
+  text-align: right;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
 .table td.nullable {
   color: var(--syn-number);
 }

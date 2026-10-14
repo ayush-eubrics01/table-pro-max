@@ -102,7 +102,7 @@ export function StructureView({ session, structure, onChanged }: Props) {
                   <td className="mono">{c.autoIncrement && !c.default ? "auto" : (c.default ?? "")}</td>
                   <td>{c.comment ?? ""}</td>
                   {editable && (
-                    <td>
+                    <td className="row-actions">
                       <button className="btn btn-ghost btn-icon" aria-label={`Edit ${c.name}`} onClick={() => setColumnDialog({ mode: "edit", name: c.name })}>
                         <Icon name="edit" size={13} />
                       </button>
@@ -128,7 +128,7 @@ export function StructureView({ session, structure, onChanged }: Props) {
                   <td className="mono">{o.column.default ?? ""}</td>
                   <td />
                   {editable && (
-                    <td>
+                    <td className="row-actions">
                       <button className="btn btn-ghost btn-icon" aria-label="Remove new column" onClick={() => setOps((x) => x.filter((y) => y !== o))}>
                         <Icon name="delete" size={13} />
                       </button>
@@ -171,7 +171,7 @@ export function StructureView({ session, structure, onChanged }: Props) {
                     <td>{i.unique ? "yes" : "no"}</td>
                     <td className="mono">{i.definition ?? ""}</td>
                     {editable && (
-                      <td>
+                      <td className="row-actions">
                         {!i.primary && (
                           <button
                             className="btn btn-ghost btn-icon"
