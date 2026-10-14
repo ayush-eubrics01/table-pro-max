@@ -26,7 +26,11 @@ const ws = (readOnly: boolean): Workspace => ({
   health: "ok",
 });
 
-beforeEach(() => mockIPC((cmd) => (cmd === "redis_scan" ? { cursor: "0", keys } : null)));
+let scanKeys = keys;
+beforeEach(() => {
+  scanKeys = keys;
+  mockIPC((cmd) => (cmd === "redis_scan" ? { cursor: "0", keys: scanKeys } : null));
+});
 afterEach(() => {
   cleanup();
   clearMocks();
@@ -45,5 +49,11 @@ describe("RedisView", () => {
     render(<RedisView ws={ws(true)} />);
     await screen.findByText("3 keys");
     expect(screen.queryByRole("button", { name: "New string key" })).not.toBeInTheDocument();
+  });
+
+  it("counts one key in the singular", async () => {
+    scanKeys = [keys[0]!];
+    render(<RedisView ws={ws(false)} />);
+    expect(await screen.findByText("1 key")).toBeInTheDocument();
   });
 });

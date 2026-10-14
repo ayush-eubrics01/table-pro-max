@@ -62,6 +62,9 @@ describe("theme tokens", () => {
     expect(rule).toMatch(/appearance:\s*none/);
     expect(rule).toMatch(/background-image:[^;]*var\(--text-muted\)/);
     expect(rule).toMatch(/padding-right:\s*30px/);
+    expect(rule).toMatch(/-webkit-appearance:\s*none/);
+    // Forced colours drop gradient images: hand the arrow back to the system there.
+    expect(app).toMatch(/@media \(forced-colors: active\) \{\s*\.select \{[^}]*appearance:\s*auto/);
   });
 
   it("app.css uses no color-mix() either", () => {

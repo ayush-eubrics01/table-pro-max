@@ -5,7 +5,7 @@ import { api, toError } from "../../lib/ipc";
 import { confirmAction, notify, notifyError, promptText } from "../../stores/ui";
 import type { Workspace } from "../../stores/workspaces";
 import { prettyJson } from "../../lib/cells";
-import { formatCount } from "../../lib/text";
+import { formatCount, pluralize } from "../../lib/text";
 
 const TYPE_LABEL: Record<string, string> = { string: "STR", hash: "HASH", list: "LIST", set: "SET", zset: "ZSET", stream: "STRM" };
 
@@ -132,7 +132,8 @@ export function RedisView({ ws }: { ws: Workspace }) {
           </div>
           <div className="redis-keys-meta">
             <span>
-              {formatCount(keys.length)} keys{cursor !== "0" ? " · more available" : ""}
+              {pluralize(keys.length, "key")}
+              {cursor !== "0" ? " · more available" : ""}
             </span>
             <span className="grow" />
             <button className="btn btn-ghost btn-icon" aria-label="Scan keys" title="Scan (SCAN MATCH)" onClick={() => void scan(true)}>
@@ -178,7 +179,7 @@ export function RedisView({ ws }: { ws: Workspace }) {
           {view === "key" && selected && (
             <>
               <span className="sep" />
-              <strong className="mono" style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+              <strong className="mono" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
                 {selected}
               </strong>
               {current && current.ttl >= 0 && <span className="meta">expires in {ttlLabel(current.ttl)}</span>}
