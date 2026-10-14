@@ -1622,7 +1622,14 @@ impl Engine {
                 crate::restore::RestoreKind::Restore,
                 Some(format!("Restore of: {}", point.statement)),
             )
-            .await?
+            .await
+            .map_err(|e| {
+                if e.kind == ErrorKind::Conflict {
+                    e.add_context("Nothing was restored: this row changed after the restore point was made.")
+                } else {
+                    e
+                }
+            })?
         };
         if let Some(store) = self.restore_store() {
             store.set_status(std::slice::from_ref(&point.id), crate::restore::RestoreStatus::Restored)?;

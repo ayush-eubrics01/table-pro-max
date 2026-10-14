@@ -174,7 +174,6 @@ function PointDetail({
       return next;
     });
 
-  const restoredRows = review?.rows ? review.rows.length : d.before.length;
   return (
     <section className="restore-detail" aria-label="Restore point">
       <div className="restore-detail-head">
@@ -207,7 +206,7 @@ function PointDetail({
                 {d.before.slice(0, SHOWN_ROWS).map((row, i) => {
                   const after = d.after[i];
                   return (
-                    <tr key={i} className={after ? undefined : "deleted"}>
+                    <tr key={i} className={after || point.kind === "drop_column" ? undefined : "deleted"}>
                       <td>
                         <input type="checkbox" aria-label={`Row ${i + 1}`} checked={selected.has(i)} onChange={() => toggle(i)} />
                       </td>
@@ -261,14 +260,16 @@ function PointDetail({
           sql={review.sql}
           atomic={review.atomic}
           statements={review.statements}
-          summary={`Put back ${pluralize(restoredRows, "row")} in ${point.schema}.${point.table}. Rows changed since then stop the restore.`}
+          summary={`Put back ${review.rows ? `${pluralize(review.rows.length, "chosen row")}` : "the rows"} of ${point.schema}.${point.table}. Rows already back as they were are skipped; a row changed since then stops the restore.`}
+          splitHint="The column or table comes back first, then its rows."
           commitLabel="Restore"
           cancelLabel="Cancel"
           onCommit={async () => {
-            await api.applyRestore(session.sessionId, point.id, review.rows);
+            const counts = await api.applyRestore(session.sessionId, point.id, review.rows);
+            const changed = counts.reduce((a, b) => a + b, 0);
             setReview(null);
             setSelected(new Set());
-            notify(`Restored ${pluralize(restoredRows, "row")} in ${point.table}. Refresh open tabs to see them.`, "success");
+            notify(`Restored ${pluralize(changed, "row")} in ${point.table}. Refresh open tabs to see them.`, "success");
             useRestore.getState().bump();
             load();
             onChanged();

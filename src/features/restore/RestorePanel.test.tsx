@@ -5,6 +5,7 @@ import { RestorePanel } from "./RestorePanel";
 import { Overlays } from "../../components/Overlays";
 import { session } from "../../test/fixtures";
 import { useRestore } from "../../stores/restore";
+import { useUi } from "../../stores/ui";
 import type { RestorePoint, RestorePointSummary } from "../../types/backend";
 
 const summary: RestorePointSummary = {
@@ -42,6 +43,7 @@ let calls: [string, Record<string, unknown>][] = [];
 let points: RestorePointSummary[] = [];
 
 beforeEach(() => {
+  useUi.setState({ toasts: [] });
   calls = [];
   points = [summary];
   mockIPC((cmd, args) => {
@@ -49,7 +51,7 @@ beforeEach(() => {
     if (cmd === "list_restore_points") return points;
     if (cmd === "get_restore_point") return { ...point, ...points.find((p) => p.id === (args as { id: string }).id) };
     if (cmd === "preview_restore") return { sql: "UPDATE \"public\".\"orders\" SET \"status\" = $1 …", statementCount: 1, atomic: true };
-    if (cmd === "apply_restore") return [1];
+    if (cmd === "apply_restore") return [1, 0];
     if (cmd === "delete_restore_point") {
       points = [];
       return null;
@@ -106,6 +108,8 @@ describe("RestorePanel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Restore" }));
     await waitFor(() => expect(calls.some(([c]) => c === "apply_restore")).toBe(true));
     expect(calls.find(([c]) => c === "apply_restore")![1]).toMatchObject({ rows: null });
+    // The message counts the rows that changed (rows already back are skipped).
+    expect(await screen.findByText(/Restored 1 row in orders/)).toBeInTheDocument();
   });
 
   it("deletes a restore point after asking", async () => {
@@ -143,4 +147,27 @@ describe("RestorePanel", () => {
     useRestore.getState().bump();
     expect(await screen.findByRole("button", { name: /orders · Update · 2 rows/ })).toBeInTheDocument();
   });
+
+  it("shows a dropped column's rows as changed, not deleted, and says the restore runs in two steps", async () => {
+    const dropped: RestorePointSummary = { ...summary, kind: "drop_column", statement: "ALTER TABLE orders DROP COLUMN status" };
+    points = [dropped];
+    mockIPC((cmd) => {
+      if (cmd === "list_restore_points") return points;
+      if (cmd === "get_restore_point") return { ...dropped, data: { ...point.data, after: [], columnType: "text" } };
+      if (cmd === "preview_restore") return { sql: "ALTER TABLE …; UPDATE …", statementCount: 3, atomic: false };
+      return null;
+    });
+    render(
+      <>
+        <RestorePanel session={session} onClose={() => {}} />
+        <Overlays />
+      </>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /orders · Drop column · 2 rows/ }));
+    const detail = await screen.findByRole("region", { name: "Restore point" });
+    expect(detail.querySelectorAll("tr.deleted")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Restore all" }));
+    expect(await screen.findByText("The column or table comes back first, then its rows.")).toBeInTheDocument();
+  });
 });
+

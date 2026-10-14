@@ -743,6 +743,7 @@ async fn restore_points(engine: &Arc<Engine>, sid: &str, schema: &str, driver: D
     run(engine, sid, "UPDATE tpm_it_rp SET qty = 42 WHERE id = 1").await;
     let err = engine.apply_restore(sid, &pid, Some(vec![idx("1")]), true).await.unwrap_err();
     assert_eq!(err.kind, ErrorKind::Conflict, "{driver:?}");
+    assert!(err.detail.clone().unwrap_or_default().contains("Nothing was restored"), "{driver:?}: {err:?}");
     let rows =
         run(engine, sid, "SELECT status, qty FROM tpm_it_rp WHERE id = 1").await.statements[0].rows.clone().unwrap();
     assert_eq!((text(&rows[0][0]), text(&rows[0][1])), ("x", "42"), "{driver:?}");
