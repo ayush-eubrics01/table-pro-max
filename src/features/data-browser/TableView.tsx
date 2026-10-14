@@ -38,6 +38,10 @@ interface Props {
   onDirtyChange?: (dirty: boolean) => void;
   /** Opens SQL (e.g. the definition) in a new query tab without running it. */
   onOpenSql?: (sql: string, title: string) => void;
+  /** The filter this tab starts with (a followed reference). */
+  initialFilter?: GroupNode;
+  /** Opens a table in a new tab filtered to one row (following a foreign key). */
+  onOpenTable?: (schema: string, table: string, filter: GroupNode) => void;
 }
 
 type View = "data" | "structure" | "definition";
@@ -45,7 +49,7 @@ type View = "data" | "structure" | "definition";
 /** Keys per fetch_column call: well under the backend's 1,000 and SQLite's expression depth. */
 const FETCH_CHUNK = 200;
 
-export function TableView({ session, schema, table, onReconnect, onDirtyChange, onOpenSql }: Props) {
+export function TableView({ session, schema, table, onReconnect, onDirtyChange, onOpenSql, initialFilter }: Props) {
   const pageSizeSetting = useSettings((s) => s.settings["grid.pageSize"]);
   const checkConflicts = useSettings((s) => s.settings["grid.checkConflicts"]);
   const largeValueChars = useSettings((s) => s.settings["grid.largeValueChars"]);
@@ -60,8 +64,8 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
   const [offset, setOffset] = useState(0);
   const [pageSize, setPageSize] = useState(pageSizeSetting);
   const [sort, setSort] = useState<SortSpec[]>([]);
-  const [filter, setFilter] = useState<GroupNode>(emptyGroup());
-  const [draftFilter, setDraftFilter] = useState<GroupNode>(emptyGroup());
+  const [filter, setFilter] = useState<GroupNode>(() => initialFilter ?? emptyGroup());
+  const [draftFilter, setDraftFilter] = useState<GroupNode>(() => initialFilter ?? emptyGroup());
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [pending, setPending] = useState<Pending>(EMPTY_PENDING);
   const [loading, setLoading] = useState(false);

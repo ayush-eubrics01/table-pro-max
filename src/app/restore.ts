@@ -16,6 +16,8 @@ export interface SavedTab {
   schema?: string;
   name?: string;
   objectKind?: string;
+  /** A followed reference's filter (table tabs). */
+  filter?: unknown;
 }
 
 export interface SavedWorkspace {
@@ -42,7 +44,14 @@ export function snapshot(workspaces: Workspace[], activeId: string | null): Save
       tabs: w.tabs.map((t): SavedTab => {
         if (t.kind === "query") return { kind: "query", title: t.title, sql: t.sql, savedQueryId: t.savedQueryId, dirty: t.dirty };
         if (t.kind === "dashboard") return { kind: "dashboard", title: t.title, dashboardId: t.dashboardId };
-        return { kind: t.kind, title: t.title, schema: t.schema, name: t.name, objectKind: t.objectKind };
+        return {
+          kind: t.kind,
+          title: t.title,
+          schema: t.schema,
+          name: t.name,
+          objectKind: t.objectKind,
+          ...(t.kind === "table" && t.filter ? { filter: t.filter } : {}),
+        };
       }),
     })),
   };

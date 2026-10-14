@@ -6,6 +6,7 @@ import { Sidebar } from "../features/database-explorer/Sidebar";
 import { ObjectTabs } from "./ObjectTabs";
 import { WorkspaceEmpty } from "./WorkspaceEmpty";
 import { TableView } from "../features/data-browser/TableView";
+import type { GroupNode } from "../features/filters/filterModel";
 import { QueryTab } from "../features/sql-editor/QueryTab";
 import { DefinitionView } from "../features/schema-browser/DefinitionView";
 import { DashboardView } from "../features/dashboards/DashboardView";
@@ -16,8 +17,9 @@ import { confirmAction, notifyError } from "../stores/ui";
 import { connectWithPrompt, reconnectWithPrompt } from "../features/connections/connectFlow";
 
 export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean }) {
-  const { closeTab, openQuery, update } = useWorkspaces.getState();
+  const { closeTab, openQuery, openTable, update } = useWorkspaces.getState();
   const openSql = (sql: string, title: string) => openQuery(ws.id, { sql, title });
+  const openReferenced = (schema: string, table: string, filter: GroupNode) => openTable(ws.id, { schema, name: table, kind: "table" }, { filter });
   const [dirtyTables, setDirtyTables] = useState<Record<string, boolean>>({});
   const [sidebarWidth, setSidebarWidth] = useState(264);
 
@@ -126,12 +128,15 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
                 table={t.name}
                 onReconnect={reconnect}
                 onDirtyChange={(d) => setDirtyTables((x) => (x[t.id] === d ? x : { ...x, [t.id]: d }))}
+                initialFilter={t.filter}
+                onOpenTable={openReferenced}
               />
             )}
             {t.kind === "query" && (
               <QueryTab
                 ws={ws}
                 tab={t}
+                onOpenTable={openReferenced}
                 active={visible && ws.activeTabId === t.id}
                 onDirtyChange={(d) => setDirtyTables((x) => (x[t.id] === d ? x : { ...x, [t.id]: d }))}
               />
