@@ -76,7 +76,7 @@ function ResultGrid({
       rowCount={total}
       getRow={getRow}
       onNeedRows={onNeedRows}
-      canEdit={(r, c) => editable && readOnlyReason(st, rows[r], c) === null}
+      canEdit={(r, c) => editable && readOnlyReason(st, rows[r], c, applied) === null}
       onEdit={(r, c, v) => {
         const row = rows[r];
         if (row) onEdit(row, c, v);
@@ -86,7 +86,7 @@ function ResultGrid({
         const id = row && cellId(st, row, c);
         return !!id && id in edits;
       }}
-      cellTitle={(r, c) => (st.editing ? (readOnlyReason(st, rows[r], c) ?? undefined) : undefined)}
+      cellTitle={(r, c) => (st.editing ? (readOnlyReason(st, rows[r], c, applied) ?? undefined) : undefined)}
       onSelectionChange={(sel) => onSelectRow(sel.active ? rows[sel.active.row] : undefined)}
     />
   );
@@ -164,7 +164,7 @@ export function ResultsPanel({
 
   const onEdit = (row: Cell[], col: number, value: string | null) => {
     if (!current) return;
-    setEdits((all) => ({ ...all, [ti]: setEdit(all[ti] ?? {}, current, row, col, value) }));
+    setEdits((all) => ({ ...all, [ti]: setEdit(all[ti] ?? {}, current, row, col, value, applied[ti] ?? {}) }));
   };
 
   const openReview = async () => {
@@ -252,8 +252,8 @@ export function ResultsPanel({
               <RowDetail
                 columns={detailColumns}
                 row={selectedRow?.map((_, c) => displayCell(curEdits, curApplied, current, selectedRow, c))}
-                editable={(c) => editable && readOnlyReason(current, selectedRow, c) === null}
-                readOnlyReason={(c) => (selectedRow ? readOnlyReason(current, selectedRow, c) : null)}
+                editable={(c) => editable && readOnlyReason(current, selectedRow, c, curApplied) === null}
+                readOnlyReason={(c) => (selectedRow ? readOnlyReason(current, selectedRow, c, curApplied) : null)}
                 onEdit={(c, v) => selectedRow && onEdit(selectedRow, c, v)}
                 heading="Selected row"
                 subheading={current.editing?.tables.map((t) => t.table).join(", ") || "Query result"}

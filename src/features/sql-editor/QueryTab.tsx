@@ -511,21 +511,23 @@ export function QueryTab({ ws, tab, active, onDirtyChange }: Props) {
               {error}
             </div>
           )}
-          {explain ? (
+          {explain && (
             <div className="results">
               <PlanTabs onBack={() => setExplain(null)} />
               <ExplainView result={explain} />
             </div>
-          ) : (
+          )}
+          {/* Hidden, not unmounted, while a plan is shown: pending result edits live in it. */}
+          <div style={{ display: explain ? "none" : "contents" }}>
             <ResultsPanel
               result={result}
-              running={!!running}
+              running={!!running || !!fileTask}
               dialect={ws.session.dialect}
               session={session ?? undefined}
               onRunAgain={() => lastRun.current && void run(lastRun.current.mode, false, lastRun.current.target)}
               onDirtyChange={reportDirty}
             />
-          )}
+          </div>
         </div>
         {historyOpen && (
           <HistoryPanel

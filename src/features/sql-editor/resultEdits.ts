@@ -25,8 +25,11 @@ function keyOf(st: StatementResult, row: Cell[], table: number): ColumnValue[] |
   return key;
 }
 
+/** Values committed from this result since it ran, by cell id. */
+export type Applied = Record<string, Param>;
+
 /** Why this cell cannot be edited, or null when it can. */
-export function readOnlyReason(st: StatementResult, row: Cell[] | undefined, col: number): string | null {
+export function readOnlyReason(st: StatementResult, row: Cell[] | undefined, col: number, applied: Applied = {}): string | null {
   const ed = st.editing;
   if (!ed) return "This result cannot be edited";
   const table = ed.columns[col];
@@ -36,6 +39,10 @@ export function readOnlyReason(st: StatementResult, row: Cell[] | undefined, col
   if (!row) return "Row not loaded";
   if (cellParam(row[col] ?? null) === undefined) return "Binary values cannot be edited here";
   if (!keyOf(st, row, table)) return `This row has no ${ed.tables[table]!.table} row`;
+  // The row is keyed by its key as loaded; once a new key is committed, that key no longer finds it.
+  if (ed.tables[table]!.keyColumns.some((k) => (cellId(st, row, k) ?? "") in applied)) {
+    return `Run the query again to edit this ${ed.tables[table]!.table} row: its key changed`;
+  }
   return null;
 }
 
@@ -47,18 +54,19 @@ export function cellId(st: StatementResult, row: Cell[], col: number): string | 
   return JSON.stringify([table, key.map((k) => k.value), st.columns![col]!.origin!.column]);
 }
 
-export function setEdit(edits: ResultEdits, st: StatementResult, row: Cell[], col: number, value: Param): ResultEdits {
+export function setEdit(edits: ResultEdits, st: StatementResult, row: Cell[], col: number, value: Param, applied: Applied = {}): ResultEdits {
   const id = cellId(st, row, col);
-  if (!id || readOnlyReason(st, row, col)) return edits;
+  if (!id || readOnlyReason(st, row, col, applied)) return edits;
   const table = st.editing!.columns[col]!;
-  const original = cellParam(row[col] ?? null);
+  // After a commit the database holds the committed value; that is what the conflict check compares.
+  const original = id in applied ? applied[id]! : cellParam(row[col] ?? null);
   const next = { ...edits };
   if (value === original) delete next[id];
   else next[id] = { table, key: keyOf(st, row, table)!, column: st.columns![col]!.origin!.column, value, original };
   return next;
 }
 
-export function displayCell(edits: ResultEdits, applied: Record<string, Param>, st: StatementResult, row: Cell[], col: number): Cell {
+export function displayCell(edits: ResultEdits, applied: Applied, st: StatementResult, row: Cell[], col: number): Cell {
   const id = cellId(st, row, col);
   if (id && id in edits) return edits[id]!.value;
   if (id && id in applied) return applied[id]!;

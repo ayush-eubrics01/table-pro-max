@@ -70,6 +70,20 @@ describe("result edits", () => {
     expect(displayCell({}, { [id]: "shipped" }, st, r1, 1)).toBe("shipped");
   });
 
+  it("after a commit, the next edit of that cell checks against the committed value", () => {
+    const applied = { [cellId(st, r1, 1)!]: "shipped" };
+    const again = setEdit({}, st, r1, 1, "paid", applied);
+    expect(Object.values(again)[0]).toMatchObject({ value: "paid", original: "shipped" });
+    expect(setEdit({}, st, r1, 1, "shipped", applied)).toEqual({});
+  });
+
+  it("a row whose key was committed is read-only until the query runs again", () => {
+    const applied = { [cellId(st, r1, 2)!]: "8" };
+    expect(readOnlyReason(st, r1, 3, applied)).toBe("Run the query again to edit this customers row: its key changed");
+    expect(readOnlyReason(st, r1, 1, applied)).toBeNull();
+    expect(setEdit({}, st, r1, 3, "z@x", applied)).toEqual({});
+  });
+
   it("an edit back to the original value is dropped", () => {
     const e = setEdit(setEdit({}, st, r1, 1, "shipped"), st, r1, 1, "paid");
     expect(Object.keys(e)).toHaveLength(0);

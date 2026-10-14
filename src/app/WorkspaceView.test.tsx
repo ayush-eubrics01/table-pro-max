@@ -90,6 +90,8 @@ describe("pending query result edits", () => {
     runs = 0;
     mockIPC((cmd) => {
       if (cmd === "connect") return session;
+      if (cmd === "statement_at_cursor") return { sql: "select id, email from users", start: 0, end: 27 };
+      if (cmd === "explain_query") return { format: "sqlite_plan", raw: "", rows: { columns: [], rows: [], truncated: false }, durationMs: 1 };
       if (cmd === "run_query") {
         runs++;
         return structuredClone(result);
@@ -115,6 +117,14 @@ describe("pending query result edits", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByText("Pending row changes will be discarded.")).not.toBeInTheDocument());
     expect(tabsLeft()).toBe(1);
+  });
+
+  it("keeps pending edits while a plan is shown", async () => {
+    await runAndEdit();
+    fireEvent.click(screen.getByRole("button", { name: /^Explain/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Back to results" }));
+    expect(await screen.findByText("1 pending change")).toBeInTheDocument();
+    expect(screen.getByText("new@example.com")).toBeInTheDocument();
   });
 
   it("asks before running again, and keeps the edits when cancelled", async () => {
