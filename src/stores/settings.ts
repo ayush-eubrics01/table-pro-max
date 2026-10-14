@@ -26,6 +26,12 @@ export interface Settings {
   "updates.auto": "ask" | "on" | "off";
   /** Written by the backend after each completed check (ms since the epoch). */
   "updates.lastCheck": number;
+  /** Restore points (copies of changed rows): read by the backend when it removes old ones. */
+  "restore.keepDays": number;
+  /** Over this many rows, a statement asks before running without a restore point. */
+  "restore.maxRows": number;
+  "restore.maxMb": number;
+  "restore.maxTotalMb": number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -48,6 +54,10 @@ export const DEFAULT_SETTINGS: Settings = {
   "ai.baseUrl": "",
   "updates.auto": "ask",
   "updates.lastCheck": 0,
+  "restore.keepDays": 7,
+  "restore.maxRows": 100_000,
+  "restore.maxMb": 50,
+  "restore.maxTotalMb": 1024,
 };
 
 interface SettingsState {

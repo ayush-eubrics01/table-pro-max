@@ -188,6 +188,7 @@ describe("restore points", () => {
     fireEvent.click(screen.getByRole("button", { name: /Run all/ }));
     expect(await screen.findByText("Restore point saved")).toBeInTheDocument();
     expect(useRestore.getState().version).toBeGreaterThan(0);
+    expect(runArgs[0]!.options).toMatchObject({ restoreMaxRows: 100_000, restoreMaxMb: 50 });
     expect(screen.queryByRole("complementary", { name: "Restore points" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open restore points" }));
     expect(await screen.findByRole("complementary", { name: "Restore points" })).toBeInTheDocument();

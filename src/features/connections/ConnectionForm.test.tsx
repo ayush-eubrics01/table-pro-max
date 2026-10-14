@@ -170,4 +170,17 @@ describe("ConnectionForm", () => {
     render(<ConnectionForm appInfo={appInfo(true)} initial={{ ...profile, queryTimeoutSecs: 30 }} onClose={() => undefined} onSaved={() => undefined} />);
     expect(screen.getByText("Safety & timeouts").closest("details")).toHaveAttribute("open");
   });
+
+  it("keeps restore points unless turned off, and saves the choice", async () => {
+    const onSaved = vi.fn();
+    render(<ConnectionForm appInfo={appInfo(true)} initial={{ ...profile, environment: "local" }} onClose={() => undefined} onSaved={onSaved} />);
+    fireEvent.click(screen.getByText("Safety & timeouts"));
+    const keep = screen.getByRole("checkbox", { name: /Keep restore points/ });
+    expect(keep).toBeChecked();
+    fireEvent.click(keep);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(saved!.profile.restorePoints).toBe(false);
+  });
 });
+

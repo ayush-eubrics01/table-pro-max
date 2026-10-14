@@ -472,7 +472,10 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
 
       <details
         className="form-collapse"
-        open={!!initial && (["safetyMode", "connectTimeoutSecs", "queryTimeoutSecs", "keepaliveSecs"] as const).some((k) => initial[k] !== newProfile(initial.driver)[k])}
+        open={
+          !!initial &&
+          ((["safetyMode", "connectTimeoutSecs", "queryTimeoutSecs", "keepaliveSecs"] as const).some((k) => initial[k] !== newProfile(initial.driver)[k]) || initial.restorePoints === false)
+        }
       >
         <summary>Safety &amp; timeouts</summary>
         <div className="field-row">
@@ -503,6 +506,16 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
             </label>
           )}
         </div>
+        {p.driver !== "redis" && (
+          <label className="toggle-card">
+            <Icon name="history" size={16} />
+            <span>
+              <strong>Keep restore points</strong>
+              <span className="hint">Before a statement or a grid commit changes rows, a copy of them is kept on this computer for a few days, so the change can be put back.</span>
+            </span>
+            <input type="checkbox" className="switch" checked={p.restorePoints !== false} onChange={(e) => set({ restorePoints: e.target.checked })} />
+          </label>
+        )}
       </details>
       {p.environment === "production" && p.safetyMode === "normal" && (
         <div className="notice notice-warning">This production connection runs statements without confirmation. Consider confirming destructive statements or read-only mode.</div>

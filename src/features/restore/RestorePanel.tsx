@@ -5,6 +5,7 @@ import { api } from "../../lib/ipc";
 import { formatBytes } from "../../lib/cells";
 import { pluralize } from "../../lib/text";
 import { useRestore } from "../../stores/restore";
+import { useSettings } from "../../stores/settings";
 import { confirmAction, notify, notifyError } from "../../stores/ui";
 import type { RestoreKind, RestorePoint, RestorePointSummary, SessionInfo } from "../../types/backend";
 
@@ -31,6 +32,7 @@ interface Review {
 /** Restore points of a connection: what each change replaced, and putting it back. */
 export function RestorePanel({ session, onClose }: { session: SessionInfo; onClose: () => void }) {
   const version = useRestore((s) => s.version);
+  const keepDays = useSettings((s) => s.settings["restore.keepDays"]);
   const [points, setPoints] = useState<RestorePointSummary[] | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -75,7 +77,7 @@ export function RestorePanel({ session, onClose }: { session: SessionInfo; onClo
       ) : points.length === 0 ? (
         <p className="detail-empty">
           No restore points yet. When a statement or a grid commit changes or removes rows on this connection, a copy of
-          those rows is kept here so you can put them back.
+          those rows is kept here for {pluralize(keepDays, "day")} so you can put them back.
         </p>
       ) : (
         <ul className="restore-list">
