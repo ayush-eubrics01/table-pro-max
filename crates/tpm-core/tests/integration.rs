@@ -559,9 +559,27 @@ async fn exercise(t: Target) {
     assert_eq!(err.kind, ErrorKind::Timeout);
     engine.close_session(&dash.session_id).await;
 
+    origins(&engine, &sid, driver).await;
+
     // --- cleanup ---
     run(&engine, &sid, "DROP TABLE tpm_it_items; DROP TABLE tpm_it_owners").await;
     engine.close_all().await;
+}
+
+/// Each engine reports where result columns come from (DuckDB cannot).
+async fn origins(engine: &Engine, sid: &str, driver: Driver) {
+    let r = run(engine, sid, "SELECT i.id, i.name AS label, o.name, i.price * 2 AS doubled, count(*) OVER () AS n FROM tpm_it_items i JOIN tpm_it_owners o ON o.id = i.owner_id").await;
+    let cols = r.statements[0].columns.clone().expect("columns");
+    let tables: Vec<Option<(String, String)>> = cols.iter().map(|c| c.origin.as_ref().map(|o| (o.table.clone(), o.column.clone()))).collect();
+    if driver == Driver::Duckdb {
+        assert!(tables.iter().all(Option::is_none), "duckdb reports no origins: {tables:?}");
+        return;
+    }
+    assert_eq!(tables[0], Some(("tpm_it_items".into(), "id".into())), "{driver:?}");
+    assert_eq!(tables[1], Some(("tpm_it_items".into(), "name".into())), "aliased column keeps its origin ({driver:?})");
+    assert_eq!(tables[2], Some(("tpm_it_owners".into(), "name".into())), "{driver:?}");
+    assert_eq!(tables[3], None, "expression has no origin ({driver:?})");
+    assert_eq!(tables[4], None, "window aggregate has no origin ({driver:?})");
 }
 
 /// Export a table to every format, then import the CSV back into a copy, all through the engine.

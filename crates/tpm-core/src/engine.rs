@@ -580,8 +580,29 @@ impl Engine {
     ) -> Result<Vec<StatementOutcome>> {
         let canceller = lock(&handle.canceller).clone();
         let sql_owned = sql.to_string();
+        // Origins let result cells be edited; read-only sessions never edit, so skip the lookup.
+        let want_origins = !handle.profile.read_only();
         let fut = self.with_session(&handle.info.session_id, move |s| {
-            Box::pin(async move { s.execute(&sql_owned, max_rows).await })
+            Box::pin(async move {
+                let mut outcomes = s.execute(&sql_owned, max_rows).await?;
+                if want_origins {
+                    for o in outcomes.iter_mut() {
+                        if let StatementOutcome::Rows { rows } = o
+                            && rows.columns.iter().all(|c| c.origin.is_none())
+                        {
+                            // Origins are a bonus: a failed describe leaves the result read-only.
+                            if let Ok(found) = s.describe_origins(&sql_owned).await
+                                && found.len() == rows.columns.len()
+                            {
+                                for (c, o) in rows.columns.iter_mut().zip(found) {
+                                    c.origin = o;
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(outcomes)
+            })
         });
         tokio::pin!(fut);
         let map_cancel = |e: AppError| {
