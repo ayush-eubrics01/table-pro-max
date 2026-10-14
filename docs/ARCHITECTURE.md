@@ -73,6 +73,18 @@ Values cross IPC as text (`null | string | {"$bytes": hex, size}`), using the se
 text representation. That avoids precision loss in JavaScript and supports every type,
 including extension types.
 
+## Large values on demand
+
+`browse` with `lazy: true` (opened tables) leaves deferred columns out of the select list
+(`large_values.rs` decides by type and per-column overrides; `build_select_projected`) and
+returns `Cell::NotLoaded` placeholders in their place. The grid fetches one value with
+`fetch_value`, or a page of one column with `fetch_column`, by primary key, and puts it into
+the page, which is the cache. Query results keep full rows in the result store; text longer
+than `grid.largeValueChars` goes to the UI as `Cell::Partial` (preview and length) and opens
+through `result_value`. Export never sees placeholders: table export runs its own full queries,
+result export reads the store, and `transfer.rs` refuses placeholder rows. The value editor
+(`ValueEditor.tsx`) loads the full value first, so an edit's `original` is always the full value.
+
 ## Editing query results
 
 After a row-returning statement, `engine.rs` (`editing_for`) asks the adapter for each result

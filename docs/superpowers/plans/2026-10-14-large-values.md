@@ -1298,7 +1298,7 @@ describe("placeholder cells", () => {
 
   it("copies full values, fetching placeholders first", async () => {
     const write = vi.fn().mockResolvedValue(undefined);
-    Object.assign(navigator, { clipboard: { writeText: write } });
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: write }, configurable: true });
     const data = [
       ["1", { $notLoaded: true }, null],
       ["2", "short", null],
@@ -2159,7 +2159,7 @@ describe("large values in opened tables", () => {
 
   it("copies full values for a mixed selection", async () => {
     const write = vi.fn().mockResolvedValue(undefined);
-    Object.assign(navigator, { clipboard: { writeText: write } });
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: write }, configurable: true });
     page = [["2", "two", NL, null]];
     view();
     await screen.findAllByText("Not loaded");
