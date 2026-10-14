@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
+import { useRestore } from "../../stores/restore";
 import type { Cell, ColumnInfo, Dialect, ScriptResult, SessionInfo, StatementResult, TableStructure } from "../../types/backend";
 import { api } from "../../lib/ipc";
 import { formatCount, formatDuration, pluralize } from "../../lib/text";
@@ -463,6 +464,19 @@ export function ResultsPanel({
                       : `${pluralize(s.rowsAffected ?? 0, "row")} affected`}
                 </div>
                 {s.error?.detail && <code>{s.error.detail}</code>}
+                {s.restore?.pointId && (
+                  <div className="restore-note">
+                    <Icon name="history" size={14} /> Restore point saved
+                    <button className="btn-link" aria-label="Open restore points" onClick={() => useRestore.getState().setOpen(true)}>
+                      Open
+                    </button>
+                  </div>
+                )}
+                {s.restore?.reason && (
+                  <div className="restore-note warn">
+                    <Icon name="warning" size={14} /> {`No restore point: ${s.restore.reason}`}
+                  </div>
+                )}
                 <code>{s.sql.length > 400 ? `${s.sql.slice(0, 400)}…` : s.sql}</code>
               </div>
               <span className="hint">{formatDuration(s.durationMs)}</span>

@@ -5,6 +5,7 @@ import { Overlays } from "../../components/Overlays";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { session } from "../../test/fixtures";
 import { ResultsPanel } from "./ResultsPanel";
+import { useRestore } from "../../stores/restore";
 import type { ChangeSet, ScriptResult, StatementResult } from "../../types/backend";
 
 afterEach(cleanup);
@@ -22,6 +23,17 @@ describe("ResultsPanel", () => {
     render(<ResultsPanel result={null} running={false} dialect="postgres" />);
     const hint = screen.getByText(/to run the statement at the cursor/);
     expect(hint).toHaveTextContent(navigator.userAgent.includes("Mac") ? "⌘" : "Ctrl");
+  });
+
+  it("says in Messages whether each change kept a restore point", () => {
+    const saved: StatementResult = { index: 0, sql: "update t set a = 1 where id = 2", start: 0, end: 10, durationMs: 1, truncated: false, rowsAffected: 1, restore: { pointId: "p1" } };
+    const skipped: StatementResult = { ...saved, index: 1, sql: "update t set a = 1 from u", restore: { reason: "joins other tables" } };
+    useRestore.setState({ open: false });
+    render(<ResultsPanel result={{ taskId: "t", statements: [saved, skipped], cancelled: false, durationMs: 2 }} running={false} dialect="postgres" />);
+    expect(screen.getByText("Restore point saved")).toBeInTheDocument();
+    expect(screen.getByText("No restore point: joins other tables")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open restore points" }));
+    expect(useRestore.getState().open).toBe(true);
   });
 
   it("opens Messages, marked as an error, after a failing run", () => {

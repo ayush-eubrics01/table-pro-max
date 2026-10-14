@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../components/Icon";
 import { useWorkspaces, type Tab, type Workspace } from "../stores/workspaces";
+import { useRestore } from "../stores/restore";
+import { RestorePanel } from "../features/restore/RestorePanel";
 import { usePendingEdits } from "../stores/pendingEdits";
 import { Sidebar } from "../features/database-explorer/Sidebar";
 import { ObjectTabs } from "./ObjectTabs";
@@ -93,6 +95,7 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
   };
 
   const s = ws.session;
+  const restoreOpen = useRestore((r) => r.open) && keepsRestorePoints(ws);
   if (ws.kind === "redis") {
     return (
       <div
@@ -106,7 +109,7 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
   }
   return (
     <div
-      className="workspace"
+      className={restoreOpen && visible ? "workspace with-panel" : "workspace"}
       data-env={s.environment}
       hidden={!visible}
       style={{ ["--env-color" as string]: envColorVar(s.environment), ["--sidebar-width" as string]: `${sidebarWidth}px`, display: visible ? undefined : "none" }}
@@ -146,7 +149,36 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
           </div>
         ))}
       </div>
+      {restoreOpen && visible && <RestorePanel session={s} onClose={() => useRestore.getState().setOpen(false)} />}
     </div>
+  );
+}
+
+/** Whether restore points are kept for this workspace's connection. */
+function keepsRestorePoints(ws: Workspace): boolean {
+  return ws.kind !== "redis" && !ws.session.readOnly && ws.profile.restorePoints !== false;
+}
+
+/** "Restore points · N" in the status bar; opens the panel. */
+function RestoreCount({ ws }: { ws: Workspace }) {
+  const version = useRestore((r) => r.version);
+  const [count, setCount] = useState<number | null>(null);
+  const connectionId = ws.profile.id;
+  useEffect(() => {
+    let live = true;
+    api
+      .listRestorePoints(connectionId)
+      .then((p) => live && setCount(p.length))
+      .catch(() => live && setCount(null));
+    return () => {
+      live = false;
+    };
+  }, [connectionId, version]);
+  if (count === null) return null;
+  return (
+    <button className="btn btn-ghost statusbar-btn" title="Copies of changed rows, kept on this computer" onClick={() => useRestore.getState().setOpen(true)}>
+      <Icon name="history" size={12} /> {`Restore points · ${count}`}
+    </button>
   );
 }
 
@@ -198,6 +230,7 @@ export function StatusBar({ ws, version }: { ws: Workspace | undefined; version?
       {/* A read-only session already says so; don't repeat it as the safety mode. */}
       {!(s.readOnly && s.safetyMode === "read_only") && <span title="Query safety mode">{safetyLabel(s.safetyMode)}</span>}
       <span className="mono">{ws.schema}</span>
+      {keepsRestorePoints(ws) && <RestoreCount ws={ws} />}
       {version && <span className="version">v{version}</span>}
     </footer>
   );
