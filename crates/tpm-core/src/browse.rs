@@ -262,6 +262,7 @@ pub(crate) mod tests {
             sort: vec![],
             limit: 100,
             offset: 200,
+            ..Default::default()
         };
         let q = build_select(Dialect::Postgres, &users(), &req).unwrap();
         assert_eq!(
@@ -281,6 +282,7 @@ pub(crate) mod tests {
             sort: vec![SortSpec { column: "email".into(), descending: true }],
             limit: 50,
             offset: 0,
+            ..Default::default()
         };
         let q = build_select(Dialect::Mysql, &users(), &req).unwrap();
         assert!(q.sql.ends_with("ORDER BY t.`email` DESC LIMIT 50 OFFSET 0"), "{}", q.sql);

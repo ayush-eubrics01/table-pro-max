@@ -140,7 +140,15 @@ async fn main() {
         let exported = engine
             .export_table(
                 &sid,
-                &BrowseRequest { schema, table: "tpm_bench".into(), filter: None, sort: vec![], limit: 1, offset: 0 },
+                &BrowseRequest {
+                    schema,
+                    table: "tpm_bench".into(),
+                    filter: None,
+                    sort: vec![],
+                    limit: 1,
+                    offset: 0,
+                    ..Default::default()
+                },
                 sink,
                 None,
                 Arc::new(Default::default()),
