@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::changes::{ChangeSet, ColumnEdit, ColumnValue, EditValue, RowChange};
+use crate::config::Driver;
 use crate::dialect::Dialect;
 use crate::error::{AppError, Result};
 use crate::model::Param;
@@ -43,6 +44,9 @@ pub struct RestoreData {
     pub ddl: Option<String>,
     /// DROP COLUMN: the dropped column's type.
     pub column_type: Option<String>,
+    /// Columns the database computes: kept for display, never written back.
+    #[serde(default)]
+    pub generated: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,8 +92,11 @@ pub trait RestoreStore: Send + Sync {
 
 #[derive(Debug)]
 pub struct RestoreActions {
+    /// Run first, one statement each (the table or column comes back).
     pub ddl: Vec<String>,
     pub sets: Vec<ChangeSet>,
+    /// Run after the rows are back (sequences moved past the restored keys).
+    pub after: Vec<String>,
 }
 
 fn value_at(d: &RestoreData, row: &[Param], column: &str) -> Param {
@@ -106,6 +113,7 @@ fn reinsert(d: &RestoreData, row: &[Param]) -> RowChange {
             .columns
             .iter()
             .enumerate()
+            .filter(|(_, c)| !d.generated.contains(c))
             .map(|(i, c)| ColumnEdit {
                 column: c.clone(),
                 value: EditValue::Value { value: row.get(i).cloned().flatten() },
@@ -120,10 +128,11 @@ fn reinsert(d: &RestoreData, row: &[Param]) -> RowChange {
 /// column) is there again, in which case no DDL is generated.
 pub fn build_restore(
     point: &RestorePoint,
-    dialect: Dialect,
+    driver: Driver,
     rows: Option<&[usize]>,
     table_exists: bool,
 ) -> Result<RestoreActions> {
+    let dialect = driver.dialect();
     let d = &point.data;
     let chosen: Vec<usize> = match rows {
         Some(r) => r.iter().copied().filter(|i| *i < d.before.len()).collect(),
@@ -135,6 +144,7 @@ pub fn build_restore(
         return Err(AppError::invalid_config("Choose at least one row to restore"));
     }
     let mut ddl = Vec::new();
+    let mut after = Vec::new();
     let mut changes = Vec::new();
     match point.kind {
         RestoreKind::Update | RestoreKind::GridEdit | RestoreKind::Restore => {
@@ -146,7 +156,11 @@ pub fn build_restore(
                             .columns
                             .iter()
                             .enumerate()
-                            .filter(|(j, c)| !d.key_columns.contains(c) && before.get(*j) != after.get(*j))
+                            .filter(|(j, c)| {
+                                !d.key_columns.contains(c)
+                                    && !d.generated.contains(c)
+                                    && before.get(*j) != after.get(*j)
+                            })
                             .map(|(j, c)| ColumnEdit {
                                 column: c.clone(),
                                 value: EditValue::Value { value: before.get(j).cloned().flatten() },
@@ -168,9 +182,12 @@ pub fn build_restore(
         }
         RestoreKind::DropTable => {
             if !table_exists {
-                ddl.push(
-                    d.ddl.clone().ok_or_else(|| AppError::internal("This restore point has no table definition"))?,
-                );
+                let def =
+                    d.ddl.clone().ok_or_else(|| AppError::internal("This restore point has no table definition"))?;
+                let (before, statements, then) = table_ddl(driver, &point.schema, &point.table, &def)?;
+                ddl.extend(before);
+                ddl.extend(statements);
+                after.extend(then);
             }
             changes.extend(chosen.iter().map(|i| reinsert(d, &d.before[*i])));
         }
@@ -204,12 +221,89 @@ pub fn build_restore(
     } else {
         vec![ChangeSet { schema: point.schema.clone(), table: point.table.clone(), changes, check_conflicts: true }]
     };
-    Ok(RestoreActions { ddl, sets })
+    Ok(RestoreActions { ddl, sets, after })
+}
+
+/// A saved table definition as separate statements, the table name put in `schema` when the
+/// definition leaves it out (MySQL `SHOW CREATE TABLE`, DuckDB), plus, on PostgreSQL, the
+/// sequences of `serial` columns, which DROP TABLE dropped with the table: created before it,
+/// and moved past the restored keys after the rows are back.
+type TableDdl = (Vec<String>, Vec<String>, Vec<String>);
+
+fn table_ddl(driver: Driver, schema: &str, table: &str, def: &str) -> Result<TableDdl> {
+    let dialect = driver.dialect();
+    let mut statements: Vec<String> =
+        crate::split::split_statements(def, dialect).into_iter().map(|s| s.sql).filter(|s| !s.is_empty()).collect();
+    if let Some(first) = statements.first_mut() {
+        *first = qualify_create_table(first, dialect, schema)?;
+    }
+    let (mut before, mut after) = (Vec::new(), Vec::new());
+    if driver == Driver::Postgres
+        && let Some(create) = statements.first()
+    {
+        let qualified = dialect.qualified(Some(schema), table)?;
+        for line in create.lines() {
+            let Some(at) = line.find("nextval('") else { continue };
+            let rest = &line[at + "nextval('".len()..];
+            let Some(end) = rest.find("'::regclass") else { continue };
+            let seq = &rest[..end];
+            // The column is the line's leading (quoted) identifier.
+            let Some((col, _)) = line.trim_start().strip_prefix('"').and_then(|c| c.split_once('"')) else {
+                continue;
+            };
+            let col = dialect.quote_ident(col)?;
+            before.push(format!("CREATE SEQUENCE IF NOT EXISTS {seq}"));
+            after.push(format!("ALTER SEQUENCE {seq} OWNED BY {qualified}.{col}"));
+            after.push(format!("SELECT setval('{seq}', COALESCE((SELECT max({col}) FROM {qualified}), 0) + 1, false)"));
+        }
+    }
+    Ok((before, statements, after))
+}
+
+/// `CREATE TABLE name …` → `CREATE TABLE schema.name …` when the name is not qualified.
+fn qualify_create_table(sql: &str, dialect: Dialect, schema: &str) -> Result<String> {
+    let upper = sql.to_ascii_uppercase();
+    let Some(mut at) = upper.find("TABLE") else { return Ok(sql.to_string()) };
+    let skip_ws = |i: usize| i + sql[i..].len() - sql[i..].trim_start().len();
+    at = skip_ws(at + "TABLE".len());
+    if upper[at..].starts_with("IF NOT EXISTS") {
+        at = skip_ws(at + "IF NOT EXISTS".len());
+    }
+    // The name: a quoted identifier, or a bare word.
+    let bytes = sql.as_bytes();
+    let mut end = at;
+    match bytes.get(at) {
+        Some(&q @ (b'"' | b'`')) => {
+            end += 1;
+            while end < bytes.len() {
+                if bytes[end] == q {
+                    if bytes.get(end + 1) == Some(&q) {
+                        end += 2;
+                        continue;
+                    }
+                    end += 1;
+                    break;
+                }
+                end += 1;
+            }
+        }
+        _ => {
+            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_' || bytes[end] >= 0x80)
+            {
+                end += 1;
+            }
+        }
+    }
+    if end == at || bytes.get(end) == Some(&b'.') {
+        return Ok(sql.to_string());
+    }
+    Ok(format!("{}{}.{}", &sql[..at], dialect.quote_ident(schema)?, &sql[at..]))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Driver;
 
     fn s(v: &str) -> Param {
         Some(v.to_string())
@@ -234,6 +328,7 @@ mod tests {
                 after,
                 ddl: None,
                 column_type: None,
+                generated: vec![],
             },
             row_count: 0,
             bytes: 0,
@@ -247,7 +342,7 @@ mod tests {
             vec![vec![s("1"), s("paid"), s("n")], vec![s("2"), s("new"), None]],
             vec![Some(vec![s("1"), s("x"), s("n")]), Some(vec![s("2"), s("x"), None])],
         );
-        let a = build_restore(&p, Dialect::Postgres, None, true).unwrap();
+        let a = build_restore(&p, Driver::Postgres, None, true).unwrap();
         assert!(a.ddl.is_empty());
         let RowChange::Update { key, edits } = &a.sets[0].changes[0] else { panic!() };
         assert_eq!(key[0].value, s("1"));
@@ -256,22 +351,22 @@ mod tests {
         assert!(matches!(&edits[0].value, EditValue::Value { value } if *value == s("paid")));
         assert_eq!(edits[0].original, Some(s("x")));
         assert!(a.sets[0].check_conflicts);
-        let only_second = build_restore(&p, Dialect::Postgres, Some(&[1]), true).unwrap();
+        let only_second = build_restore(&p, Driver::Postgres, Some(&[1]), true).unwrap();
         assert_eq!(only_second.sets[0].changes.len(), 1);
         let RowChange::Update { key, .. } = &only_second.sets[0].changes[0] else { panic!() };
         assert_eq!(key[0].value, s("2"));
-        assert!(build_restore(&p, Dialect::Postgres, Some(&[]), true).is_err(), "no rows chosen");
+        assert!(build_restore(&p, Driver::Postgres, Some(&[]), true).is_err(), "no rows chosen");
     }
 
     #[test]
     fn deletes_and_truncates_reinsert_every_column() {
         let p = point(RestoreKind::Delete, vec![vec![s("1"), s("paid"), None]], vec![]);
-        let a = build_restore(&p, Dialect::Postgres, None, true).unwrap();
+        let a = build_restore(&p, Driver::Postgres, None, true).unwrap();
         let RowChange::Insert { values } = &a.sets[0].changes[0] else { panic!() };
         assert_eq!(values.len(), 3);
         assert!(matches!(&values[2].value, EditValue::Value { value: None }));
         let t = point(RestoreKind::Truncate, vec![vec![s("1"), s("a"), None], vec![s("2"), s("b"), None]], vec![]);
-        assert_eq!(build_restore(&t, Dialect::Postgres, None, true).unwrap().sets[0].changes.len(), 2);
+        assert_eq!(build_restore(&t, Driver::Postgres, None, true).unwrap().sets[0].changes.len(), 2);
     }
 
     #[test]
@@ -281,7 +376,7 @@ mod tests {
             vec![vec![s("1"), s("a"), None], vec![s("2"), s("b"), None]],
             vec![Some(vec![s("1"), s("z"), None]), None],
         );
-        let a = build_restore(&p, Dialect::Postgres, None, true).unwrap();
+        let a = build_restore(&p, Driver::Postgres, None, true).unwrap();
         assert!(matches!(a.sets[0].changes[0], RowChange::Update { .. }));
         assert!(matches!(a.sets[0].changes[1], RowChange::Insert { .. }));
     }
@@ -289,19 +384,76 @@ mod tests {
     #[test]
     fn dropped_tables_and_columns_come_back_with_ddl_first() {
         let mut t = point(RestoreKind::DropTable, vec![vec![s("1"), s("a"), None]], vec![]);
-        t.data.ddl = Some("CREATE TABLE orders (id integer PRIMARY KEY, status text, note text)".into());
-        let a = build_restore(&t, Dialect::Postgres, None, false).unwrap();
-        assert_eq!(a.ddl, vec!["CREATE TABLE orders (id integer PRIMARY KEY, status text, note text)".to_string()]);
-        assert!(build_restore(&t, Dialect::Postgres, None, true).unwrap().ddl.is_empty(), "the table exists again");
+        t.data.ddl =
+            Some("CREATE TABLE \"public\".\"orders\" (id integer PRIMARY KEY, status text, note text);".into());
+        let a = build_restore(&t, Driver::Postgres, None, false).unwrap();
+        assert_eq!(
+            a.ddl,
+            vec!["CREATE TABLE \"public\".\"orders\" (id integer PRIMARY KEY, status text, note text)".to_string()]
+        );
+        assert!(build_restore(&t, Driver::Postgres, None, true).unwrap().ddl.is_empty(), "the table exists again");
         let mut c = point(RestoreKind::DropColumn, vec![vec![s("1"), s("gone")]], vec![]);
         c.data.columns = vec!["id".into(), "status".into()];
         c.data.column_type = Some("text".into());
-        let a = build_restore(&c, Dialect::Postgres, None, false).unwrap();
+        let a = build_restore(&c, Driver::Postgres, None, false).unwrap();
         assert_eq!(a.ddl, vec!["ALTER TABLE \"public\".\"orders\" ADD COLUMN \"status\" text".to_string()]);
         let RowChange::Update { key, edits } = &a.sets[0].changes[0] else { panic!() };
         assert_eq!(
             (key[0].value.clone(), edits[0].column.as_str(), edits[0].original.clone()),
             (s("1"), "status", None)
         );
+    }
+
+    #[test]
+    fn a_dropped_table_comes_back_statement_by_statement_with_its_sequences() {
+        let mut t = point(RestoreKind::DropTable, vec![vec![s("1"), s("a"), None]], vec![]);
+        t.data.ddl = Some(
+            "CREATE TABLE \"public\".\"orders\" (\n  \"id\" integer DEFAULT nextval('orders_id_seq'::regclass) NOT NULL,\n  \"status\" text,\n  \"note\" text\n);\nCREATE INDEX orders_status ON public.orders USING btree (status);\nCOMMENT ON COLUMN \"public\".\"orders\".\"note\" IS 'n; m';"
+                .into(),
+        );
+        let a = build_restore(&t, Driver::Postgres, None, false).unwrap();
+        assert_eq!(a.ddl.len(), 4, "{:?}", a.ddl);
+        assert_eq!(a.ddl[0], "CREATE SEQUENCE IF NOT EXISTS orders_id_seq");
+        assert!(a.ddl[1].starts_with("CREATE TABLE \"public\".\"orders\""));
+        assert!(a.ddl[2].starts_with("CREATE INDEX orders_status"));
+        assert_eq!(a.ddl[3], "COMMENT ON COLUMN \"public\".\"orders\".\"note\" IS 'n; m'");
+        assert_eq!(
+            a.after,
+            vec![
+                "ALTER SEQUENCE orders_id_seq OWNED BY \"public\".\"orders\".\"id\"".to_string(),
+                "SELECT setval('orders_id_seq', COALESCE((SELECT max(\"id\") FROM \"public\".\"orders\"), 0) + 1, false)".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn unqualified_table_definitions_are_put_in_the_point_schema() {
+        let mut t = point(RestoreKind::DropTable, vec![vec![s("1"), s("a"), None]], vec![]);
+        t.schema = "shop".into();
+        t.data.ddl =
+            Some("CREATE TABLE `orders` (\n  `id` int NOT NULL,\n  PRIMARY KEY (`id`)\n) ENGINE=InnoDB".into());
+        let a = build_restore(&t, Driver::Mysql, None, false).unwrap();
+        assert!(a.ddl[0].starts_with("CREATE TABLE `shop`.`orders` ("), "{}", a.ddl[0]);
+        t.schema = "main".into();
+        t.data.ddl = Some("CREATE TABLE orders(id INTEGER PRIMARY KEY, status VARCHAR);".into());
+        let a = build_restore(&t, Driver::Duckdb, None, false).unwrap();
+        assert_eq!(a.ddl[0], "CREATE TABLE \"main\".orders(id INTEGER PRIMARY KEY, status VARCHAR)");
+        assert!(a.after.is_empty());
+    }
+
+    #[test]
+    fn generated_columns_are_left_to_the_database() {
+        let mut p =
+            point(RestoreKind::Update, vec![vec![s("1"), s("2"), s("4")]], vec![Some(vec![s("1"), s("5"), s("10")])]);
+        p.data.columns = vec!["id".into(), "qty".into(), "total".into()];
+        p.data.generated = vec!["total".into()];
+        let a = build_restore(&p, Driver::Postgres, None, true).unwrap();
+        let RowChange::Update { edits, .. } = &a.sets[0].changes[0] else { panic!() };
+        assert_eq!(edits.iter().map(|e| e.column.as_str()).collect::<Vec<_>>(), vec!["qty"]);
+        p.kind = RestoreKind::Delete;
+        p.data.after = vec![];
+        let a = build_restore(&p, Driver::Postgres, None, true).unwrap();
+        let RowChange::Insert { values } = &a.sets[0].changes[0] else { panic!() };
+        assert_eq!(values.iter().map(|e| e.column.as_str()).collect::<Vec<_>>(), vec!["id", "qty"]);
     }
 }

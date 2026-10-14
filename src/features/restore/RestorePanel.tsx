@@ -135,11 +135,15 @@ function PointDetail({
 
   if (!point) return <p className="detail-empty">Loading…</p>;
   const d = point.data;
+  // Without a key, rows can't be told apart: they come back all at once, and only once.
+  const noKey = d.keyColumns.length === 0;
   const blocked = session.readOnly
     ? "This connection is read-only"
     : point.status === "pending"
       ? "Its transaction is still open: commit it first"
-      : null;
+      : noKey && point.status === "restored"
+        ? "Already restored. The table has no primary key, so restoring again would add the rows twice"
+        : null;
 
   const startReview = async (rows: number[] | null) => {
     try {
@@ -208,7 +212,7 @@ function PointDetail({
                   return (
                     <tr key={i} className={after || point.kind === "drop_column" ? undefined : "deleted"}>
                       <td>
-                        <input type="checkbox" aria-label={`Row ${i + 1}`} checked={selected.has(i)} onChange={() => toggle(i)} />
+                        {!noKey && <input type="checkbox" aria-label={`Row ${i + 1}`} checked={selected.has(i)} onChange={() => toggle(i)} />}
                       </td>
                       {row.map((v, j) => {
                         const now = after?.[j];
@@ -242,8 +246,8 @@ function PointDetail({
         </button>
         <button
           className="btn"
-          disabled={!!blocked || selected.size === 0}
-          title={blocked ?? undefined}
+          disabled={!!blocked || noKey || selected.size === 0}
+          title={blocked ?? (noKey ? "The table has no primary key: restore all rows at once" : undefined)}
           onClick={() => void startReview([...selected].sort((a, b) => a - b))}
         >
           Restore selected
@@ -260,7 +264,7 @@ function PointDetail({
           sql={review.sql}
           atomic={review.atomic}
           statements={review.statements}
-          summary={`Put back ${review.rows ? `${pluralize(review.rows.length, "chosen row")}` : "the rows"} of ${point.schema}.${point.table}. Rows already back as they were are skipped; a row changed since then stops the restore.`}
+          summary={`Put back ${review.rows ? `${pluralize(review.rows.length, "chosen row")}` : "the rows"} of ${point.schema}.${point.table}. ${noKey ? "" : "Rows already back as they were are skipped; "}A row changed since then stops the restore.`}
           splitHint="The column or table comes back first, then its rows."
           commitLabel="Restore"
           cancelLabel="Cancel"

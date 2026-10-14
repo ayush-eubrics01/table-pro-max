@@ -342,6 +342,8 @@ impl Session for DuckSession {
                     data_type: r.str(1),
                     default,
                     comment: r.opt(4),
+                    // duckdb_columns() does not say which columns are generated.
+                    generated: false,
                     name,
                 }
             })

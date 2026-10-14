@@ -45,6 +45,7 @@ pub fn run() {
             }
 
             // Restore points past their keep period or the size limit (settings) go at startup.
+            let _ = storage.discard_pending_restore_points();
             if let Ok(n) = storage.purge_restore_points()
                 && n > 0
             {

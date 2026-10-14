@@ -169,5 +169,29 @@ describe("RestorePanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Restore all" }));
     expect(await screen.findByText("The column or table comes back first, then its rows.")).toBeInTheDocument();
   });
+
+  it("restores a table without a primary key only all at once, and only once", async () => {
+    const nokey: RestorePointSummary = { ...summary, kind: "delete" };
+    points = [nokey];
+    let restored = false;
+    mockIPC((cmd) => {
+      if (cmd === "list_restore_points") return points;
+      if (cmd === "get_restore_point")
+        return { ...nokey, status: restored ? "restored" : "kept", data: { ...point.data, keyColumns: [], after: [] } };
+      return null;
+    });
+    render(<RestorePanel session={session} onClose={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: /orders · Delete · 2 rows/ }));
+    await screen.findByRole("region", { name: "Restore point" });
+    expect(screen.queryByRole("checkbox", { name: "Row 1" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restore selected" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Restore all" })).toBeEnabled();
+    cleanup();
+    restored = true;
+    render(<RestorePanel session={session} onClose={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: /orders · Delete · 2 rows/ }));
+    await screen.findByRole("region", { name: "Restore point" });
+    expect(screen.getByRole("button", { name: "Restore all" })).toBeDisabled();
+  });
 });
 

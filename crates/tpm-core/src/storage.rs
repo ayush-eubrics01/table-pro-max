@@ -589,6 +589,12 @@ impl Storage {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// Deletes pending restore points: their transaction ended with the app (a crash or a kill),
+    /// so the changes they cover were never committed. Run at startup.
+    pub fn discard_pending_restore_points(&self) -> Result<usize> {
+        Ok(self.lock()?.execute("DELETE FROM restore_points WHERE status = 'pending'", [])?)
+    }
+
     /// Removes restore points older than `restore.keepDays` (default 7), then the oldest until
     /// the total size is within `restore.maxTotalMb` (default 1024). Pending points (their
     /// transaction is still open) are left alone. Returns how many were removed.
@@ -823,6 +829,31 @@ mod tests {
         assert!(s.get("two_days").is_err());
         s.delete_connection("c1").unwrap();
         assert!(s.list_restore_points("c1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn pending_restore_points_left_by_a_crash_are_discarded() {
+        use crate::restore::{RestoreData, RestoreKind, RestorePoint, RestoreStatus, RestoreStore};
+        let s = Storage::open_in_memory().unwrap();
+        let p = |id: &str, status| RestorePoint {
+            id: id.into(),
+            connection_id: "c1".into(),
+            created_at: Utc::now().to_rfc3339(),
+            status,
+            restored_at: None,
+            kind: RestoreKind::Update,
+            schema: "public".into(),
+            table: "t".into(),
+            statement: "UPDATE t SET a = 1".into(),
+            data: RestoreData::default(),
+            row_count: 1,
+            bytes: 1,
+        };
+        s.save(&p("kept", RestoreStatus::Kept)).unwrap();
+        s.save(&p("pending", RestoreStatus::Pending)).unwrap();
+        assert_eq!(s.discard_pending_restore_points().unwrap(), 1);
+        assert!(s.get("pending").is_err());
+        assert!(s.get("kept").is_ok());
     }
 
     #[test]

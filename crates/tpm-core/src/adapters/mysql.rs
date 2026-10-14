@@ -387,6 +387,11 @@ impl Session for MySession {
                     default: r.opt(3),
                     auto_increment: r.str(4).to_ascii_lowercase().contains("auto_increment"),
                     comment: r.opt(5).filter(|c| !c.is_empty()),
+                    // "VIRTUAL GENERATED" / "STORED GENERATED" (not MySQL's "DEFAULT_GENERATED").
+                    generated: {
+                        let extra = r.str(4).to_ascii_uppercase();
+                        extra.contains("VIRTUAL GENERATED") || extra.contains("STORED GENERATED")
+                    },
                 }
             })
             .collect();

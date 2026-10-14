@@ -72,4 +72,15 @@ describe("OpenAnything", () => {
     fireEvent.click(await screen.findByRole("option", { name: /^Restore points/ }));
     expect(useRestore.getState().open).toBe(true);
   });
+
+  it("offers restore points only where they are kept", async () => {
+    useWorkspaces.setState({
+      workspaces: [{ id: "w", kind: "sql", profile, session: { ...session, readOnly: true }, schema: "public", schemas: ["public"], objects: {}, columns: {}, tabs: [], activeTabId: null, closed: [], health: "ok" }],
+      activeId: "w",
+    } as never);
+    render(<OpenAnything onConnect={() => undefined} />);
+    expect(await screen.findByRole("option", { name: /^Settings/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /^Restore points/ })).not.toBeInTheDocument();
+  });
 });
+

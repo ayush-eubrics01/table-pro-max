@@ -240,6 +240,8 @@ impl Session for SqliteSession {
                         default: r.opt(3),
                         primary_key: pk,
                         comment: None,
+                        // pragma_table_xinfo: hidden 2 and 3 are generated columns.
+                        generated: matches!(r.i64(5), Some(2 | 3)),
                     }
                 })
                 .collect();

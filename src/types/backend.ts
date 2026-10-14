@@ -173,6 +173,8 @@ export interface ColumnInfo {
   primaryKey: number | null;
   autoIncrement: boolean;
   comment: string | null;
+  /** Computed by the database; it can't be written. */
+  generated?: boolean;
 }
 
 export interface IndexInfo {
@@ -651,6 +653,8 @@ export interface RestoreData {
   after: ((string | null)[] | null)[];
   ddl: string | null;
   columnType: string | null;
+  /** Columns the database computes: shown, never written back. */
+  generated?: string[];
 }
 
 export interface RestorePoint extends RestorePointSummary {

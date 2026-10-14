@@ -1494,7 +1494,7 @@ impl Engine {
 
     /// Commits edits to one or more tables (e.g. from a joined query result) in one transaction.
     pub async fn apply_change_sets(&self, session_id: &str, sets: &[ChangeSet], confirmed: bool) -> Result<Vec<u64>> {
-        self.apply_change_sets_as(session_id, sets, confirmed, crate::restore::RestoreKind::GridEdit, None).await
+        self.apply_change_sets_as(session_id, sets, confirmed, crate::restore::RestoreKind::GridEdit, None, false).await
     }
 
     /// `apply_change_sets`, keeping a restore point of `kind` per table for the updated and
@@ -1507,6 +1507,7 @@ impl Engine {
         confirmed: bool,
         kind: crate::restore::RestoreKind,
         statement: Option<String>,
+        override_identity: bool,
     ) -> Result<Vec<u64>> {
         let handle = self.handle(session_id)?;
         if handle.profile.read_only() {
@@ -1531,7 +1532,7 @@ impl Engine {
         let capture = self.restore_enabled(&handle) && handle.info.capabilities.transactions;
         for set in sets {
             let structure = self.table_structure(session_id, &set.schema, &set.table, true).await?;
-            let set_statements = build_statements(dialect, &structure, set)?;
+            let set_statements = crate::changes::build_statements_with(dialect, &structure, set, override_identity)?;
             if capture && let Some(gc) = grid_capture(dialect, handle.profile.driver, &structure, set, &set_statements)?
             {
                 grid_captures.push(GridCapture { statement: statement.clone().unwrap_or(gc.statement.clone()), ..gc });
@@ -1566,12 +1567,32 @@ impl Engine {
         point_id: &str,
         rows: Option<Vec<usize>>,
     ) -> Result<(crate::restore::RestorePoint, crate::restore::RestoreActions)> {
-        use crate::restore::RestoreKind;
+        use crate::restore::{RestoreKind, RestoreStatus};
         let handle = self.handle(session_id)?;
         let store = self.restore_store().ok_or_else(|| AppError::internal("Restore points are not available"))?;
         let point = store.get(point_id)?;
         if point.connection_id != handle.profile.id {
             return Err(AppError::invalid_config("This restore point belongs to another connection"));
+        }
+        if point.status == RestoreStatus::Pending {
+            return Err(AppError::new(
+                ErrorKind::PolicyViolation,
+                "The transaction that made this restore point is still open: commit it first",
+            ));
+        }
+        // Without a key, rows can't be told apart: restoring some, or restoring twice, would
+        // insert the same rows again.
+        if point.data.key_columns.is_empty() {
+            if rows.is_some() {
+                return Err(AppError::invalid_config(
+                    "The table has no primary key, so its rows can only be restored all at once",
+                ));
+            }
+            if point.status == RestoreStatus::Restored {
+                return Err(AppError::invalid_config(
+                    "This restore point was already restored. The table has no primary key, so restoring it again would add the rows twice",
+                ));
+            }
         }
         let current = self.table_structure(session_id, &point.schema, &point.table, true).await;
         let exists = match (&current, point.kind) {
@@ -1587,13 +1608,22 @@ impl Engine {
             Some(r) => r.iter().copied().filter(|i| *i < total).collect(),
             None => (0..total).collect(),
         };
-        // Rows already back as they were (restored earlier, or changed back by hand) are skipped:
-        // their conflict check would otherwise stop the rest from being restored.
         if exists
             && let Ok(st) = &current
             && !chosen.is_empty()
         {
-            let back = self.rows_already_back(session_id, &point, st, &chosen).await?;
+            let (back, changed) = self.current_rows_against(session_id, &point, st, &chosen).await?;
+            // A row changed since the point was made: nothing is restored. Compared as text, so
+            // columns SQL can't compare (MySQL JSON, floats) are checked too.
+            if !changed.is_empty() {
+                let which = if changed.len() == 1 { "A row".to_string() } else { format!("{} rows", changed.len()) };
+                return Err(AppError::new(
+                    ErrorKind::Conflict,
+                    format!("{which} changed after the restore point was made, so nothing was restored"),
+                ));
+            }
+            // Rows already back as they were (restored earlier, or changed back by hand) are
+            // skipped: their conflict check would otherwise stop the rest from being restored.
             if back.len() == chosen.len() {
                 return Err(AppError::invalid_config(if chosen.len() == 1 {
                     "This row is already back as it was"
@@ -1604,23 +1634,25 @@ impl Engine {
             chosen.retain(|i| !back.contains(i));
         }
         let rows = (rows.is_some() || chosen.len() < total).then_some(chosen);
-        let actions = crate::restore::build_restore(&point, handle.info.dialect, rows.as_deref(), exists)?;
+        let actions = crate::restore::build_restore(&point, handle.profile.driver, rows.as_deref(), exists)?;
         Ok((point, actions))
     }
 
-    /// Which of the chosen rows of a restore point the table already holds exactly as they
-    /// were before the change (every column the point kept, compared as text).
-    async fn rows_already_back(
+    /// The chosen rows of a restore point against the table now (every kept column, compared as
+    /// text): the ones already back as they were, and the ones changed since the point was made.
+    async fn current_rows_against(
         &self,
         session_id: &str,
         point: &crate::restore::RestorePoint,
         st: &TableStructure,
         chosen: &[usize],
-    ) -> Result<std::collections::HashSet<usize>> {
+    ) -> Result<(std::collections::HashSet<usize>, std::collections::HashSet<usize>)> {
+        use crate::restore::RestoreKind;
         let d = &point.data;
         let pk: Vec<String> = st.primary_key().iter().map(|c| c.name.clone()).collect();
+        let (mut back, mut changed) = (std::collections::HashSet::new(), std::collections::HashSet::new());
         if pk.is_empty() || pk != d.key_columns {
-            return Ok(Default::default());
+            return Ok((back, changed));
         }
         let dialect = self.handle(session_id)?.info.dialect;
         let pos = |name: &str| d.columns.iter().position(|c| c == name);
@@ -1647,20 +1679,39 @@ impl Engine {
                 })
             })
             .await?;
-        let mut back = std::collections::HashSet::new();
+        // Every kept column that still exists, as (index in the point, index in the table).
+        let cols: Vec<(usize, usize)> = d
+            .columns
+            .iter()
+            .enumerate()
+            .filter_map(|(j, c)| st.columns.iter().position(|x| &x.name == c).map(|at| (j, at)))
+            .collect();
+        let all_kept = cols.len() == d.columns.len();
+        let same = |now: &Vec<Param>, row: &[Param]| cols.iter().all(|(j, at)| now.get(*at) == row.get(*j));
         for &i in chosen {
             let before = &d.before[i];
             let key: Vec<Param> = pk.iter().map(|k| pos(k).and_then(|j| before.get(j).cloned()).flatten()).collect();
-            let Some(now) = current.get(&key) else { continue };
-            let same = d.columns.iter().enumerate().all(|(j, c)| match st.columns.iter().position(|x| &x.name == c) {
-                Some(at) => now.get(at) == before.get(j),
-                None => false,
-            });
-            if same {
+            let now = current.get(&key);
+            if all_kept && now.is_some_and(|n| same(n, before)) {
                 back.insert(i);
+                continue;
+            }
+            if point.kind == RestoreKind::DropColumn {
+                continue;
+            }
+            match (now, d.after.get(i).and_then(|a| a.as_ref())) {
+                // Updated: the row must still hold what the change left.
+                (Some(n), Some(after)) if !same(n, after) => {
+                    changed.insert(i);
+                }
+                (None, Some(_)) | (Some(_), None) => {
+                    // Deleted since, or (for a deleted row) back with other values.
+                    changed.insert(i);
+                }
+                _ => {}
             }
         }
-        Ok(back)
+        Ok((back, changed))
     }
 
     /// The SQL a restore will run, for the review dialog.
@@ -1682,10 +1733,13 @@ impl Engine {
             } else {
                 restored_structure(&point, self.table_structure(session_id, &set.schema, &set.table, false).await.ok())
             };
-            let statements = build_statements(dialect, &structure, set)?;
+            let override_identity = handle.profile.driver == crate::config::Driver::Postgres;
+            let statements = crate::changes::build_statements_with(dialect, &structure, set, override_identity)?;
             count += statements.len();
             sql.push(preview(dialect, &statements));
         }
+        sql.extend(actions.after.iter().map(|d| format!("{d};")));
+        count += actions.after.len();
         // DDL runs first, on its own: MySQL commits DDL implicitly.
         Ok(ChangePreview {
             sql: sql.join("\n"),
@@ -1729,6 +1783,7 @@ impl Engine {
                 true,
                 crate::restore::RestoreKind::Restore,
                 Some(format!("Restore of: {}", point.statement)),
+                handle.profile.driver == crate::config::Driver::Postgres,
             )
             .await
             .map_err(|e| {
@@ -1739,6 +1794,9 @@ impl Engine {
                 }
             })?
         };
+        if !actions.after.is_empty() {
+            self.apply_ddl(session_id, &actions.after, true).await?;
+        }
         if let Some(store) = self.restore_store() {
             store.set_status(std::slice::from_ref(&point.id), crate::restore::RestoreStatus::Restored)?;
         }
@@ -2323,6 +2381,7 @@ async fn run_captured(
             columns: cols.iter().map(|c| c.name.clone()).collect(),
             types: cols.iter().map(|c| c.data_type.clone()).collect(),
             key_columns: st.primary_key().iter().map(|c| c.name.clone()).collect(),
+            generated: st.columns.iter().filter(|c| c.generated).map(|c| c.name.clone()).collect(),
             column_type: plan
                 .column
                 .as_ref()
@@ -2467,6 +2526,7 @@ fn restored_structure(point: &crate::restore::RestorePoint, current: Option<Tabl
                 primary_key: d.key_columns.iter().position(|k| k == name).map(|p| p as u32 + 1),
                 auto_increment: false,
                 comment: None,
+                generated: d.generated.contains(name),
             });
         }
     }
@@ -2528,6 +2588,7 @@ fn grid_capture(
                 columns: s.columns.iter().map(|c| c.name.clone()).collect(),
                 types: s.columns.iter().map(|c| c.data_type.clone()).collect(),
                 key_columns: pk,
+                generated: s.columns.iter().filter(|c| c.generated).map(|c| c.name.clone()).collect(),
                 ..Default::default()
             },
             bytes: 0,

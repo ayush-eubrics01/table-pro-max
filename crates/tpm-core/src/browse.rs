@@ -230,6 +230,7 @@ pub(crate) mod tests {
             primary_key: pk,
             auto_increment: pk.is_some(),
             comment: None,
+            generated: false,
         };
         TableStructure {
             schema: "public".into(),
