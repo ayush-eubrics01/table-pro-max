@@ -84,7 +84,7 @@ No feature has a paid tier, license check, quota or artificial limit.
 | Create table | Form with preview | IMPLEMENTED | `ddl.rs`, `CreateTableDialog.tsx` | all | ddl unit tests | |
 | Alter table | Add, drop, rename column; type, nullability, default; create and drop index; rename table — staged and previewed | IMPLEMENTED | `ddl.rs`, `StructureView.tsx` | all | ddl unit tests | SQLite cannot change types or defaults in place; MySQL nullability changes need "change type" |
 | Drop table | Previewed, confirmed in the review dialog | IMPLEMENTED | `Sidebar.tsx` | all | | |
-| Open Anything | Ctrl+P fuzzy search over cached objects, schemas, saved queries, connections, actions | IMPLEMENTED | `OpenAnything.tsx`, `fuzzy.ts` | all | fuzzy unit tests | Searches only schemas already loaded |
+| Open Anything | Ctrl+K (or Ctrl+P) fuzzy search over cached objects, schemas, saved queries, connections, actions | IMPLEMENTED | `OpenAnything.tsx`, `fuzzy.ts` | all | fuzzy unit tests | Searches only schemas already loaded |
 
 ## Safety
 
