@@ -5,13 +5,15 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tpm_core::browse::BrowseRequest;
-use tpm_core::changes::ChangeSet;
+use tpm_core::changes::{ChangeSet, ColumnValue};
 use tpm_core::ddl::{AlterOp, CreateTableRequest, build_alter, build_create_table};
 use tpm_core::dialect::Dialect;
-use tpm_core::engine::{BrowseResult, ChangePreview, ExplainResult, RunOptions, ScriptResult, StatementResult};
+use tpm_core::engine::{
+    BrowseResult, ChangePreview, ExplainResult, FetchedCell, RunOptions, ScriptResult, StatementResult,
+};
 use tpm_core::error::Result;
 use tpm_core::filter::FilterNode;
-use tpm_core::model::{DbObject, ObjectKind, Row, TableStructure};
+use tpm_core::model::{Cell, DbObject, ObjectKind, Row, TableStructure};
 use tpm_core::safety::ScriptAnalysis;
 use tpm_core::split::{StatementSpan, split_statements, statement_at};
 use tpm_core::storage::NewHistoryEntry;
@@ -296,4 +298,28 @@ pub async fn run_widget_query(state: State<'_, AppState>, request: WidgetRequest
         .engine
         .run_widget(&request.session_id, &request.sql, &request.params, request.timeout_secs.clamp(1, 600), 5_000)
         .await
+}
+
+#[tauri::command]
+pub async fn fetch_value(
+    state: State<'_, AppState>,
+    session_id: String,
+    schema: String,
+    table: String,
+    key: Vec<ColumnValue>,
+    column: String,
+) -> Result<Cell> {
+    state.engine.fetch_value(&session_id, &schema, &table, key, &column).await
+}
+
+#[tauri::command]
+pub async fn fetch_column(
+    state: State<'_, AppState>,
+    session_id: String,
+    schema: String,
+    table: String,
+    column: String,
+    keys: Vec<Vec<ColumnValue>>,
+) -> Result<Vec<FetchedCell>> {
+    state.engine.fetch_column(&session_id, &schema, &table, &column, &keys).await
 }

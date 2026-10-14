@@ -235,7 +235,7 @@ export function DataGrid(props: DataGridProps) {
   const startEdit = (pos: CellPos, initial?: string) => {
     if (!onEdit || !canEdit?.(pos.row, pos.col)) return;
     const cell = getRow(pos.row)?.[pos.col];
-    if (cell === undefined || isBinary(cell)) return;
+    if (cell === undefined || (cell !== null && typeof cell === "object")) return;
     setEditing({ pos, value: initial ?? cell ?? "" });
   };
 

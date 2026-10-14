@@ -186,6 +186,14 @@ pub struct BrowseResult {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FetchedCell {
+    /// False when no row has that key any more.
+    pub found: bool,
+    pub value: Cell,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChangePreview {
     pub sql: String,
     pub statement_count: usize,
@@ -743,8 +751,23 @@ impl Engine {
         // Fetch one extra row to learn whether another page exists without COUNT(*).
         let mut probe = req.clone();
         probe.limit = req.limit.saturating_add(1).min(crate::browse::MAX_PAGE_SIZE + 1);
-        let q = build_select(handle.info.dialect, &structure, &BrowseRequest { limit: req.limit, ..req.clone() })?;
-        let probe_q = build_select_unchecked(handle.info.dialect, &structure, &probe)?;
+        let deferred = if req.lazy {
+            crate::large_values::deferred_columns(
+                handle.profile.driver,
+                &structure,
+                &req.load_columns,
+                &req.defer_columns,
+            )
+        } else {
+            vec![false; structure.columns.len()]
+        };
+        let q = crate::browse::build_select_projected(
+            handle.info.dialect,
+            &structure,
+            &BrowseRequest { limit: req.limit, ..req.clone() },
+            &deferred,
+        )?;
+        let probe_q = build_select_unchecked(handle.info.dialect, &structure, &probe, &deferred)?;
         if handle.profile.read_only() && probe.filter.as_ref().is_some_and(has_raw) {
             let analysis = analyze_script(&probe_q.sql, handle.info.dialect, SafetyMode::ReadOnly);
             Self::enforce_policy(&analysis, false, &handle.info)?;
@@ -757,13 +780,8 @@ impl Engine {
             .await?;
         let has_more = rs.rows.len() > limit;
         rs.rows.truncate(limit);
-        Ok(BrowseResult {
-            columns: rs.columns,
-            rows: rs.rows,
-            sql: q.sql,
-            duration_ms: t0.elapsed().as_millis() as u64,
-            has_more,
-        })
+        let (columns, rows) = crate::large_values::expand_deferred(&structure, &deferred, rs.columns, rs.rows);
+        Ok(BrowseResult { columns, rows, sql: q.sql, duration_ms: t0.elapsed().as_millis() as u64, has_more })
     }
 
     pub async fn count_rows(
@@ -821,6 +839,59 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// One column of an opened table for the given rows, by primary key (large values on demand).
+    pub async fn fetch_column(
+        &self,
+        session_id: &str,
+        schema: &str,
+        table: &str,
+        column: &str,
+        keys: &[Vec<crate::changes::ColumnValue>],
+    ) -> Result<Vec<FetchedCell>> {
+        let handle = self.handle(session_id)?;
+        let structure = self.table_structure(session_id, schema, table, false).await?;
+        let q = crate::browse::build_fetch(handle.info.dialect, &structure, column, keys)?;
+        let n = keys.len();
+        let rs = self
+            .with_session(session_id, move |s| Box::pin(async move { s.query(&q.sql, &q.params, n).await }))
+            .await?;
+        let pk: Vec<String> = structure.primary_key().iter().map(|c| c.name.clone()).collect();
+        let mut by_key: HashMap<Vec<String>, Cell> = HashMap::new();
+        for row in rs.rows {
+            let key = row[..pk.len()].iter().map(|c| c.as_text().unwrap_or_default().to_string()).collect();
+            by_key.insert(key, row[pk.len()].clone());
+        }
+        Ok(keys
+            .iter()
+            .map(|k| {
+                let want: Vec<String> = pk
+                    .iter()
+                    .map(|p| k.iter().find(|v| &v.column == p).and_then(|v| v.value.clone()).unwrap_or_default())
+                    .collect();
+                match by_key.get(&want) {
+                    Some(c) => FetchedCell { found: true, value: c.clone() },
+                    None => FetchedCell { found: false, value: Cell::Null },
+                }
+            })
+            .collect())
+    }
+
+    pub async fn fetch_value(
+        &self,
+        session_id: &str,
+        schema: &str,
+        table: &str,
+        key: Vec<crate::changes::ColumnValue>,
+        column: &str,
+    ) -> Result<Cell> {
+        let mut got = self.fetch_column(session_id, schema, table, column, std::slice::from_ref(&key)).await?;
+        let f = got.remove(0);
+        if !f.found {
+            return Err(AppError::not_found("This row no longer exists"));
+        }
+        Ok(f.value)
     }
 
     /// Which cells of a result can be edited (see result_edit.rs). Never fails: problems make cells read-only.
@@ -1396,11 +1467,12 @@ fn build_select_unchecked(
     dialect: Dialect,
     s: &TableStructure,
     req: &BrowseRequest,
+    deferred: &[bool],
 ) -> Result<crate::browse::BuiltQuery> {
     let mut capped = req.clone();
     let limit = req.limit;
     capped.limit = limit.min(crate::browse::MAX_PAGE_SIZE);
-    let mut q = build_select(dialect, s, &capped)?;
+    let mut q = crate::browse::build_select_projected(dialect, s, &capped, deferred)?;
     if limit != capped.limit {
         q.sql = q.sql.replacen(&format!(" LIMIT {} ", capped.limit), &format!(" LIMIT {limit} "), 1);
     }

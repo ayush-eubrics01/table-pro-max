@@ -30,6 +30,15 @@ pub struct BrowseRequest {
     pub limit: u32,
     #[serde(default)]
     pub offset: u64,
+    /// Leave potentially large columns out of the page (opened tables). Export and other
+    /// callers keep the default, `false`, and get every column.
+    #[serde(default)]
+    pub lazy: bool,
+    /// Per-column overrides from the column_fetch store.
+    #[serde(default)]
+    pub load_columns: Vec<String>,
+    #[serde(default)]
+    pub defer_columns: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

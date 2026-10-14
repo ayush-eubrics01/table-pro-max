@@ -8,6 +8,7 @@ export function isBinary(c: Cell): c is { $bytes: string; size: number } {
 export function cellDisplay(c: Cell): string {
   if (c === null) return "NULL";
   if (isBinary(c)) return `<binary ${formatBytes(c.size)}>`;
+  if (typeof c === "object") return "$notLoaded" in c ? "Not loaded" : `${c.$partial}…`;
   return c.length > 2000 ? `${c.slice(0, 2000)}…` : c.replace(/[\r\n]+/g, " ⏎ ");
 }
 
@@ -15,6 +16,7 @@ export function cellDisplay(c: Cell): string {
 export function cellCopy(c: Cell, nullText = ""): string {
   if (c === null) return nullText;
   if (isBinary(c)) return `\\x${c.$bytes}`;
+  if (typeof c === "object") return ""; // placeholders are fetched before copying
   return c;
 }
 
@@ -22,6 +24,7 @@ export function cellCopy(c: Cell, nullText = ""): string {
 export function cellParam(c: Cell): string | null | undefined {
   if (c === null) return null;
   if (isBinary(c)) return undefined;
+  if (typeof c === "object") return undefined; // a placeholder is not the value
   return c;
 }
 
@@ -48,7 +51,7 @@ const FALSE = /^(f|false|0|no|off)$/i;
 
 /** How a cell is drawn: enum values as tags, booleans coloured. NULL and binary values are never toned. */
 export function cellTone(typeName: string, value: Cell | undefined): "enum" | "true" | "false" | null {
-  if (value === null || value === undefined || isBinary(value)) return null;
+  if (value === null || value === undefined || typeof value === "object") return null;
   if (isBooleanType(typeName)) return TRUE.test(value) ? "true" : FALSE.test(value) ? "false" : null;
   if (ENUM.test(typeName)) return "enum";
   return null;

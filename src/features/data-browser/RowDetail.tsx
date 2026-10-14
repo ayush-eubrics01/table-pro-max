@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Icon } from "../../components/Icon";
 import type { Cell, ColumnInfo } from "../../types/backend";
-import { cellCopy, isBinary, isJsonType, prettyJson, formatBytes } from "../../lib/cells";
+import { cellCopy, cellDisplay, isBinary, isJsonType, prettyJson, formatBytes } from "../../lib/cells";
 
 interface Props {
   columns: ColumnInfo[];
@@ -112,7 +112,7 @@ function Field({
           </div>
         </>
       ) : (
-        <pre className={value === null ? "hint" : undefined}>{value === null ? "NULL" : (json ?? value)}</pre>
+        <pre className={value === null ? "hint" : undefined}>{typeof value === "string" ? (json ?? value) : cellDisplay(value)}</pre>
       )}
       {reason && <p className="hint">{reason}</p>}
     </div>

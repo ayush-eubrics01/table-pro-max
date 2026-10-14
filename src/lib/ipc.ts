@@ -3,6 +3,8 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  Cell,
+  FetchedCell,
   AiAnswer,
   AiPrompt,
   AiProvider,
@@ -153,6 +155,10 @@ export const api = {
 
   // browsing & editing
   browseTable: (sessionId: string, request: BrowseRequest) => call<BrowseResult>("browse_table", { sessionId, request }),
+  fetchValue: (sessionId: string, schema: string, table: string, key: { column: string; value: string | null }[], column: string) =>
+    call<Cell>("fetch_value", { sessionId, schema, table, key, column }),
+  fetchColumn: (sessionId: string, schema: string, table: string, column: string, keys: { column: string; value: string | null }[][]) =>
+    call<FetchedCell[]>("fetch_column", { sessionId, schema, table, column, keys }),
   countRows: (sessionId: string, schema: string, table: string, filter: FilterNode | null) =>
     call<number>("count_rows", { sessionId, schema, table, filter }),
   previewChanges: (sessionId: string, changes: ChangeSet) =>

@@ -113,6 +113,8 @@ pub fn run() {
             commands::query::fetch_rows,
             commands::query::release_results,
             commands::query::browse_table,
+            commands::query::fetch_value,
+            commands::query::fetch_column,
             commands::query::count_rows,
             commands::query::preview_changes,
             commands::query::apply_changes,

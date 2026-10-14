@@ -288,6 +288,7 @@ async fn exercise(t: Target) {
         sort: vec![SortSpec { column: "name".into(), descending: true }],
         limit: 2,
         offset: 0,
+        ..Default::default()
     };
     let page = engine.browse(&sid, &req).await.unwrap();
     let names: Vec<&str> = page.rows.iter().map(|r| text(&r[2])).collect();
@@ -562,10 +563,93 @@ async fn exercise(t: Target) {
 
     origins(&engine, &sid, driver).await;
     edit_results(&engine, &sid, &profile, t.password.as_deref(), driver).await;
+    lazy_values(&engine, &sid, &t.schema, driver).await;
 
     // --- cleanup ---
     run(&engine, &sid, "DROP TABLE tpm_it_items; DROP TABLE tpm_it_owners").await;
     engine.close_all().await;
+}
+
+/// Opened tables leave unbounded columns out of the page; values come back by key on demand.
+async fn lazy_values(engine: &Arc<Engine>, sid: &str, schema: &str, driver: Driver) {
+    use tpm_core::browse::BrowseRequest;
+    let (body_ty, doc_ty, big) = match driver {
+        Driver::Postgres => ("text", "jsonb", "repeat('x', 100000)"),
+        Driver::Mysql | Driver::Mariadb => ("longtext", "json", "REPEAT('x', 100000)"),
+        Driver::Sqlite => ("TEXT", "TEXT", "replace(hex(zeroblob(50000)), '0', 'x')"),
+        Driver::Duckdb => ("VARCHAR", "VARCHAR", "repeat('x', 100000)"),
+        Driver::Redis => unreachable!(),
+    };
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_docs").await;
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_nokey").await;
+    run(
+        engine,
+        sid,
+        &format!("CREATE TABLE tpm_it_docs (id integer PRIMARY KEY, title varchar(50), body {body_ty}, doc {doc_ty})"),
+    )
+    .await;
+    run(
+        engine,
+        sid,
+        &format!("INSERT INTO tpm_it_docs VALUES (1, 'one', {big}, '{{\"a\": 1}}'), (2, 'two', 'short', NULL)"),
+    )
+    .await;
+    run(engine, sid, &format!("CREATE TABLE tpm_it_nokey (body {body_ty})")).await;
+    run(engine, sid, "INSERT INTO tpm_it_nokey VALUES ('kept')").await;
+
+    let req = BrowseRequest {
+        schema: schema.into(),
+        table: "tpm_it_docs".into(),
+        limit: 150,
+        lazy: true,
+        ..Default::default()
+    };
+    let page = engine.browse(sid, &req).await.unwrap();
+    let names: Vec<(&str, bool)> = page.columns.iter().map(|c| (c.name.as_str(), c.deferred)).collect();
+    // DuckDB reports every VARCHAR without its declared length, so `title` is unbounded there too.
+    let title_deferred = driver == Driver::Duckdb;
+    assert_eq!(names, vec![("id", false), ("title", title_deferred), ("body", true), ("doc", true)], "{driver:?}");
+    assert_eq!(page.rows[0][2], Cell::NotLoaded, "{driver:?}");
+    assert_eq!(page.rows[0][3], Cell::NotLoaded, "{driver:?}");
+    let select_list = &page.sql[..page.sql.find(" FROM ").unwrap()];
+    assert!(
+        !select_list.contains("body") && !select_list.contains("doc"),
+        "page query never names deferred columns: {}",
+        page.sql
+    );
+
+    // One value, by key.
+    let key = |id: &str| vec![ColumnValue { column: "id".into(), value: Some(id.into()) }];
+    let body = engine.fetch_value(sid, schema, "tpm_it_docs", key("1"), "body").await.unwrap();
+    assert_eq!(body.as_text().map(str::len), Some(100_000), "{driver:?}");
+    // A column for several rows, matched by key whatever order the database returns.
+    let got = engine.fetch_column(sid, schema, "tpm_it_docs", "body", &[key("2"), key("1"), key("9")]).await.unwrap();
+    assert_eq!(got[0].value, Cell::Text("short".into()));
+    assert_eq!(got[1].value.as_text().map(str::len), Some(100_000));
+    assert!(!got[2].found, "missing row reported, not invented");
+    // Overrides: load body normally, defer title.
+    let req2 = BrowseRequest { load_columns: vec!["body".into()], defer_columns: vec!["title".into()], ..req.clone() };
+    let page = engine.browse(sid, &req2).await.unwrap();
+    assert_eq!(page.rows[1][2], Cell::Text("short".into()));
+    assert_eq!(page.rows[1][1], Cell::NotLoaded);
+    // A table without a key defers nothing.
+    let nk = BrowseRequest { table: "tpm_it_nokey".into(), ..req.clone() };
+    let page = engine.browse(sid, &nk).await.unwrap();
+    assert_eq!(page.rows[0][0], Cell::Text("kept".into()));
+    // Not lazy (export, other callers): everything, as before.
+    let full = engine.browse(sid, &BrowseRequest { lazy: false, ..req.clone() }).await.unwrap();
+    assert_eq!(full.rows[0][2].as_text().map(str::len), Some(100_000));
+    // A query tab returns every column in full.
+    let r = run(engine, sid, "SELECT * FROM tpm_it_docs WHERE id = 1").await;
+    assert_eq!(r.statements[0].rows.as_ref().unwrap()[0][2].as_text().map(str::len), Some(100_000), "{driver:?}");
+    // Deleted between page and click.
+    run(engine, sid, "DELETE FROM tpm_it_docs WHERE id = 2").await;
+    let err = engine.fetch_value(sid, schema, "tpm_it_docs", key("2"), "body").await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::NotFound);
+    assert_eq!(err.message, "This row no longer exists");
+
+    run(engine, sid, "DROP TABLE tpm_it_docs").await;
+    run(engine, sid, "DROP TABLE tpm_it_nokey").await;
 }
 
 /// Edit query results across two tables in one transaction; refuse on conflict; block where the rule says so.
@@ -773,6 +857,7 @@ async fn transfer_roundtrip(engine: &Arc<Engine>, sid: &str, schema: &str, drive
         sort: vec![],
         limit: 1,
         offset: 0,
+        ..Default::default()
     };
     for (format, ext) in [
         (ExportFormat::Csv, "csv"),
