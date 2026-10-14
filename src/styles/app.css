@@ -130,6 +130,16 @@ pre,
 .textarea::placeholder {
   color: var(--text-faint);
 }
+/* Drawn by the app: WebKitGTK otherwise paints selects as GTK widgets that ignore the theme. */
+.select {
+  appearance: none;
+  padding-right: 30px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-muted) 50%), linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  text-overflow: ellipsis;
+}
 .textarea {
   height: auto;
   padding: 8px 10px;
