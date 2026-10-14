@@ -33,7 +33,7 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
     if (dirty) {
       const ok = await confirmAction({
         title: `Close ${tab.title}?`,
-        body: tab.kind === "query" ? "This query has not been saved." : "Pending row changes will be discarded.",
+        body: dirtyTables[tab.id] ? "Pending row changes will be discarded." : "This query has not been saved.",
         confirmLabel: "Close without saving",
         danger: true,
       });
@@ -128,7 +128,14 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
                 onDirtyChange={(d) => setDirtyTables((x) => (x[t.id] === d ? x : { ...x, [t.id]: d }))}
               />
             )}
-            {t.kind === "query" && <QueryTab ws={ws} tab={t} active={visible && ws.activeTabId === t.id} />}
+            {t.kind === "query" && (
+              <QueryTab
+                ws={ws}
+                tab={t}
+                active={visible && ws.activeTabId === t.id}
+                onDirtyChange={(d) => setDirtyTables((x) => (x[t.id] === d ? x : { ...x, [t.id]: d }))}
+              />
+            )}
             {t.kind === "definition" && <DefinitionView session={s} schema={t.schema} name={t.name} kind={t.objectKind} onOpenSql={openSql} />}
             {t.kind === "dashboard" && <DashboardView ws={ws} tab={t} active={visible && ws.activeTabId === t.id} />}
           </div>

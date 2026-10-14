@@ -60,3 +60,74 @@ describe("Ctrl+W", () => {
     await waitFor(() => expect(tabsLeft()).toBe(0));
   });
 });
+
+describe("pending query result edits", () => {
+  const result = {
+    taskId: "t",
+    cancelled: false,
+    durationMs: 1,
+    statements: [
+      {
+        index: 0,
+        sql: "select id, email from users",
+        start: 0,
+        end: 27,
+        durationMs: 1,
+        truncated: false,
+        resultId: "r1",
+        totalRows: 1,
+        columns: [
+          { name: "id", typeName: "int4", origin: { schema: "public", table: "users", column: "id" } },
+          { name: "email", typeName: "text", origin: { schema: "public", table: "users", column: "email" } },
+        ],
+        rows: [["1", "ada@example.com"]],
+        editing: { tables: [{ schema: "public", table: "users", keyColumns: [0] }], columns: [0, 0], readOnly: [] },
+      },
+    ],
+  };
+  let runs = 0;
+  beforeEach(() => {
+    runs = 0;
+    mockIPC((cmd) => {
+      if (cmd === "connect") return session;
+      if (cmd === "run_query") {
+        runs++;
+        return structuredClone(result);
+      }
+      return cmd.startsWith("list_") || cmd.startsWith("search_") ? [] : null;
+    });
+  });
+
+  async function runAndEdit() {
+    renderWs(ws({ kind: "query", id: "q3", title: "Query 3", sql: "select id, email from users", savedQueryId: "saved", dirty: false }));
+    fireEvent.click(screen.getByRole("button", { name: /Run all/ }));
+    fireEvent.doubleClick((await screen.findByText("ada@example.com")).closest(".grid-cell")!);
+    const editor = screen.getByLabelText("Edit email");
+    fireEvent.change(editor, { target: { value: "new@example.com" } });
+    fireEvent.keyDown(editor, { key: "Enter" });
+    expect(await screen.findByText("1 pending change")).toBeInTheDocument();
+  }
+
+  it("asks before closing the tab", async () => {
+    await runAndEdit();
+    fireEvent.keyDown(window, { key: "w", ctrlKey: true });
+    expect(await screen.findByText("Pending row changes will be discarded.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByText("Pending row changes will be discarded.")).not.toBeInTheDocument());
+    expect(tabsLeft()).toBe(1);
+  });
+
+  it("asks before running again, and keeps the edits when cancelled", async () => {
+    await runAndEdit();
+    fireEvent.click(screen.getByRole("button", { name: /Run all/ }));
+    expect(await screen.findByText("Discard pending result edits?")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByText("Discard pending result edits?")).not.toBeInTheDocument());
+    expect(runs).toBe(1);
+    expect(screen.getByText("1 pending change")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Run all/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Run and discard" }));
+    await waitFor(() => expect(runs).toBe(2));
+    await waitFor(() => expect(screen.queryByText("1 pending change")).not.toBeInTheDocument());
+  });
+});
