@@ -38,4 +38,16 @@ describe("WorkspaceEmpty", () => {
     fireEvent.click(screen.getByRole("button", { name: /Find anything/ }));
     expect(useUi.getState().paletteOpen).toBe(true);
   });
+
+  it("says the connection is lost when the health check fails", () => {
+    render(<WorkspaceEmpty ws={{ ...loaded, health: "down" }} />);
+    expect(screen.getByText("Connection lost")).toBeInTheDocument();
+    expect(screen.queryByText("Connected")).not.toBeInTheDocument();
+  });
+
+  it("names the database picked in the switcher on MySQL", () => {
+    const mysql = { ...session, dialect: "mysql" as const, server: { ...session.server, product: "MySQL", version: "8.4" }, database: "app" };
+    render(<WorkspaceEmpty ws={{ ...loaded, session: mysql, schema: "shop", objects: { shop: [{ schema: "shop", name: "a", kind: "table" }] } }} />);
+    expect(screen.getByText("MySQL 8.4 · shop · 1 table")).toBeInTheDocument();
+  });
 });

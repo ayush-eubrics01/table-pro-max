@@ -629,6 +629,7 @@ pre,
   padding: 12px 12px 8px;
 }
 .db-switch {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -662,12 +663,22 @@ pre,
 .db-switch-select.db {
   font-weight: 600;
   max-width: 55%;
+  field-sizing: content;
+}
+/* The last select fills the box, under the chevron, so the whole control opens it. */
+.db-switch-select:last-of-type {
+  flex: 1;
+  align-self: stretch;
+  padding-right: 22px;
 }
 .db-switch-sep {
   color: var(--text-faint);
 }
 .db-switch-chevron {
-  margin-left: auto;
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
   pointer-events: none;
 }
 .sidebar-filter {
@@ -922,6 +933,12 @@ pre,
   height: 7px;
   border-radius: 50%;
   background: var(--accent);
+}
+.ws-connected[data-down] {
+  color: var(--danger);
+}
+.ws-connected[data-down] .ws-connected-dot {
+  background: var(--danger);
 }
 .ws-empty h1 {
   margin: 8px 0 4px;

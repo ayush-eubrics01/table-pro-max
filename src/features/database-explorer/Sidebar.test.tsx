@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
+import { readFileSync } from "node:fs";
 import { Sidebar } from "./Sidebar";
 import { profile, session } from "../../test/fixtures";
 import type { Workspace } from "../../stores/workspaces";
@@ -94,5 +95,11 @@ describe("Sidebar", () => {
     const tab = { kind: "table" as const, id: "t1", schema: "public", name: "orders", objectKind: "table" as const, title: "orders" };
     render(<Sidebar ws={ws({ tabs: [tab], activeTabId: "t1" })} onSwitchDatabase={() => undefined} />);
     expect(screen.getByRole("treeitem", { name: /^orders/ })).toHaveAttribute("aria-current", "true");
+  });
+
+  it("opens the last select from anywhere in the switcher box, chevron included", () => {
+    const css = readFileSync("src/styles/app.css", "utf8");
+    expect(css).toMatch(/\.db-switch-select:last-of-type\s*\{[^}]*flex:\s*1/);
+    expect(css).toMatch(/\.db-switch-chevron\s*\{[^}]*position:\s*absolute[^}]*pointer-events:\s*none/);
   });
 });
