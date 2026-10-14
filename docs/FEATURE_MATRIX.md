@@ -65,7 +65,7 @@ No feature has a paid tier, license check, quota or artificial limit.
 | NULL, binary, JSON display | Italic NULL; binary size and hex preview; pretty JSON in the detail panel | IMPLEMENTED | `cells.ts`, `RowDetail.tsx` | all | | Binary cells are read-only |
 | Inline editing | Double-click, Enter or type to edit; detail panel for long values | VERIFIED | `DataGrid.tsx`, `pending.ts` | PG MY | `TableView.test.tsx`; manual (Xvfb) on PG and MySQL with DB checks | |
 | Insert, duplicate, delete rows | Pending until commit | VERIFIED (delete, insert) | `pending.ts`, `changes.rs` | all | unit + integration + manual | |
-| Pending changes and review | Highlighted cells and rows, count, SQL preview with the target named, commit or discard | VERIFIED | `changes.rs`, `ReviewChangesDialog.tsx` | all | integration; manual (Xvfb): FK failure rolled back, then commit verified in DB | |
+| Pending changes and review | Highlighted cells and rows, count in a floating bar, highlighted SQL preview with the target named, Copy SQL, commit or discard | VERIFIED | `changes.rs`, `ReviewChangesDialog.tsx` | all | integration; `ReviewChangesDialog.test.tsx`; manual (Xvfb): FK failure rolled back, then commit verified in DB | |
 | Transactional commit | One transaction; any failure rolls everything back | VERIFIED | adapters `apply` | all | integration | MySQL DDL is not transactional (shown in the review dialog) |
 | Optimistic concurrency | UPDATE checks loaded values; conflict means rollback | VERIFIED | `changes.rs` | all | integration | Skipped for MySQL float/JSON/binary columns |
 | Read-only indicators | Read-only connection, views, tables without a PK | IMPLEMENTED | `TableView.tsx` | all | | |
@@ -80,7 +80,7 @@ No feature has a paid tier, license check, quota or artificial limit.
 | Databases and schemas | DB switcher (PG); schema selector | VERIFIED | adapters | all | integration; manual (Xvfb) | |
 | Objects | Tables, views, materialized views, foreign tables, functions, procedures, sequences | VERIFIED (tables) | adapters, `Sidebar.tsx` | all | integration; manual (Xvfb) | Loaded per schema, not per object |
 | Structure | Columns, PK, indexes, FKs, constraints, triggers | VERIFIED | adapters, `StructureView.tsx` | all | integration | |
-| Definitions (DDL) | Server DDL for MySQL/SQLite; generated for PG tables; views, functions, sequences | VERIFIED (tables) | adapters, `ddl.rs` | all | integration | Generated PG DDL omits partitioning, ownership and grants |
+| Definitions (DDL) | Server DDL for MySQL/SQLite; generated for PG tables; views, functions, sequences; line numbers, Copy SQL, Open in editor (new query tab, not run) | VERIFIED (tables) | adapters, `ddl.rs`, `DefinitionView.tsx` | all | integration; `DefinitionView.test.tsx` | Generated PG DDL omits partitioning, ownership and grants |
 | Create table | Form with preview | IMPLEMENTED | `ddl.rs`, `CreateTableDialog.tsx` | all | ddl unit tests | |
 | Alter table | Add, drop, rename column; type, nullability, default; create and drop index; rename table — staged and previewed | IMPLEMENTED | `ddl.rs`, `StructureView.tsx` | all | ddl unit tests | SQLite cannot change types or defaults in place; MySQL nullability changes need "change type" |
 | Drop table | Previewed, confirmed in the review dialog | IMPLEMENTED | `Sidebar.tsx` | all | | |
