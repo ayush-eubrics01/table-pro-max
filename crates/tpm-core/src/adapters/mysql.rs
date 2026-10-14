@@ -580,6 +580,17 @@ impl Session for MySession {
         Ok(rs)
     }
 
+    async fn in_transaction(&mut self) -> Result<bool> {
+        // With autocommit off every statement runs in a transaction.
+        match self.conn.query_first::<i64, _>("SELECT @@autocommit").await {
+            Ok(Some(1)) => {}
+            _ => return Ok(true),
+        }
+        // MariaDB reports an open transaction exactly. MySQL has no such variable (and the driver
+        // keeps the server's status flags private), so there the engine tracks START TRANSACTION.
+        Ok(matches!(self.conn.query_first::<i64, _>("SELECT @@in_transaction").await, Ok(Some(1))))
+    }
+
     async fn apply(&mut self, statements: &[ParamStatement], atomic: bool) -> Result<Vec<u64>> {
         if atomic {
             self.conn.query_drop("START TRANSACTION").await.map_err(map_error)?;

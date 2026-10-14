@@ -73,6 +73,12 @@ pub trait Session: Send {
         Ok(vec![])
     }
 
+    /// Whether the connection is inside a transaction a statement opened earlier. Commits of
+    /// grid edits refuse to run then, because their BEGIN/COMMIT would end it.
+    async fn in_transaction(&mut self) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Runs an application-generated, parameterised query returning rows as text.
     async fn query(&mut self, sql: &str, params: &[Param], max_rows: usize) -> Result<RowSet>;
 

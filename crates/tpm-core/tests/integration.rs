@@ -622,23 +622,109 @@ async fn edit_results(engine: &Engine, sid: &str, profile: &ConnectionProfile, p
     let after = run(engine, sid, &format!("SELECT name FROM tpm_it_items WHERE id = {item_id}")).await;
     assert_eq!(text(&after.statements[0].rows.as_ref().unwrap()[0][0]), "renamed item");
 
-    // Conflict: the same edit again has a stale original, so nothing is written, including the first set.
-    let stale = vec![
-        ChangeSet {
-            schema: schema.clone(),
-            table: "tpm_it_owners".into(),
-            changes: vec![RowChange::Update {
-                key: vec![ColumnValue { column: "id".into(), value: Some(owner_id.clone()) }],
-                edits: vec![edit("name", "third", "renamed owner")],
-            }],
-            check_conflicts: true,
-        },
-        sets[0].clone(),
+    // Conflict: a valid edit followed by a stale one. The stale one fails, and the valid one is rolled back.
+    let one = |table: &str, id: &str, e: ColumnEdit| ChangeSet {
+        schema: schema.clone(),
+        table: table.into(),
+        changes: vec![RowChange::Update {
+            key: vec![ColumnValue { column: "id".into(), value: Some(id.into()) }],
+            edits: vec![e],
+        }],
+        check_conflicts: true,
+    };
+    let stale = [
+        one("tpm_it_items", &item_id, edit("name", "third item", "renamed item")),
+        one("tpm_it_owners", &owner_id, edit("name", "third", "not the current name")),
     ];
     let err = engine.apply_change_sets(sid, &stale, true).await.unwrap_err();
     assert_eq!(err.kind, ErrorKind::Conflict, "{driver:?}");
+    let item = run(engine, sid, &format!("SELECT name FROM tpm_it_items WHERE id = {item_id}")).await;
+    assert_eq!(text(&item.statements[0].rows.as_ref().unwrap()[0][0]), "renamed item", "rolled back ({driver:?})");
     let owner = run(engine, sid, &format!("SELECT name FROM tpm_it_owners WHERE id = {owner_id}")).await;
-    assert_eq!(text(&owner.statements[0].rows.as_ref().unwrap()[0][0]), "renamed owner", "rolled back ({driver:?})");
+    assert_eq!(text(&owner.statements[0].rows.as_ref().unwrap()[0][0]), "renamed owner", "untouched ({driver:?})");
+
+    // An open transaction in the tab: committing edits would commit or roll back the user's own work.
+    run(engine, sid, "BEGIN").await;
+    run(engine, sid, &format!("UPDATE tpm_it_owners SET name = 'inside txn' WHERE id = {owner_id}")).await;
+    let fresh = vec![ChangeSet {
+        schema: schema.clone(),
+        table: "tpm_it_items".into(),
+        changes: vec![RowChange::Update {
+            key: vec![ColumnValue { column: "id".into(), value: Some(item_id.clone()) }],
+            edits: vec![edit("name", "after txn", "renamed item")],
+        }],
+        check_conflicts: true,
+    }];
+    let inside = run(engine, sid, "SELECT id, name FROM tpm_it_owners").await;
+    assert_eq!(
+        inside.statements[0].editing.clone().unwrap().read_only[0].reason,
+        "Commit or roll back the open transaction to edit results",
+        "{driver:?}"
+    );
+    let err = engine.apply_change_sets(sid, &fresh, true).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PolicyViolation, "{driver:?}: {err:?}");
+    run(engine, sid, "ROLLBACK").await;
+    let owner = run(engine, sid, &format!("SELECT name FROM tpm_it_owners WHERE id = {owner_id}")).await;
+    assert_eq!(
+        text(&owner.statements[0].rows.as_ref().unwrap()[0][0]),
+        "renamed owner",
+        "user's txn untouched ({driver:?})"
+    );
+    assert_eq!(engine.apply_change_sets(sid, &fresh, true).await.unwrap(), vec![1], "{driver:?}");
+
+    // Only reads are described: a write's RETURNING columns get no origins (and no extra round trip).
+    if driver == Driver::Postgres {
+        let r = run(engine, sid, "INSERT INTO tpm_it_owners (id, name) VALUES (777, 'ret') RETURNING id, name").await;
+        let st = &r.statements[0];
+        assert!(st.columns.as_ref().unwrap().iter().all(|c| c.origin.is_none()), "{:?}", st.columns);
+        assert!(st.editing.is_none());
+        run(engine, sid, "DELETE FROM tpm_it_owners WHERE id = 777").await;
+        // Column names are looked up per statement: a rename is followed, never a stale name.
+        run(engine, sid, "SELECT id, name FROM tpm_it_owners").await;
+        run(engine, sid, "ALTER TABLE tpm_it_owners RENAME COLUMN name TO label").await;
+        let r = run(engine, sid, "SELECT id, label FROM tpm_it_owners").await;
+        let origin = r.statements[0].columns.as_ref().unwrap()[1].origin.clone().unwrap();
+        run(engine, sid, "ALTER TABLE tpm_it_owners RENAME COLUMN label TO name").await;
+        assert_eq!(origin.column, "label");
+    }
+
+    // The adapter's own check, without the engine's BEGIN tracking.
+    let mut raw = adapters::connect(profile, password, &ConnectOptions::default()).await.unwrap();
+    assert!(!raw.in_transaction().await.unwrap(), "idle ({driver:?})");
+    raw.execute("BEGIN", 10).await.unwrap();
+    raw.execute("SELECT 1", 10).await.unwrap();
+    // MySQL has no exact check; the engine's tracking of START TRANSACTION covers it (tested above).
+    assert_eq!(raw.in_transaction().await.unwrap(), driver != Driver::Mysql, "after BEGIN ({driver:?})");
+    raw.execute("ROLLBACK", 10).await.unwrap();
+    assert!(!raw.in_transaction().await.unwrap(), "after ROLLBACK ({driver:?})");
+    raw.close().await;
+
+    // Origins name the table, not the alias: shapes where that is ambiguous stay read-only.
+    let editing_of = |r: &tpm_core::engine::ScriptResult| r.statements[0].editing.clone().unwrap();
+    let r = run(
+        engine,
+        sid,
+        "SELECT a.id, a.name, b.name FROM tpm_it_items a LEFT JOIN tpm_it_items b ON b.id = a.owner_id",
+    )
+    .await;
+    let e = editing_of(&r);
+    assert!(e.tables.is_empty(), "self-join with one key ({driver:?}): {e:?}");
+    assert!(
+        e.read_only.iter().any(|x| x.reason.starts_with("tpm_it_items appears more than once")),
+        "{driver:?}: {e:?}"
+    );
+    let r = run(engine, sid, "SELECT id, name FROM tpm_it_items UNION ALL SELECT id, name FROM tpm_it_owners").await;
+    let e = editing_of(&r);
+    assert!(e.tables.is_empty(), "union ({driver:?}): {e:?}");
+    run(engine, sid, "CREATE VIEW tpm_it_items_v AS SELECT id, name FROM tpm_it_items").await;
+    let r =
+        run(engine, sid, "SELECT i.id, i.name, v.name FROM tpm_it_items i JOIN tpm_it_items_v v ON v.id = i.owner_id")
+            .await;
+    let e = editing_of(&r);
+    assert_eq!(e.columns[2], None, "a view's column is never edited as its base table ({driver:?}): {e:?}");
+    let r = run(engine, sid, "SELECT id, name FROM tpm_it_items_v").await;
+    assert!(editing_of(&r).tables.is_empty(), "through a view ({driver:?})");
+    run(engine, sid, "DROP VIEW tpm_it_items_v").await;
 
     // Missing key: no editable table, and a hint.
     let nokey = run(engine, sid, "SELECT name FROM tpm_it_owners").await;

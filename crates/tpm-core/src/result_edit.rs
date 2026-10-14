@@ -53,10 +53,23 @@ pub fn not_editable(columns: &[ColumnMeta], reason: &str) -> ResultEditing {
 }
 
 pub fn result_editing(columns: &[ColumnMeta], structures: &[TableStructure]) -> ResultEditing {
+    result_editing_with(columns, structures, &[])
+}
+
+/// As `result_editing`, with origin tables already ruled out (by `result_sql`) and the reason why.
+pub fn result_editing_with(
+    columns: &[ColumnMeta],
+    structures: &[TableStructure],
+    pre_blocked: &[((String, String), String)],
+) -> ResultEditing {
     let mut e = ResultEditing { tables: vec![], columns: vec![None; columns.len()], read_only: vec![] };
     // Reason per origin table that cannot be edited.
     let mut blocked: Vec<((String, String), String)> = Vec::new();
     for (schema, table) in origin_tables(columns) {
+        if let Some((_, reason)) = pre_blocked.iter().find(|((s, t), _)| *s == schema && *t == table) {
+            blocked.push(((schema, table), reason.clone()));
+            continue;
+        }
         let Some(s) = structures.iter().find(|s| s.schema == schema && s.name == table) else {
             blocked.push(((schema, table.clone()), format!("Could not read the structure of {table}")));
             continue;

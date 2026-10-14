@@ -38,6 +38,8 @@ const MAX_CONCURRENT_EXECUTIONS: usize = 32;
 const RESULT_STORE_BUDGET_BYTES: usize = 512 * 1024 * 1024;
 /// After a cancel request, how long to wait for the driver before giving up on the session.
 const CANCEL_GRACE: Duration = Duration::from_secs(15);
+/// How long the PostgreSQL describe for result origins may take before it is interrupted.
+const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,6 +67,8 @@ struct SessionHandle {
     canceller: Mutex<Arc<dyn Canceller>>,
     /// Set when a statement could not be interrupted; the session must be reconnected.
     broken: AtomicBool,
+    /// The user ran BEGIN/START TRANSACTION in this session and has not yet ended it.
+    open_txn: AtomicBool,
 }
 
 struct RunningTask {
@@ -311,6 +315,7 @@ impl Engine {
             canceller: Mutex::new(session.canceller()),
             session: tokio::sync::Mutex::new(Some(session)),
             broken: AtomicBool::new(false),
+            open_txn: AtomicBool::new(false),
         });
         lock(&self.sessions).insert(info.session_id.clone(), handle);
         Ok(info)
@@ -337,6 +342,7 @@ impl Engine {
             old.close().await;
         }
         handle.broken.store(false, Ordering::SeqCst);
+        handle.open_txn.store(false, Ordering::SeqCst);
         Ok(handle.info.clone())
     }
 
@@ -511,7 +517,22 @@ impl Engine {
                     break;
                 }
                 let t0 = Instant::now();
-                let res = self.execute_one(&handle, &stmt.sql, max_rows, timeout_secs, &cancelled).await;
+                // Origins let result cells be edited: only for reads, never on read-only sessions, and
+                // not inside the user's open transaction (commits are refused there, and a failed
+                // describe would abort that transaction).
+                let want_origins = stmt.class == crate::safety::StatementClass::Read
+                    && !handle.profile.read_only()
+                    && !handle.open_txn.load(Ordering::SeqCst);
+                let mut res = self.execute_one(&handle, &stmt.sql, max_rows, timeout_secs, &cancelled).await;
+                if want_origins && let Ok(outcomes) = &mut res {
+                    self.add_origins(&handle, &stmt.sql, outcomes).await;
+                }
+                if res.is_ok()
+                    && stmt.class == crate::safety::StatementClass::Transaction
+                    && let Some(open) = txn_effect(&stmt.sql)
+                {
+                    handle.open_txn.store(open, Ordering::SeqCst);
+                }
                 let duration_ms = t0.elapsed().as_millis() as u64;
                 let base = opts.base_offset + stmt.start;
                 let mut produced = match res {
@@ -551,7 +572,7 @@ impl Engine {
                 if stmt.class == crate::safety::StatementClass::Read {
                     for r in produced.iter_mut() {
                         if let Some(cols) = r.columns.clone() {
-                            r.editing = Some(self.editing_for(&handle, session_id, &cols).await);
+                            r.editing = Some(self.editing_for(&handle, session_id, &stmt.sql, &cols).await);
                         }
                     }
                 }
@@ -591,29 +612,8 @@ impl Engine {
     ) -> Result<Vec<StatementOutcome>> {
         let canceller = lock(&handle.canceller).clone();
         let sql_owned = sql.to_string();
-        // Origins let result cells be edited; read-only sessions never edit, so skip the lookup.
-        let want_origins = !handle.profile.read_only();
         let fut = self.with_session(&handle.info.session_id, move |s| {
-            Box::pin(async move {
-                let mut outcomes = s.execute(&sql_owned, max_rows).await?;
-                if want_origins {
-                    for o in outcomes.iter_mut() {
-                        if let StatementOutcome::Rows { rows } = o
-                            && rows.columns.iter().all(|c| c.origin.is_none())
-                        {
-                            // Origins are a bonus: a failed describe leaves the result read-only.
-                            if let Ok(found) = s.describe_origins(&sql_owned).await
-                                && found.len() == rows.columns.len()
-                            {
-                                for (c, o) in rows.columns.iter_mut().zip(found) {
-                                    c.origin = o;
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(outcomes)
-            })
+            Box::pin(async move { s.execute(&sql_owned, max_rows).await })
         });
         tokio::pin!(fut);
         let map_cancel = |e: AppError| {
@@ -785,27 +785,123 @@ impl Engine {
             .ok_or_else(|| AppError::internal("COUNT returned no value"))
     }
 
+    /// Fills in column origins the driver could not report while executing (PostgreSQL describes
+    /// the statement without running it). Runs after the statement, outside its timeout, so a
+    /// slow describe can never turn a finished statement into a "timeout". Origins are a bonus:
+    /// any failure leaves the result read-only.
+    async fn add_origins(&self, handle: &Arc<SessionHandle>, sql: &str, outcomes: &mut [StatementOutcome]) {
+        let unknown = |o: &StatementOutcome| matches!(o, StatementOutcome::Rows { rows } if rows.columns.iter().all(|c| c.origin.is_none()));
+        if !outcomes.iter().any(unknown) {
+            return;
+        }
+        let sql = sql.to_string();
+        let fut = self
+            .with_session(&handle.info.session_id, move |s| Box::pin(async move { s.describe_origins(&sql).await }));
+        tokio::pin!(fut);
+        let found = match tokio::time::timeout(DESCRIBE_TIMEOUT, &mut fut).await {
+            Ok(Ok(found)) => found,
+            Ok(Err(_)) => return,
+            Err(_) => {
+                // Waiting on a lock, say: interrupt it rather than hold the session.
+                let canceller = lock(&handle.canceller).clone();
+                let _ = canceller.cancel().await;
+                let _ = tokio::time::timeout(CANCEL_GRACE, &mut fut).await;
+                return;
+            }
+        };
+        for o in outcomes.iter_mut() {
+            if let StatementOutcome::Rows { rows } = o
+                && rows.columns.iter().all(|c| c.origin.is_none())
+                && found.len() == rows.columns.len()
+            {
+                for (c, f) in rows.columns.iter_mut().zip(found.iter()) {
+                    c.origin = f.clone();
+                }
+            }
+        }
+    }
+
     /// Which cells of a result can be edited (see result_edit.rs). Never fails: problems make cells read-only.
     async fn editing_for(
         &self,
         handle: &Arc<SessionHandle>,
         session_id: &str,
+        sql: &str,
         cols: &[ColumnMeta],
     ) -> crate::result_edit::ResultEditing {
-        use crate::result_edit::{not_editable, origin_tables, result_editing};
+        use crate::config::Driver;
+        use crate::result_edit::{not_editable, origin_tables, result_editing_with};
+        use crate::result_sql::{Shape, occurrences, shape};
+        let driver = handle.profile.driver;
         if handle.profile.read_only() {
             return not_editable(cols, "Read-only connection");
         }
-        if handle.profile.driver == crate::config::Driver::Duckdb {
+        if handle.open_txn.load(Ordering::SeqCst) {
+            return not_editable(cols, "Commit or roll back the open transaction to edit results");
+        }
+        if driver == Driver::Duckdb {
             return not_editable(cols, "Query results can't be edited on DuckDB");
         }
+        let origins = origin_tables(cols);
+        if origins.is_empty() {
+            return result_editing_with(cols, &[], &[]);
+        }
+        // Origins name the table, not the alias or the UNION branch; the statement's shape
+        // rules out results where that is ambiguous (see result_sql.rs).
+        let relations = match shape(sql, handle.info.dialect) {
+            Shape::Blocked(reason) => return not_editable(cols, &reason),
+            Shape::Tables(t) => t,
+        };
+        let mut pre_blocked = Vec::new();
+        for (schema, table) in &origins {
+            let reason = match occurrences(&relations, schema, table) {
+                1 => continue,
+                0 => format!("{table} is not named in the query, so its rows cannot be traced"),
+                _ => format!("{table} appears more than once, so rows cannot be told apart"),
+            };
+            pre_blocked.push(((schema.clone(), table.clone()), reason));
+        }
+        // SQLite (and possibly MySQL) report a view's columns as its base table's, so a view
+        // anywhere in the query could hide another instance of an origin table.
+        if matches!(driver, Driver::Sqlite | Driver::Mysql | Driver::Mariadb) {
+            for r in relations
+                .iter()
+                .filter(|r| !origins.iter().any(|(s, t)| occurrences(std::slice::from_ref(r), s, t) > 0))
+            {
+                let schemas: Vec<String> = match (&r.schema, driver) {
+                    (Some(s), _) => vec![s.clone()],
+                    (None, Driver::Sqlite) => vec!["main".into()],
+                    (None, _) => {
+                        let mut v: Vec<String> = origins.iter().map(|(s, _)| s.clone()).collect();
+                        v.push(handle.info.database.clone());
+                        v.dedup();
+                        v
+                    }
+                };
+                let mut found = false;
+                for s in &schemas {
+                    if let Ok(st) = self.table_structure(session_id, s, &r.name, false).await {
+                        if st.kind != ObjectKind::Table {
+                            return not_editable(cols, "Results that read from a view can't be edited");
+                        }
+                        found = true;
+                    }
+                }
+                if !found {
+                    return not_editable(
+                        cols,
+                        &format!("Could not check {}, so these results can't be edited", r.name),
+                    );
+                }
+            }
+        }
         let mut structures = Vec::new();
-        for (schema, table) in origin_tables(cols) {
-            if let Ok(s) = self.table_structure(session_id, &schema, &table, false).await {
+        for (schema, table) in &origins {
+            if let Ok(s) = self.table_structure(session_id, schema, table, false).await {
                 structures.push(s);
             }
         }
-        result_editing(cols, &structures)
+        result_editing_with(cols, &structures, &pre_blocked)
     }
 
     pub async fn preview_changes(&self, session_id: &str, set: &ChangeSet) -> Result<ChangePreview> {
@@ -841,13 +937,31 @@ impl Engine {
         if !confirmed {
             return Err(AppError::new(ErrorKind::ConfirmationRequired, "Review the pending changes before committing"));
         }
+        // Our BEGIN/COMMIT would commit (or, on a conflict, roll back) the user's own open transaction.
+        let open_txn = || {
+            AppError::new(
+                ErrorKind::PolicyViolation,
+                "This tab has an open transaction. Commit or roll it back first, then commit your edits.",
+            )
+        };
+        if handle.open_txn.load(Ordering::SeqCst) {
+            return Err(open_txn());
+        }
         let mut statements = Vec::new();
         for set in sets {
             let structure = self.table_structure(session_id, &set.schema, &set.table, true).await?;
             statements.extend(build_statements(handle.info.dialect, &structure, set)?);
         }
         let atomic = handle.info.capabilities.transactions;
-        self.with_session(session_id, move |s| Box::pin(async move { s.apply(&statements, atomic).await })).await
+        self.with_session(session_id, move |s| {
+            Box::pin(async move {
+                if s.in_transaction().await? {
+                    return Err(open_txn());
+                }
+                s.apply(&statements, atomic).await
+            })
+        })
+        .await
     }
 
     /// Runs reviewed, application-generated DDL (from the structure editor).
@@ -1293,6 +1407,19 @@ fn build_select_unchecked(
 
 /// Statement that switches the default schema, or `None` where names are not resolved
 /// through a default schema (SQLite searches main, temp and attached databases itself).
+/// Whether a successful transaction-control statement leaves a transaction open (`Some(true)`),
+/// ends it (`Some(false)`), or neither (savepoints, `SET TRANSACTION`).
+fn txn_effect(sql: &str) -> Option<bool> {
+    let words: Vec<String> =
+        sql.split_whitespace().take(2).map(|w| w.trim_end_matches(';').to_ascii_uppercase()).collect();
+    match words.first().map(String::as_str)? {
+        "BEGIN" | "START" => Some(true),
+        "COMMIT" | "END" | "ABORT" => Some(false),
+        "ROLLBACK" if words.get(1).is_none_or(|w| w != "TO") => Some(false),
+        _ => None,
+    }
+}
+
 pub fn default_schema_sql(driver: crate::config::Driver, schema: &str) -> Result<Option<String>> {
     use crate::config::Driver;
     Ok(match driver {
@@ -1318,6 +1445,17 @@ pub fn default_schema_sql(driver: crate::config::Driver, schema: &str) -> Result
 mod schema_tests {
     use super::*;
     use crate::config::Driver;
+
+    #[test]
+    fn transaction_control_is_tracked() {
+        assert_eq!(super::txn_effect("BEGIN"), Some(true));
+        assert_eq!(super::txn_effect("start transaction read only"), Some(true));
+        assert_eq!(super::txn_effect("COMMIT;"), Some(false));
+        assert_eq!(super::txn_effect("end"), Some(false));
+        assert_eq!(super::txn_effect("ROLLBACK"), Some(false));
+        assert_eq!(super::txn_effect("rollback to savepoint a"), None);
+        assert_eq!(super::txn_effect("SAVEPOINT a"), None);
+    }
 
     #[test]
     fn default_schema_statements() {

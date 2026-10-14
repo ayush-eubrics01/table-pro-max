@@ -392,6 +392,10 @@ impl Session for SqliteSession {
         self.with_conn(move |c| run_query(c, &sql, &params, max_rows)).await
     }
 
+    async fn in_transaction(&mut self) -> Result<bool> {
+        self.with_conn(|c| Ok(!c.is_autocommit())).await
+    }
+
     async fn apply(&mut self, statements: &[ParamStatement], atomic: bool) -> Result<Vec<u64>> {
         let statements = statements.to_vec();
         self.with_conn(move |c| {

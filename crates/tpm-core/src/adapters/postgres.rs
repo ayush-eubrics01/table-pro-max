@@ -28,7 +28,8 @@ use crate::model::*;
 pub struct PgSession {
     client: Client,
     canceller: Arc<PgCanceller>,
-    /// (table oid, attnum) → (schema, table, column), for result column origins.
+    /// (table oid, attnum) → (schema, table, column), for result column origins. Rebuilt for every
+    /// described statement, so a renamed or swapped column is never reported under a stale name.
     origin_names: std::collections::HashMap<(u32, i16), (String, String, String)>,
 }
 
@@ -441,8 +442,27 @@ impl Session for PgSession {
         }
     }
 
+    async fn in_transaction(&mut self) -> Result<bool> {
+        // In a transaction begun by an earlier statement, now() (its start) is older than this
+        // statement's start. Simple protocol: one message, so the two are equal otherwise (the
+        // extended protocol's separate Bind/Execute would move statement_timestamp()). A failure
+        // (e.g. an aborted transaction) also counts as "inside".
+        let rows = match self.client.simple_query("SELECT now() <> statement_timestamp()").await {
+            Ok(r) => r,
+            Err(_) => return Ok(true),
+        };
+        Ok(rows
+            .iter()
+            .find_map(|m| match m {
+                tokio_postgres::SimpleQueryMessage::Row(r) => r.get(0).map(|v| v != "f"),
+                _ => None,
+            })
+            .unwrap_or(true))
+    }
+
     async fn describe_origins(&mut self, sql: &str) -> Result<Vec<Option<ColumnOrigin>>> {
-        // Describe only: prepare parses and plans the statement but never executes it.
+        // Describe only: prepare parses and analyses the statement but never executes it.
+        self.origin_names.clear();
         let stmt = self.client.prepare(sql).await.map_err(map_error)?;
         let cols: Vec<(Option<u32>, Option<i16>)> =
             stmt.columns().iter().map(|c| (c.table_oid(), c.column_id())).collect();
