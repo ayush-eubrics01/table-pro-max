@@ -4,7 +4,7 @@ import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialo
 import { listen } from "@tauri-apps/api/event";
 import { format as formatSql } from "sql-formatter";
 import type { SQLNamespace } from "@codemirror/lang-sql";
-import type { AiTask, ExplainResult, ScriptResult, SessionInfo, StatementResult } from "../../types/backend";
+import type { AiTask, Environment, ExplainResult, ScriptResult, SessionInfo, StatementResult } from "../../types/backend";
 import { api, toError } from "../../lib/ipc";
 import { byteToUtf16, formatDuration, uid, utf16ToByte } from "../../lib/text";
 import { confirmAction, notify, notifyError, promptText } from "../../stores/ui";
@@ -18,6 +18,8 @@ import { ExplainView } from "../explain/ExplainView";
 import { connectWithPrompt } from "../connections/connectFlow";
 import { useJobProgress } from "../import-export/useJobProgress";
 import { AiPanel } from "../ai/AiPanel";
+import { queryTarget } from "./queryTarget";
+import { isMacPlatform } from "../../app/WindowControls";
 
 /** Tables named after FROM/JOIN/UPDATE/INTO, resolved against the default schema. */
 export function referencedTables(sql: string, defaultSchema: string): { schema: string; table: string }[] {
@@ -38,6 +40,22 @@ interface Props {
 }
 
 /** One query tab: its own editor, its own connection session and its own results. */
+export function QueryToolbarTarget({ target, readOnly, env }: { target: string; readOnly: boolean; env: Environment }) {
+  return (
+    <>
+      {readOnly && (
+        <span className="access-pill ro">
+          <Icon name="lock" size={13} /> Read-only
+        </span>
+      )}
+      <span className="query-target mono" title="Statements in this tab run here">
+        {target}
+      </span>
+      <EnvBadge env={env} />
+    </>
+  );
+}
+
 export function QueryTab({ ws, tab, active }: Props) {
   const settings = useSettings((s) => s.settings);
   const updateTab = useWorkspaces((s) => s.updateTab);
@@ -361,8 +379,8 @@ export function QueryTab({ ws, tab, active }: Props) {
   return (
     <div className="tab-panel">
       <div className="toolbar" role="toolbar" aria-label="Query tools">
-        <button className="btn btn-primary" onClick={() => run("current")} disabled={!!running} title="Run current statement or selection (Ctrl+Enter)">
-          <Icon name="play_arrow" size={14} /> Run
+        <button className="btn btn-primary btn-run" onClick={() => run("current")} disabled={!!running} title="Run current statement or selection (Ctrl+Enter)">
+          <Icon name="play_arrow" size={15} /> Run <span className="kbd">{isMacPlatform() ? "⌘" : "Ctrl"} ↵</span>
         </button>
         <button className="btn" onClick={() => run("all")} disabled={!!running} title="Run all statements (Ctrl+Shift+Enter)">
           <Icon name="play_circle" size={14} /> Run all
@@ -394,12 +412,13 @@ export function QueryTab({ ws, tab, active }: Props) {
             Analyze
           </button>
         )}
-        <button className="btn btn-ghost btn-icon" onClick={format} aria-label="Format SQL" title="Format (Ctrl+Shift+F)">
-          <Icon name="format_align_left" size={14} />
+        <button className="btn btn-ghost" onClick={format} aria-label="Format SQL" title="Format (Ctrl+Shift+F)">
+          <Icon name="format_align_left" size={14} /> Format
         </button>
         <button className="btn btn-ghost btn-icon" onClick={save} aria-label="Save query" title="Save query (Ctrl+S)">
           <Icon name="save" size={14} />
         </button>
+        <span className="sep" />
         <button className="btn btn-ghost btn-icon" onClick={openFile} aria-label="Open SQL file" title="Open a .sql file in this tab">
           <Icon name="folder_open" size={14} />
         </button>
@@ -423,15 +442,7 @@ export function QueryTab({ ws, tab, active }: Props) {
           </button>
         )}
         <span className="grow" />
-        {info.readOnly && (
-          <span className="meta">
-            <Icon name="lock" size={12} /> Read-only
-          </span>
-        )}
-        <span className="meta mono" title="Statements in this tab run here">
-          {info.database || info.target}
-        </span>
-        <EnvBadge env={info.environment} />
+        <QueryToolbarTarget target={queryTarget(info.dialect, ws.profile.driver, info.database, ws.schema)} readOnly={info.readOnly} env={info.environment} />
       </div>
       <div className="split-h" style={{ minHeight: 0 }}>
         <div ref={container} className="split-v">

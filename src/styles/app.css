@@ -1021,6 +1021,22 @@ pre,
   height: 18px;
   background: var(--border);
 }
+.btn-run .kbd {
+  height: 16px;
+  margin-left: 4px;
+  background: transparent;
+  border-color: currentColor;
+  color: inherit;
+  opacity: 0.7;
+}
+.query-target {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+}
 .toolbar .meta {
   color: var(--text-muted);
   font-size: var(--text-sm);
