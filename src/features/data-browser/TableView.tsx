@@ -8,7 +8,7 @@ import { confirmAction, notify, notifyError } from "../../stores/ui";
 import { useSettings } from "../../stores/settings";
 import { DataGrid, type CellPos, type GridHandle, type GridSelection } from "../data-grid/DataGrid";
 import { ValueEditor } from "../value-editor/ValueEditor";
-import { linkFilter, linkLabel, tableLinks } from "./fkLinks";
+import { firstLink, linkFilter, tableLinks } from "./fkLinks";
 import type { MenuEntry } from "../../components/Menu";
 import { FilterBuilder } from "../filters/FilterBuilder";
 import { FilterChips } from "../filters/FilterChips";
@@ -367,7 +367,9 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
 
   const headerItems = (col: number): MenuEntry[] => {
     const c = columns[col];
-    if (!c || !hasPk || c.primaryKey !== null || !isTable) return [];
+    // Key and foreign-key columns are always loaded (large_values.rs), so there is no choice to offer.
+    const isForeignKey = structure?.foreignKeys.some((f) => f.columns.includes(c?.name ?? "")) ?? false;
+    if (!c || !hasPk || c.primaryKey !== null || isForeignKey || !isTable) return [];
     const current = overrides?.find((o) => o.column === c.name)?.mode ?? null;
     return [
       { label: "Load this column", onSelect: () => loadColumn(col), disabled: !deferredCols.has(c.name) },
@@ -427,13 +429,8 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
 
   const cellLink = (row: number, col: number) => {
     if (!onOpenTable || row >= rows.length) return null; // new rows have nothing to follow yet
-    const link = fkByColumn[col]?.[0];
-    const cells = getRow(row);
-    if (!link || !cells) return null;
-    const label = linkLabel(link, cells);
-    const filter = linkFilter(link, cells);
-    if (!label || !filter) return null;
-    return { label, open: () => onOpenTable(link.fk.refSchema, link.fk.refTable, filter) };
+    const hit = firstLink(fkByColumn, col, () => getRow(row));
+    return hit && { label: hit.label, open: () => onOpenTable(hit.link.fk.refSchema, hit.link.fk.refTable, hit.filter) };
   };
 
   const contextItems = (sel: GridSelection) => {

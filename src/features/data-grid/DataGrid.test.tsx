@@ -124,4 +124,22 @@ describe("DataGrid", () => {
     expect(opened).toEqual(["click", "click"]);
     expect(screen.queryByLabelText("Edit customer_id")).not.toBeInTheDocument();
   });
+
+  it("keeps focus on the grid when the arrow is pressed, and adds no separator without extra menu items", async () => {
+    render(
+      <DataGrid
+        ariaLabel="Rows"
+        columns={[{ name: "customer_id", typeName: "integer", foreignKey: true }]}
+        rowCount={1}
+        getRow={() => ["42"]}
+        cellLink={() => ({ label: "Open customers where id = 42", open: () => {} })}
+        contextItems={() => []}
+      />,
+    );
+    const pressed = fireEvent.mouseDown(screen.getByRole("button", { name: "Open customers where id = 42" }));
+    expect(pressed).toBe(false); // default prevented: the arrow never takes focus
+    fireEvent.contextMenu(screen.getByText("42").closest(".grid-cell")!);
+    const menu = await screen.findByRole("menu");
+    expect(menu.querySelector("hr, [role='separator']")).toBeNull();
+  });
 });

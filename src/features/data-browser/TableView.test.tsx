@@ -438,4 +438,12 @@ describe("following references", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open customers where id = 77" }));
     expect((opened[0]![2] as { children: { value: string }[] }).children[0]!.value).toBe("77");
   });
+
+  it("does not offer load/defer choices for a foreign-key column (they are always loaded)", async () => {
+    render(<TableView session={session} schema="public" table="orders" onReconnect={async () => {}} onOpenTable={() => {}} />);
+    await screen.findByText("42");
+    fireEvent.contextMenu(screen.getByRole("columnheader", { name: /customer_id/ }));
+    await screen.findByRole("menuitem", { name: "Sort ascending" });
+    expect(screen.queryByRole("menuitem", { name: "Don't load" })).not.toBeInTheDocument();
+  });
 });

@@ -81,7 +81,7 @@ Every driver implements `tpm_core::adapters::Session` (`crates/tpm-core/src/adap
 Opened tables leave potentially large columns out of the page query entirely: no `length()`,
 no preview, no `CASE`. The database never reads them for that page; on PostgreSQL those values
 stay in TOAST storage. Columns are chosen by type from the introspected structure, never by
-looking at data, and primary-key columns are always loaded. Tables without a primary key load
+looking at data, and primary-key and foreign-key columns are always loaded (they identify rows and are followed from the grid). Tables without a primary key load
 every column.
 
 | Engine | Deferred by default | Loaded |

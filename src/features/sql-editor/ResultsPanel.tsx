@@ -4,7 +4,7 @@ import type { Cell, ColumnInfo, Dialect, ScriptResult, SessionInfo, StatementRes
 import { api } from "../../lib/ipc";
 import { formatCount, formatDuration, pluralize } from "../../lib/text";
 import { DataGrid, type CellPos } from "../data-grid/DataGrid";
-import { linkFilter, linkLabel, resultLinks, type FkLink } from "../data-browser/fkLinks";
+import { firstLink, linkFilter, resultLinks, type FkLink } from "../data-browser/fkLinks";
 import type { GroupNode } from "../filters/filterModel";
 import { ValueEditor } from "../value-editor/ValueEditor";
 import { useSettings } from "../../stores/settings";
@@ -139,12 +139,9 @@ function ResultGrid({
       }}
       loadFull={(cells: CellPos[]) => Promise.all(cells.map((p) => fullValue(p.row, p.col)))}
       cellLink={(r, c) => {
-        const link = links[c]?.[0];
-        const cells = getRow(r);
-        if (!link || !cells || !onOpenTable) return null;
-        const label = linkLabel(link, cells);
-        const filter = linkFilter(link, cells);
-        return label && filter ? { label, open: () => onOpenTable(link.fk.refSchema, link.fk.refTable, filter) } : null;
+        if (!onOpenTable) return null;
+        const hit = firstLink(links, c, () => getRow(r));
+        return hit && { label: hit.label, open: () => onOpenTable(hit.link.fk.refSchema, hit.link.fk.refTable, hit.filter) };
       }}
       contextItems={(sel) => {
         if (!sel.active || !onOpenTable) return [];

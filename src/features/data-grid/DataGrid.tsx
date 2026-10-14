@@ -456,7 +456,10 @@ export function DataGrid(props: DataGridProps) {
   const cellMenu = (): MenuEntry[] => [
     { label: "Copy", shortcut: "Ctrl+C", onSelect: () => copySelection(false) },
     { label: "Copy with column names", shortcut: "Ctrl+Shift+C", onSelect: () => copySelection(true) },
-    ...(contextItems ? (["separator", ...contextItems(selection)] as MenuEntry[]) : []),
+    ...((): MenuEntry[] => {
+      const extra = contextItems?.(selection) ?? [];
+      return extra.length ? ["separator", ...extra] : [];
+    })(),
   ];
 
   const totalWidth = ROWNUM_WIDTH + colVirtualizer.getTotalSize();
@@ -597,6 +600,7 @@ export function DataGrid(props: DataGridProps) {
                   const selected = inSelection(ri.index, col);
                   const active = focus?.row === ri.index && focus.col === col;
                   const tone = cellTone(c.typeName, v);
+                  const link = isEditing ? null : (cellLink?.(ri.index, col) ?? null);
                   const cls = [
                     "grid-cell",
                     v === null ? "null" : "",
@@ -604,6 +608,7 @@ export function DataGrid(props: DataGridProps) {
                     v !== undefined && isNotLoaded(v) ? "not-loaded" : "",
                     v !== undefined && (isPartial(v) || isLargeText(v, largeValueChars)) ? "partial" : "",
                     isLoading?.(ri.index, col) ? "loading" : "",
+                    link ? "has-link" : "",
                     isNumericType(c.typeName) ? "num" : "",
                     selected ? "selected" : "",
                     active ? "active" : "",
@@ -679,17 +684,22 @@ export function DataGrid(props: DataGridProps) {
                           <span className={tone === "enum" ? "tag" : undefined}>{v === undefined ? "…" : cellDisplay(v)}</span>
                         )
                       )}
-                      {!isEditing &&
-                        (() => {
-                          const link = cellLink?.(ri.index, col);
-                          return link ? (
+                      {link && (
                             <button
                               type="button"
                               className="fk-jump"
                               aria-label={link.label}
                               title={link.label}
                               tabIndex={-1}
-                              onMouseDown={(e) => e.stopPropagation()}
+                              onMouseDown={(e) => {
+                                // Keep focus on the grid (so Space can't re-press the arrow later),
+                                // and select the cell as a click on it would.
+                                e.preventDefault();
+                                e.stopPropagation();
+                                if (editing) commitEdit();
+                                scrollRef.current?.focus();
+                                select({ row: ri.index, col });
+                              }}
                               onDoubleClick={(e) => e.stopPropagation()}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -698,8 +708,7 @@ export function DataGrid(props: DataGridProps) {
                             >
                               <Icon name="open_in_new" size={12} />
                             </button>
-                          ) : null;
-                        })()}
+                      )}
                     </div>
                   );
                 })}

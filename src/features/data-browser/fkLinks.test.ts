@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ColumnInfo, ColumnMeta, TableStructure } from "../../types/backend";
-import { linkFilter, linkLabel, resultLinks, tableLinks } from "./fkLinks";
+import { firstLink, linkFilter, linkLabel, resultLinks, tableLinks } from "./fkLinks";
 
 const col = (name: string, primaryKey: number | null = null): ColumnInfo => ({
   name,
@@ -69,5 +69,27 @@ describe("fkLinks", () => {
     expect(links[4]).toEqual([]);
     const twice: ColumnMeta[] = [...cols, { name: "shop", typeName: "int4", origin: o("shop") }, { name: "region2", typeName: "text", origin: o("region") }];
     expect(resultLinks(twice, [orders])[5]).toEqual([]); // `region` appears twice: the composite key is ambiguous
+  });
+
+  it("does no row work for unlinked columns and uses the first usable foreign key", () => {
+    const links = tableLinks(orders);
+    let calls = 0;
+    const row = () => {
+      calls++;
+      return ["1", "42", null, "7"];
+    };
+    expect(firstLink(links, 0, row)).toBeNull();
+    expect(calls).toBe(0);
+    // `region` is only in the composite key, whose `region` part is NULL here: no link.
+    expect(firstLink(links, 2, row)).toBeNull();
+    const twoKeys = { ...orders, foreignKeys: [orders.foreignKeys[1]!, { ...orders.foreignKeys[0]!, columns: ["shop"], refTable: "stores" }] };
+    const got = firstLink(tableLinks(twoKeys), 3, row);
+    expect(got?.link.fk.refTable).toBe("stores"); // the composite key is unusable, the second one works
+    expect(got?.label).toBe("Open stores where id = 7");
+  });
+
+  it("skips foreign keys whose referenced columns are unknown", () => {
+    const broken = { ...orders, foreignKeys: [{ ...orders.foreignKeys[0]!, refColumns: [""] }] };
+    expect(tableLinks(broken)[1]).toEqual([]);
   });
 });

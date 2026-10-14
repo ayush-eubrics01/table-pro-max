@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { snapshot } from "./restore";
+import { restoredFilter, snapshot } from "./restore";
 import { profile, session } from "../test/fixtures";
 import type { Workspace } from "../stores/workspaces";
 
@@ -21,5 +21,13 @@ describe("session snapshot", () => {
       health: "ok",
     } as unknown as Workspace;
     expect(snapshot([ws], "w").workspaces[0]!.tabs[0]).toMatchObject({ kind: "table", name: "customers", filter });
+  });
+
+  it("only restores a filter that has the shape of a filter group", () => {
+    const ok = { type: "group", logic: "and", children: [] };
+    expect(restoredFilter(ok)).toEqual(ok);
+    for (const bad of [null, "x", { type: "condition" }, { type: "group", logic: "and" }, { type: "group", children: "no" }]) {
+      expect(restoredFilter(bad)).toBeUndefined();
+    }
   });
 });

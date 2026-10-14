@@ -564,10 +564,56 @@ async fn exercise(t: Target) {
     origins(&engine, &sid, driver).await;
     edit_results(&engine, &sid, &profile, t.password.as_deref(), driver).await;
     lazy_values(&engine, &sid, &t.schema, driver).await;
+    fk_round_trip(&engine, &sid, &t.schema, driver).await;
 
     // --- cleanup ---
     run(&engine, &sid, "DROP TABLE tpm_it_items; DROP TABLE tpm_it_owners").await;
     engine.close_all().await;
+}
+
+/// Following a foreign key: the referenced columns are known (even when the DDL left them
+/// implicit) and an `eq` filter on the referencing cell's text finds exactly that row.
+async fn fk_round_trip(engine: &Arc<Engine>, sid: &str, schema: &str, driver: Driver) {
+    use tpm_core::browse::BrowseRequest;
+    let child_cols = match driver {
+        // SQLite and PostgreSQL allow `REFERENCES parent` without a column list (the parent's key).
+        Driver::Sqlite | Driver::Postgres => "parent_id integer REFERENCES tpm_it_fkp",
+        // MySQL ignores column-level REFERENCES; a table-level constraint is the portable form.
+        _ => "parent_id integer, FOREIGN KEY (parent_id) REFERENCES tpm_it_fkp (id)",
+    };
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_fkc").await;
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_fkp").await;
+    run(engine, sid, "CREATE TABLE tpm_it_fkp (id integer PRIMARY KEY, name varchar(20))").await;
+    run(engine, sid, &format!("CREATE TABLE tpm_it_fkc (id integer PRIMARY KEY, {child_cols})")).await;
+    run(engine, sid, "INSERT INTO tpm_it_fkp VALUES (42, 'forty-two'), (43, 'other')").await;
+    run(engine, sid, "INSERT INTO tpm_it_fkc VALUES (1, 42)").await;
+    let child = engine.table_structure(sid, schema, "tpm_it_fkc", true).await.unwrap();
+    let fk = child.foreign_keys.first().unwrap_or_else(|| panic!("{driver:?}: no foreign key introspected"));
+    assert_eq!(fk.columns, vec!["parent_id".to_string()], "{driver:?}");
+    assert_eq!(fk.ref_columns, vec!["id".to_string()], "{driver:?}: referenced columns resolved");
+    let req = BrowseRequest {
+        schema: fk.ref_schema.clone(),
+        table: fk.ref_table.clone(),
+        limit: 150,
+        filter: Some(FilterNode::Group {
+            logic: Logic::And,
+            negate: false,
+            children: vec![FilterNode::Condition {
+                column: fk.ref_columns[0].clone(),
+                op: FilterOp::Eq,
+                value: Some("42".into()),
+                value2: None,
+                values: vec![],
+                enabled: true,
+            }],
+        }),
+        ..Default::default()
+    };
+    let page = engine.browse(sid, &req).await.unwrap();
+    assert_eq!(page.rows.len(), 1, "{driver:?}");
+    assert_eq!(page.rows[0][0], Cell::Text("42".into()), "{driver:?}");
+    run(engine, sid, "DROP TABLE tpm_it_fkc").await;
+    run(engine, sid, "DROP TABLE tpm_it_fkp").await;
 }
 
 /// Opened tables leave unbounded columns out of the page; values come back by key on demand.

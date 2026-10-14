@@ -6,7 +6,7 @@ import { envStyle } from "../lib/env";
 import { uid } from "../lib/text";
 import { useConnections } from "../stores/connections";
 import { useSettings } from "../stores/settings";
-import { useWorkspaces, type Tab, type TableTab } from "../stores/workspaces";
+import { useWorkspaces, type Tab } from "../stores/workspaces";
 import { confirmAction, notifyError, useUi } from "../stores/ui";
 import { Overlays } from "../components/Overlays";
 import { Home } from "../features/connections/Home";
@@ -21,7 +21,7 @@ import { useUpdates } from "../features/updates/store";
 import { StatusBar, WorkspaceView } from "./WorkspaceView";
 import { TitleBar } from "./TitleBar";
 import { isMacPlatform } from "./WindowControls";
-import { loadSaved, scheduleSave } from "./restore";
+import { loadSaved, restoredFilter, scheduleSave } from "./restore";
 
 export function App() {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
@@ -107,7 +107,7 @@ export function App() {
                 schema: t.schema ?? "",
                 name: t.name ?? "",
                 objectKind: (t.objectKind ?? "table") as ObjectKind,
-                ...(t.filter ? { filter: t.filter as TableTab["filter"] } : {}),
+                ...(restoredFilter(t.filter) ? { filter: restoredFilter(t.filter) } : {}),
               };
             return { kind: t.kind, id: uid(), title: t.title, schema: t.schema ?? "", name: t.name ?? "", objectKind: (t.objectKind ?? "table") as ObjectKind };
           });

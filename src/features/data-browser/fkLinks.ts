@@ -12,6 +12,9 @@ export interface FkLink {
 }
 
 function add(byCol: FkLink[][], link: FkLink) {
+  // A key whose referenced columns are unknown can't build a filter: no link.
+  const fk = link.fk;
+  if (fk.refColumns.length !== fk.columns.length || fk.refColumns.some((c) => !c)) return;
   for (const i of link.columns) byCol[i]!.push(link);
 }
 
@@ -63,6 +66,23 @@ export function linkFilter(link: FkLink, row: Cell[]): GroupNode | null {
     logic: "and",
     children: link.fk.refColumns.map((column, k) => ({ type: "condition", column, op: "eq", value: values[k]!, enabled: true })),
   };
+}
+
+/**
+ * The link a cell follows: the first of its column's foreign keys that the row's values can use.
+ * The row is only built for columns that have links (this runs for every visible cell).
+ */
+export function firstLink(links: FkLink[][], col: number, row: () => Cell[] | undefined): { link: FkLink; filter: GroupNode; label: string } | null {
+  const candidates = links[col];
+  if (!candidates || candidates.length === 0) return null;
+  const cells = row();
+  if (!cells) return null;
+  for (const link of candidates) {
+    const filter = linkFilter(link, cells);
+    const label = linkLabel(link, cells);
+    if (filter && label) return { link, filter, label };
+  }
+  return null;
 }
 
 export function linkLabel(link: FkLink, row: Cell[]): string | null {
