@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Icon } from "../../components/Icon";
 import type { Cell, ColumnInfo } from "../../types/backend";
-import { cellCopy, cellDisplay, isBinary, isJsonType, prettyJson, formatBytes } from "../../lib/cells";
+import { cellCopy, cellDisplay, isBinary, isJsonType, isLargeText, isNotLoaded, prettyJson, previewText, formatBytes } from "../../lib/cells";
 
 interface Props {
   columns: ColumnInfo[];
@@ -14,10 +14,28 @@ interface Props {
   subheading: string;
   isEdited: (col: number) => boolean;
   onClose: () => void;
+  /** Loads a Not loaded field (large values on demand). */
+  onLoad?: (col: number) => void;
+  /** Opens JSON and long text in the value editor; without it they edit here. */
+  onOpenEditor?: (col: number) => void;
+  largeValueChars?: number;
 }
 
 /** Vertical view of one row: full values, pretty JSON, and multi-line editing. */
-export function RowDetail({ columns, row, editable, readOnlyReason, onEdit, heading, subheading, isEdited, onClose }: Props) {
+export function RowDetail({
+  columns,
+  row,
+  editable,
+  readOnlyReason,
+  onEdit,
+  heading,
+  subheading,
+  isEdited,
+  onClose,
+  onLoad,
+  onOpenEditor,
+  largeValueChars = 256,
+}: Props) {
   return (
     <aside className="detail-panel" aria-label="Row details">
       <header className="detail-head">
@@ -42,6 +60,9 @@ export function RowDetail({ columns, row, editable, readOnlyReason, onEdit, head
               reason={editable(i) ? null : (readOnlyReason?.(i) ?? null)}
               edited={isEdited(i)}
               onEdit={(v) => onEdit(i, v)}
+              onLoad={onLoad && (() => onLoad(i))}
+              onOpenEditor={onOpenEditor && (() => onOpenEditor(i))}
+              largeValueChars={largeValueChars}
             />
           ))}
         </div>
@@ -57,6 +78,9 @@ function Field({
   reason,
   edited,
   onEdit,
+  onLoad,
+  onOpenEditor,
+  largeValueChars,
 }: {
   column: ColumnInfo;
   value: Cell;
@@ -64,6 +88,9 @@ function Field({
   reason: string | null;
   edited: boolean;
   onEdit: (v: string | null) => void;
+  onLoad?: () => void;
+  onOpenEditor?: () => void;
+  largeValueChars: number;
 }) {
   const [draft, setDraft] = useState<string>(typeof value === "string" ? value : "");
   useEffect(() => setDraft(typeof value === "string" ? value : ""), [value]);
@@ -77,7 +104,20 @@ function Field({
         {column.nullable && <span className="type">nullable</span>}
         {edited && <span className="edited">edited</span>}
       </label>
-      {isBinary(value) ? (
+      {isNotLoaded(value) ? (
+        <button className="btn btn-ghost" onClick={onLoad} disabled={!onLoad}>
+          Load
+        </button>
+      ) : onOpenEditor && (isJsonType(column.dataType) || isLargeText(value, largeValueChars)) ? (
+        <div>
+          <pre className={value === null ? "hint" : undefined}>
+            {typeof value === "string" ? previewText(value) + (Array.from(value).length > 80 ? "…" : "") : cellDisplay(value)}
+          </pre>
+          <button className="btn btn-ghost" onClick={onOpenEditor}>
+            Open editor
+          </button>
+        </div>
+      ) : isBinary(value) ? (
         <pre className="hint">
           Binary, {formatBytes(value.size)}
           {"\n"}

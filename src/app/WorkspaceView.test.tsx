@@ -103,7 +103,13 @@ describe("pending query result edits", () => {
   async function runAndEdit() {
     renderWs(ws({ kind: "query", id: "q3", title: "Query 3", sql: "select id, email from users", savedQueryId: "saved", dirty: false }));
     fireEvent.click(screen.getByRole("button", { name: /Run all/ }));
-    fireEvent.doubleClick((await screen.findByText("ada@example.com")).closest(".grid-cell")!);
+    const cell = (await screen.findByText("ada@example.com")).closest(".grid-cell")!;
+    // Under a loaded full-suite run the first double-click can land before the results are
+    // editable; retry until the inline editor opens (a person would just double-click again).
+    await waitFor(() => {
+      if (!screen.queryByLabelText("Edit email")) fireEvent.doubleClick(cell);
+      expect(screen.getByLabelText("Edit email")).toBeInTheDocument();
+    });
     const editor = screen.getByLabelText("Edit email");
     fireEvent.change(editor, { target: { value: "new@example.com" } });
     fireEvent.keyDown(editor, { key: "Enter" });

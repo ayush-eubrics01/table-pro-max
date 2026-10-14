@@ -34,4 +34,19 @@ describe("RowDetail", () => {
     expect(screen.getByText("3")).toBeInTheDocument();
     expect(screen.getByLabelText("email")).toHaveValue("ada@example.com");
   });
+
+  it("offers Load for a Not loaded field and Open editor for JSON and long text", () => {
+    const onLoad = vi.fn();
+    const onOpenEditor = vi.fn();
+    const columns = [
+      ...usersStructure.columns.slice(0, 1),
+      { ...usersStructure.columns[1]!, name: "body", dataType: "text" },
+      { ...usersStructure.columns[1]!, name: "doc", dataType: "jsonb" },
+    ];
+    render(<RowDetail {...base} columns={columns} row={["3", { $notLoaded: true }, '{"a":1}']} onLoad={onLoad} onOpenEditor={onOpenEditor} />);
+    fireEvent.click(screen.getByRole("button", { name: "Load" }));
+    expect(onLoad).toHaveBeenCalledWith(1);
+    fireEvent.click(screen.getByRole("button", { name: "Open editor" }));
+    expect(onOpenEditor).toHaveBeenCalledWith(2);
+  });
 });

@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
-import type { BrowseResult, Cell, SessionInfo, SortSpec, TableStructure } from "../../types/backend";
+import type { BrowseResult, Cell, ColumnFetch, FetchMode, SessionInfo, SortSpec, TableStructure } from "../../types/backend";
 import { api, toError, type BackendError } from "../../lib/ipc";
-import { cellCopy, isBinary, toTsv } from "../../lib/cells";
+import { cellCopy, cellParam, isBinary, isJsonType, isLargeText, isNotLoaded, toTsv } from "../../lib/cells";
 import { formatCount, formatDuration, pluralize, uid } from "../../lib/text";
 import { confirmAction, notify, notifyError } from "../../stores/ui";
 import { useSettings } from "../../stores/settings";
-import { DataGrid, type GridHandle, type GridSelection } from "../data-grid/DataGrid";
+import { DataGrid, type CellPos, type GridHandle, type GridSelection } from "../data-grid/DataGrid";
+import { ValueEditor } from "../value-editor/ValueEditor";
+import type { MenuEntry } from "../../components/Menu";
 import { FilterBuilder } from "../filters/FilterBuilder";
 import { FilterChips } from "../filters/FilterChips";
 import { countConditions, emptyGroup, newCondition, type GroupNode } from "../filters/filterModel";
@@ -43,6 +45,12 @@ type View = "data" | "structure" | "definition";
 export function TableView({ session, schema, table, onReconnect, onDirtyChange, onOpenSql }: Props) {
   const pageSizeSetting = useSettings((s) => s.settings["grid.pageSize"]);
   const checkConflicts = useSettings((s) => s.settings["grid.checkConflicts"]);
+  const largeValueChars = useSettings((s) => s.settings["grid.largeValueChars"]);
+  // Per-column load/defer choices (column names only); null until read.
+  const [overrides, setOverrides] = useState<ColumnFetch[] | null>(null);
+  const [loadingCells, setLoadingCells] = useState<Set<string>>(new Set());
+  const [editorAt, setEditorAt] = useState<{ row: number; col: number } | null>(null);
+  const inflight = useRef(new Map<string, Promise<Cell | undefined>>());
   const [view, setView] = useState<View>("data");
   const [structure, setStructure] = useState<TableStructure | null>(null);
   const [page, setPage] = useState<BrowseResult | null>(null);
@@ -86,10 +94,14 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
       .tableStructure(session.sessionId, schema, table)
       .then((s) => alive && setStructure(s))
       .catch((e) => alive && setError(toError(e)));
+    api
+      .listColumnFetch(session.connectionId, schema, table)
+      .then((o) => alive && setOverrides(o ?? []))
+      .catch(() => alive && setOverrides([]));
     return () => {
       alive = false;
     };
-  }, [session.sessionId, schema, table]);
+  }, [session.sessionId, session.connectionId, schema, table]);
 
   const load = useCallback(
     async (opts: { offset?: number; sort?: SortSpec[]; filter?: GroupNode; pageSize?: number } = {}) => {
@@ -105,6 +117,10 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
           sort: opts.sort ?? sort,
           limit: opts.pageSize ?? pageSize,
           offset: opts.offset ?? offset,
+          // Large columns stay in the database until a cell asks for them.
+          lazy: true,
+          loadColumns: (overrides ?? []).filter((o) => o.mode === "load").map((o) => o.column),
+          deferColumns: (overrides ?? []).filter((o) => o.mode === "defer").map((o) => o.column),
         });
         if (seq !== loadSeq.current) return;
         setPage(result);
@@ -115,14 +131,15 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
         if (seq === loadSeq.current) setLoading(false);
       }
     },
-    [session.sessionId, schema, table, filter, sort, pageSize, offset],
+    [session.sessionId, schema, table, filter, sort, pageSize, offset, overrides],
   );
 
   useEffect(() => {
-    if (structure) void load();
-    // Only when the structure first arrives; later loads are explicit.
+    if (structure && overrides !== null) void load();
+    // When the structure and the column choices arrive, and again when a choice changes;
+    // other loads are explicit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [structure]);
+  }, [structure, overrides]);
 
   /** Runs `action` after confirming that pending edits may be discarded. */
   const guard = async (action: () => void) => {
@@ -172,18 +189,146 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
   const getRow = useCallback((i: number) => displayRow(pending, rows, i), [pending, rows]);
   const columns = structure?.columns ?? [];
 
-  const canEdit = useCallback(
-    (row: number, col: number) => {
+  /** Whether the row's values may change at all (ignoring what a given cell holds). */
+  const canEditRow = useCallback(
+    (row: number) => {
       if (session.readOnly || !isTable) return false;
       if (row >= rows.length) return true;
-      if (!hasPk || pending.deleted.includes(row)) return false;
-      const v = rows[row]?.[col];
-      return v !== undefined && !isBinary(v);
+      return hasPk && !pending.deleted.includes(row);
     },
-    [session.readOnly, isTable, hasPk, rows, pending.deleted],
+    [session.readOnly, isTable, hasPk, rows.length, pending.deleted],
+  );
+
+  const canEdit = useCallback(
+    (row: number, col: number) => {
+      if (!canEditRow(row)) return false;
+      if (row >= rows.length) return true;
+      const v = rows[row]?.[col];
+      // A Not loaded cell becomes editable once its value is loaded.
+      return v !== undefined && !isBinary(v) && !isNotLoaded(v);
+    },
+    [canEditRow, rows],
   );
 
   const onEdit = (row: number, col: number, value: string | null) => setPending((p) => editCell(p, rows, row, col, value));
+
+  // ---- large values on demand ------------------------------------------------------------
+
+  const deferredCols = useMemo(() => new Set((page?.columns ?? []).filter((c) => c.deferred).map((c) => c.name)), [page]);
+
+  /** The primary key of a loaded row, as fetch parameters. */
+  const keyOf = useCallback(
+    (row: number) =>
+      (structure?.columns ?? [])
+        .map((c, i) => ({ c, i }))
+        .filter(({ c }) => c.primaryKey !== null)
+        .sort((a, b) => (a.c.primaryKey ?? 0) - (b.c.primaryKey ?? 0))
+        .map(({ c, i }) => ({ column: c.name, value: cellParam(rows[row]?.[i] ?? null) ?? null })),
+    [structure, rows],
+  );
+
+  /** Puts fetched values into the page: the page is the cache, and any reload clears it. */
+  const putCells = (updates: { row: number; col: number; value: Cell }[]) =>
+    setPage((p) => {
+      if (!p || updates.length === 0) return p;
+      const next = p.rows.map((r) => r.slice());
+      for (const u of updates) if (next[u.row]) next[u.row]![u.col] = u.value;
+      return { ...p, rows: next };
+    });
+
+  const loadCell = (row: number, col: number): Promise<Cell | undefined> => {
+    const k = `${row}:${col}`;
+    const existing = inflight.current.get(k);
+    if (existing) return existing;
+    setLoadingCells((s) => new Set(s).add(k));
+    const p = api
+      .fetchValue(session.sessionId, schema, table, keyOf(row), columns[col]!.name)
+      .then((value) => {
+        putCells([{ row, col, value }]);
+        return value as Cell | undefined;
+      })
+      .catch((e) => {
+        notifyError(e, "Could not load the value");
+        return undefined;
+      })
+      .finally(() => {
+        inflight.current.delete(k);
+        setLoadingCells((s) => {
+          const n = new Set(s);
+          n.delete(k);
+          return n;
+        });
+      });
+    inflight.current.set(k, p);
+    return p;
+  };
+
+  const needsEditor = (col: number, cell: Cell | undefined) => isJsonType(columns[col]?.dataType ?? "") || isLargeText(cell, largeValueChars);
+
+  const onOpenCell = (row: number, col: number, how: "click" | "open") => {
+    if (row >= rows.length) return false; // new rows edit inline
+    const cell = getRow(row)?.[col];
+    if (cell !== undefined && isNotLoaded(cell)) {
+      void loadCell(row, col).then((v) => {
+        if (v === undefined) return;
+        if (needsEditor(col, v)) setEditorAt({ row, col });
+        else if (how === "open") gridRef.current?.startEdit({ row, col });
+      });
+      return true;
+    }
+    if (how === "open" && needsEditor(col, cell)) {
+      setEditorAt({ row, col });
+      return true;
+    }
+    return false;
+  };
+
+  /** Full values for copying: Not loaded cells are fetched, one request per column. */
+  const loadFull = async (cells: CellPos[]): Promise<Cell[]> => {
+    const out: Cell[] = cells.map((p) => getRow(p.row)?.[p.col] ?? null);
+    const byCol = new Map<number, number[]>();
+    cells.forEach((p, i) => {
+      const c = getRow(p.row)?.[p.col];
+      if (c !== undefined && isNotLoaded(c) && p.row < rows.length) byCol.set(p.col, [...(byCol.get(p.col) ?? []), i]);
+    });
+    for (const [col, idx] of byCol) {
+      const got = await api.fetchColumn(session.sessionId, schema, table, columns[col]!.name, idx.map((i) => keyOf(cells[i]!.row)));
+      const updates: { row: number; col: number; value: Cell }[] = [];
+      got.forEach((f, k) => {
+        if (!f.found) return;
+        out[idx[k]!] = f.value;
+        updates.push({ row: cells[idx[k]!]!.row, col, value: f.value });
+      });
+      putCells(updates);
+    }
+    return out;
+  };
+
+  const loadColumn = (col: number) => void loadFull(rows.map((_, r) => ({ row: r, col }))).catch((e) => notifyError(e, "Could not load the column"));
+
+  const setOverride = (column: string, mode: FetchMode | null) =>
+    guard(() => {
+      void (async () => {
+        try {
+          await api.setColumnFetch(session.connectionId, schema, table, column, mode);
+          setOverrides(await api.listColumnFetch(session.connectionId, schema, table));
+        } catch (e) {
+          notifyError(e, "Could not save the column choice");
+        }
+      })();
+    });
+
+  const headerItems = (col: number): MenuEntry[] => {
+    const c = columns[col];
+    if (!c || !hasPk || c.primaryKey !== null || !isTable) return [];
+    const current = overrides?.find((o) => o.column === c.name)?.mode ?? null;
+    return [
+      { label: "Load this column", onSelect: () => loadColumn(col), disabled: !deferredCols.has(c.name) },
+      { label: "Always load", onSelect: () => setOverride(c.name, "load"), disabled: current === "load" },
+      { label: "Don't load", onSelect: () => setOverride(c.name, "defer"), disabled: current === "defer" },
+      { label: "Use default", onSelect: () => setOverride(c.name, null), disabled: current === null },
+    ];
+  };
 
   const addRow = (copyFrom?: Cell[]) => {
     if (!structure) return;
@@ -429,7 +574,13 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
                 <DataGrid
                   ref={gridRef}
                   ariaLabel={`Rows of ${table}`}
-                  columns={structure.columns.map((c) => ({ name: c.name, typeName: c.dataType, primaryKey: c.primaryKey !== null, foreignKey: structure.foreignKeys.some((f) => f.columns.includes(c.name)) }))}
+                  columns={structure.columns.map((c) => ({
+                    name: c.name,
+                    typeName: c.dataType,
+                    primaryKey: c.primaryKey !== null,
+                    foreignKey: structure.foreignKeys.some((f) => f.columns.includes(c.name)),
+                    deferred: deferredCols.has(c.name),
+                  }))}
                   rowCount={rowCount}
                   getRow={getRow}
                   rowState={(i) => (i >= rows.length ? "inserted" : pending.deleted.includes(i) ? "deleted" : undefined)}
@@ -441,6 +592,11 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
                   onSelectionChange={setSelection}
                   contextItems={contextItems}
                   onDeleteKey={(sel) => deleteSelected(sel)}
+                  onOpenCell={onOpenCell}
+                  loadFull={loadFull}
+                  headerItems={headerItems}
+                  isLoading={(r, c) => loadingCells.has(`${r}:${c}`)}
+                  largeValueChars={largeValueChars}
                   rowNumberOffset={offset}
                   bottomInset={nPending > 0 ? 56 : 0}
                 />
@@ -482,7 +638,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
                     });
                   }}
                 >
-                  {[100, 300, 500, 1000, 5000].map((n) => (
+                  {[100, 150, 300, 500, 1000, 5000].map((n) => (
                     <option key={n} value={n}>
                       {n} per page
                     </option>
@@ -504,6 +660,9 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
                 heading={selection.active ? `Row ${offset + selection.active.row + 1}` : "Inspector"}
                 subheading={table}
                 isEdited={(c) => selection.active !== null && selection.active.row < rows.length && pending.edits[selection.active.row]?.[c] !== undefined}
+                onLoad={(c) => selection.active && void loadCell(selection.active.row, c)}
+                onOpenEditor={(c) => selection.active && setEditorAt({ row: selection.active.row, col: c })}
+                largeValueChars={largeValueChars}
                 onClose={() => setDetailOpen(false)}
               />
             )}
@@ -511,6 +670,31 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
         </>
       )}
 
+      {editorAt && structure && columns[editorAt.col] && (
+        <ValueEditor
+          title={`${table} · ${columns[editorAt.col]!.name} · ${keyOf(editorAt.row)
+            .map((k) => `${k.column} = ${k.value ?? "NULL"}`)
+            .join(", ")}`}
+          typeName={columns[editorAt.col]!.dataType}
+          mode={isJsonType(columns[editorAt.col]!.dataType) ? "json" : "text"}
+          load={async () => {
+            const c = getRow(editorAt.row)?.[editorAt.col] ?? null;
+            if (c !== null && isNotLoaded(c)) {
+              const v = await api.fetchValue(session.sessionId, schema, table, keyOf(editorAt.row), columns[editorAt.col]!.name);
+              putCells([{ row: editorAt.row, col: editorAt.col, value: v }]);
+              return v;
+            }
+            return c;
+          }}
+          readOnlyReason={canEditRow(editorAt.row) ? null : (readOnlyReason ?? "This value can't be changed here")}
+          nullable={columns[editorAt.col]!.nullable}
+          onSave={(v) => {
+            onEdit(editorAt.row, editorAt.col, v);
+            setEditorAt(null);
+          }}
+          onClose={() => setEditorAt(null)}
+        />
+      )}
       {exportSource && <ExportDialog source={exportSource} onClose={() => setExportSource(null)} />}
       {importing && (
         <ImportDialog
