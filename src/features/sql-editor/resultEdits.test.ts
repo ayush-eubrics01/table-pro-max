@@ -88,4 +88,17 @@ describe("result edits", () => {
     const e = setEdit(setEdit({}, st, r1, 1, "shipped"), st, r1, 1, "paid");
     expect(Object.keys(e)).toHaveLength(0);
   });
+
+  it("a previewed value is editable (through the editor), not mistaken for binary", () => {
+    const rPartial = ["1", { $partial: "p".repeat(80), length: 900 }, "7", "a@x", "3"];
+    expect(readOnlyReason(st, rPartial, 1)).toBeNull();
+    expect(readOnlyReason(st, ["1", { $bytes: "00", size: 1 }, "7", "a@x", "3"], 1)).toBe("Binary values cannot be edited here");
+  });
+
+  it("never records an edit against a preview (its original would be unknown)", () => {
+    const rPartial = ["1", { $partial: "p".repeat(80), length: 900 }, "7", "a@x", "3"];
+    expect(setEdit({}, st, rPartial, 1, "new")).toEqual({});
+    const full = ["1", "p".repeat(900), "7", "a@x", "3"];
+    expect(Object.values(setEdit({}, st, full, 1, "new"))[0]).toMatchObject({ value: "new", original: "p".repeat(900) });
+  });
 });

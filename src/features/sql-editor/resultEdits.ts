@@ -1,5 +1,5 @@
 import type { Cell, ChangeSet, ColumnEdit, StatementResult } from "../../types/backend";
-import { cellParam } from "../../lib/cells";
+import { cellParam, isBinary, isPartial } from "../../lib/cells";
 
 type Param = string | null;
 type ColumnValue = { column: string; value: Param };
@@ -37,7 +37,8 @@ export function readOnlyReason(st: StatementResult, row: Cell[] | undefined, col
     return ed.readOnly.find((r) => r.column === col)?.reason ?? ed.readOnly.find((r) => r.column === undefined)?.reason ?? "This column cannot be edited";
   }
   if (!row) return "Row not loaded";
-  if (cellParam(row[col] ?? null) === undefined) return "Binary values cannot be edited here";
+  // A previewed long value is edited in the value editor, which loads it in full first.
+  if (isBinary(row[col] ?? null)) return "Binary values cannot be edited here";
   if (!keyOf(st, row, table)) return `This row has no ${ed.tables[table]!.table} row`;
   // The row is keyed by its key as loaded; once a new key is committed, that key no longer finds it.
   if (ed.tables[table]!.keyColumns.some((k) => (cellId(st, row, k) ?? "") in applied)) {
@@ -57,6 +58,8 @@ export function cellId(st: StatementResult, row: Cell[], col: number): string | 
 export function setEdit(edits: ResultEdits, st: StatementResult, row: Cell[], col: number, value: Param, applied: Applied = {}): ResultEdits {
   const id = cellId(st, row, col);
   if (!id || readOnlyReason(st, row, col, applied)) return edits;
+  // A preview is not the value: the editor loads the full value first, so it can be the original.
+  if (!(id in applied) && isPartial(row[col] ?? null)) return edits;
   const table = st.editing!.columns[col]!;
   // After a commit the database holds the committed value; that is what the conflict check compares.
   const original = id in applied ? applied[id]! : cellParam(row[col] ?? null);

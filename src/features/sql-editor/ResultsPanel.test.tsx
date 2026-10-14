@@ -1,11 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { EditorView } from "@codemirror/view";
+import { Overlays } from "../../components/Overlays";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { session } from "../../test/fixtures";
 import { ResultsPanel } from "./ResultsPanel";
-import type { ScriptResult, StatementResult } from "../../types/backend";
+import type { ChangeSet, ScriptResult, StatementResult } from "../../types/backend";
 
 afterEach(cleanup);
+beforeEach(() => {
+  // jsdom has no layout APIs that CodeMirror (the value editor) touches.
+  Range.prototype.getClientRects = () => ({ length: 0, item: () => null, [Symbol.iterator]: [][Symbol.iterator] }) as unknown as DOMRectList;
+  Range.prototype.getBoundingClientRect = () => new DOMRect();
+});
 
 const ok: StatementResult = { index: 0, sql: "select 1", start: 0, end: 8, durationMs: 3, columns: [{ name: "x", typeName: "int" }], rows: [["1"]], totalRows: 1, truncated: false };
 const bad: StatementResult = { index: 1, sql: "selec 1", start: 9, end: 16, durationMs: 1, truncated: false, error: { kind: "database", message: "syntax error" } };
@@ -123,5 +130,54 @@ describe("editable results", () => {
     rerender(<ResultsPanel result={big} running={false} dialect="postgres" session={session} />);
     expect(screen.getByText("kept@example.com")).toBeInTheDocument();
     expect(screen.getByText("1 pending change")).toBeInTheDocument();
+  });
+
+  it("opens a previewed value from memory and edits it with the full original", async () => {
+    const big = "y".repeat(1000);
+    const st: StatementResult = {
+      ...editable,
+      rows: [["1", { $partial: "y".repeat(80), length: 1000 }, "2"]],
+      totalRows: 1,
+    };
+    mockIPC((cmd, args) => {
+      calls.push({ cmd, args });
+      if (cmd === "result_value") return big;
+      if (cmd === "preview_change_sets") return { sql: "UPDATE …", statementCount: 1, atomic: true };
+      if (cmd === "apply_change_sets") return [1];
+      return null;
+    });
+    render(
+      <>
+        <ResultsPanel result={scriptOf(st)} running={false} dialect="postgres" session={session} />
+        <Overlays />
+      </>,
+    );
+    expect(screen.getByText("1,000 chars")).toBeInTheDocument();
+    fireEvent.doubleClick(screen.getByText("1,000 chars").closest(".grid-cell")!);
+    await screen.findByRole("dialog", { name: /Query result · email · row 1/ });
+    expect(calls.find((c) => c.cmd === "result_value")!.args).toMatchObject({ resultId: "r1", row: 0, col: 1 });
+    await waitFor(() => expect(document.querySelector(".value-editor .cm-editor")).not.toBeNull());
+    const v = EditorView.findFromDOM(document.querySelector(".value-editor .cm-editor") as HTMLElement)!;
+    await waitFor(() => expect(v.state.doc.length).toBe(1000));
+    act(() => v.dispatch({ changes: { from: 0, to: 1, insert: "z" } }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review and commit" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Commit changes" }));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "apply_change_sets")).toBe(true));
+    const sets = (calls.find((c) => c.cmd === "apply_change_sets")!.args as { sets: ChangeSet[] }).sets;
+    const ch = sets[0]!.changes[0] as Extract<ChangeSet["changes"][number], { type: "update" }>;
+    expect(ch.edits[0]).toMatchObject({ column: "email", original: big });
+  });
+
+  it("the row inspector opens a previewed value in the editor instead of editing the preview", async () => {
+    mockIPC((cmd) => (cmd === "result_value" ? "y".repeat(1000) : null));
+    const st: StatementResult = { ...editable, rows: [["1", { $partial: "y".repeat(80), length: 1000 }, "2"]], totalRows: 1 };
+    render(<ResultsPanel result={scriptOf(st)} running={false} dialect="postgres" session={session} />);
+    fireEvent.mouseDown(screen.getByText("1,000 chars").closest(".grid-cell")!);
+    fireEvent.click(screen.getByRole("button", { name: "Toggle row details" }));
+    const details = await screen.findByRole("complementary", { name: "Row details" });
+    expect(within(details).queryByRole("textbox", { name: "email" })).not.toBeInTheDocument();
+    fireEvent.click(within(details).getByRole("button", { name: "Open editor" }));
+    expect(await screen.findByRole("dialog", { name: /Query result · email · row 1/ })).toBeInTheDocument();
   });
 });

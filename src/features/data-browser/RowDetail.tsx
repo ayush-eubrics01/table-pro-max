@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Icon } from "../../components/Icon";
 import type { Cell, ColumnInfo } from "../../types/backend";
-import { cellCopy, cellDisplay, isBinary, isJsonType, isLargeText, isNotLoaded, prettyJson, previewText, formatBytes } from "../../lib/cells";
+import { cellCopy, cellDisplay, isBinary, isJsonType, isLargeText, isNotLoaded, isPartial, prettyJson, previewText, formatBytes } from "../../lib/cells";
 
 interface Props {
   columns: ColumnInfo[];
@@ -108,7 +108,7 @@ function Field({
         <button className="btn btn-ghost" onClick={onLoad} disabled={!onLoad}>
           Load
         </button>
-      ) : onOpenEditor && (isJsonType(column.dataType) || isLargeText(value, largeValueChars)) ? (
+      ) : onOpenEditor && (isPartial(value) || isJsonType(column.dataType) || isLargeText(value, largeValueChars)) ? (
         <div>
           <pre className={value === null ? "hint" : undefined}>
             {typeof value === "string" ? previewText(value) + (Array.from(value).length > 80 ? "…" : "") : cellDisplay(value)}

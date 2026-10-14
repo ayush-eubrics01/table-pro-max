@@ -3,7 +3,10 @@ import { Icon } from "../../components/Icon";
 import type { Cell, ColumnInfo, Dialect, ScriptResult, SessionInfo, StatementResult } from "../../types/backend";
 import { api } from "../../lib/ipc";
 import { formatCount, formatDuration, pluralize } from "../../lib/text";
-import { DataGrid } from "../data-grid/DataGrid";
+import { DataGrid, type CellPos } from "../data-grid/DataGrid";
+import { ValueEditor } from "../value-editor/ValueEditor";
+import { useSettings } from "../../stores/settings";
+import { isJsonType, isLargeText, isPartial } from "../../lib/cells";
 import { ExportDialog } from "../import-export/ExportDialog";
 import { isMacPlatform } from "../../app/WindowControls";
 import { ReviewChangesDialog } from "../data-browser/ReviewChangesDialog";
@@ -21,22 +24,47 @@ function ResultGrid({
   applied,
   onEdit,
   onSelectRow,
+  valueAt,
+  onValueAt,
 }: {
   st: StatementResult;
   editable: boolean;
   edits: ResultEdits;
   applied: Record<string, string | null>;
   onEdit: (row: Cell[], col: number, value: string | null) => void;
-  onSelectRow: (row: Cell[] | undefined) => void;
+  onSelectRow: (row: Cell[] | undefined, index: number | null) => void;
+  /** The cell open in the value editor (owned by the panel so the inspector can open it too). */
+  valueAt: { row: number; col: number } | null;
+  onValueAt: (at: { row: number; col: number } | null) => void;
 }) {
   const [rows, setRows] = useState<(Cell[] | undefined)[]>(() => st.rows ?? []);
   const inflight = useRef(new Set<number>());
+  const largeValueChars = useSettings((s) => s.settings["grid.largeValueChars"]);
+  // The row of the cell in the value editor, with the full value (for keys and the original).
+  const setValueAt = onValueAt;
+  const fullRow = useRef<Cell[] | null>(null);
   const total = st.totalRows ?? st.rows?.length ?? 0;
 
   useEffect(() => {
     setRows(st.rows ?? []);
     inflight.current.clear();
   }, [st]);
+
+  /** The full value of a cell: previews are read from the result store (no new query). */
+  const fullValue = async (row: number, col: number): Promise<Cell> => {
+    const c = rows[row]?.[col] ?? null;
+    if (c === null || !isPartial(c) || !st.resultId) return c;
+    const full = await api.resultValue(st.resultId, row, col);
+    setRows((prev) => {
+      const next = prev.slice();
+      const r = next[row];
+      if (r) next[row] = r.map((v, i) => (i === col ? full : v));
+      return next;
+    });
+    return full;
+  };
+
+  const columnType = (col: number) => st.columns?.[col]?.typeName ?? "";
 
   // Rows keep the values as loaded (the originals); edits and committed values are laid over them.
   const getRow = useCallback(
@@ -69,7 +97,11 @@ function ResultGrid({
     [st.resultId, rows],
   );
 
+  const valueReason =
+    valueAt === null ? null : !editable ? "Query results can't be edited here" : readOnlyReason(st, rows[valueAt.row], valueAt.col, applied);
+
   return (
+    <>
     <DataGrid
       ariaLabel="Query result"
       columns={(st.columns ?? []).map((c) => ({ name: c.name, typeName: c.typeName }))}
@@ -87,8 +119,39 @@ function ResultGrid({
         return !!id && id in edits;
       }}
       cellTitle={(r, c) => (st.editing ? (readOnlyReason(st, rows[r], c, applied) ?? undefined) : undefined)}
-      onSelectionChange={(sel) => onSelectRow(sel.active ? rows[sel.active.row] : undefined)}
+      onSelectionChange={(sel) => onSelectRow(sel.active ? rows[sel.active.row] : undefined, sel.active ? sel.active.row : null)}
+      largeValueChars={largeValueChars}
+      onOpenCell={(r, c, how) => {
+        const cell = rows[r]?.[c];
+        if (how !== "open" || cell === undefined) return false;
+        if (isPartial(cell) || isJsonType(columnType(c)) || isLargeText(cell, largeValueChars)) {
+          setValueAt({ row: r, col: c });
+          return true;
+        }
+        return false;
+      }}
+      loadFull={(cells: CellPos[]) => Promise.all(cells.map((p) => fullValue(p.row, p.col)))}
     />
+    {valueAt && st.columns?.[valueAt.col] && (
+      <ValueEditor
+        title={`Query result · ${st.columns[valueAt.col]!.name} · row ${valueAt.row + 1}`}
+        typeName={columnType(valueAt.col)}
+        mode={isJsonType(columnType(valueAt.col)) ? "json" : "text"}
+        load={async () => {
+          const full = await fullValue(valueAt.row, valueAt.col);
+          fullRow.current = (rows[valueAt.row] ?? []).map((v, i) => (i === valueAt.col ? full : v));
+          return full;
+        }}
+        readOnlyReason={valueReason}
+        nullable
+        onSave={(v) => {
+          if (fullRow.current) onEdit(fullRow.current, valueAt.col, v);
+          setValueAt(null);
+        }}
+        onClose={() => setValueAt(null)}
+      />
+    )}
+    </>
   );
 }
 
@@ -116,6 +179,9 @@ export function ResultsPanel({
   const [review, setReview] = useState<{ sql: string; statements: number; atomic: boolean } | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [selectedRow, setSelectedRow] = useState<Cell[] | undefined>();
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  const [valueAt, setValueAt] = useState<{ row: number; col: number } | null>(null);
+  const largeValueChars = useSettings((s) => s.settings["grid.largeValueChars"]);
   const nPending = Object.values(edits).reduce((n, e) => n + Object.keys(e).length, 0);
 
   // A new run replaces the results, and with them any edits.
@@ -124,8 +190,12 @@ export function ResultsPanel({
     setApplied({});
     setReview(null);
     setSelectedRow(undefined);
+    setSelectedIndex(null);
+    setValueAt(null);
   }, [result]);
   useEffect(() => onDirtyChange?.(nPending > 0), [nPending, onDirtyChange]);
+  // The value editor belongs to one statement's grid; switching result tabs closes it.
+  useEffect(() => setValueAt(null), [tab]);
   const withRows = result?.statements.filter((s) => s.columns) ?? [];
   const mod = isMacPlatform() ? "⌘" : "Ctrl";
 
@@ -234,7 +304,19 @@ export function ResultsPanel({
           )}
           <div className="split-h" style={{ minHeight: 0, flex: 1 }}>
             <div className="grid-area" style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0 }}>
-              <ResultGrid st={current} editable={editable} edits={curEdits} applied={curApplied} onEdit={onEdit} onSelectRow={setSelectedRow} />
+              <ResultGrid
+                st={current}
+                editable={editable}
+                edits={curEdits}
+                applied={curApplied}
+                onEdit={onEdit}
+                onSelectRow={(r, i) => {
+                  setSelectedRow(r);
+                  setSelectedIndex(i);
+                }}
+                valueAt={valueAt}
+                onValueAt={setValueAt}
+              />
               {nCur > 0 && (
                 <div className="commit-bar" role="region" aria-label="Pending changes">
                   <span className="dot" />
@@ -262,6 +344,8 @@ export function ResultsPanel({
                   return !!id && id in curEdits;
                 }}
                 onClose={() => setDetailOpen(false)}
+                onOpenEditor={(c) => selectedIndex !== null && setValueAt({ row: selectedIndex, col: c })}
+                largeValueChars={largeValueChars}
               />
             )}
           </div>
