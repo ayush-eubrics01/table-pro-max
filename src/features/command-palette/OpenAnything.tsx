@@ -58,7 +58,7 @@ export function OpenAnything({ onConnect }: { onConnect: (p: ConnectionProfile) 
   }, [workspaces, activeId, connections, saved]);
 
   const results = useMemo(() => rank(items, debounced, (i) => i.label), [items, debounced]);
-  const groups = useMemo(() => groupResults(results), [results]);
+  const groups = useMemo(() => groupResults(results, debounced.trim() !== ""), [results, debounced]);
   // Keyboard order follows the displayed (grouped) order.
   const flat = useMemo(() => groups.flatMap((g) => g.items), [groups]);
   useEffect(() => setIndex(0), [debounced]);
@@ -138,7 +138,7 @@ export function OpenAnything({ onConnect }: { onConnect: (p: ConnectionProfile) 
                 return (
                   <li key={i} id={`palette-${i}`} role="option" aria-selected={i === index} onMouseEnter={() => setIndex(i)} onClick={() => choose(r)}>
                     {icon(r)}
-                    <span>{r.label}</span>
+                    <span className="label">{r.label}</span>
                     {r.where && <span className="where">{r.where}</span>}
                   </li>
                 );

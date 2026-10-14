@@ -2050,7 +2050,18 @@ pre,
 .palette li[aria-selected="true"] {
   background: var(--surface-active);
 }
+.palette li .label,
 .palette li .where {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.palette li .label {
+  flex: 0 1 auto;
+}
+.palette li .where {
+  flex: 0 10 auto;
   color: var(--text-muted);
   font-size: var(--text-xs);
 }

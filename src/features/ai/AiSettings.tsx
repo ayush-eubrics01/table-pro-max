@@ -74,13 +74,14 @@ export function AiSettings() {
     <>
       <SettingRow
         label="Offer AI help in query tabs (explain, fix errors, improve, write SQL)"
-        description="Off by default. Every request is shown to you before it is sent, and suggested SQL is never run."
+        description="Off by default. Every request is shown to you before it is sent. Suggested SQL goes into the editor and is never run automatically."
+        htmlFor="ai-enabled"
       >
         <input
+          id="ai-enabled"
           type="checkbox"
           className="switch"
           role="switch"
-          aria-label="Offer AI help in query tabs (explain, fix errors, improve, write SQL)"
           checked={settings["ai.enabled"]}
           onChange={(e) => void toggle(e.target.checked)}
         />

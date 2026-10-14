@@ -19,7 +19,7 @@ export function FirstRunUpdatePrompt() {
   return (
     <Dialog
       title="Check for updates automatically?"
-      subtitle="Asked once. You can change this, or check by hand, in Settings › Updates."
+      subtitle="You won't be asked again once you choose. You can change this, or check by hand, in Settings › Updates."
       onClose={() => setDismissed(true)}
       footer={
         <>

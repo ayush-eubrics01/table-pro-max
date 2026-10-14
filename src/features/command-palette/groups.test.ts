@@ -14,4 +14,14 @@ describe("groupResults", () => {
     expect(groups[1]!.items.map((i) => i.label)).toEqual(["o1", "o2"]);
     expect(groups.flatMap((g) => g.items).map((i) => i.label)).toEqual(["a1", "o1", "o2", "c1"]);
   });
+
+  it("puts the group of the best match first when searching", () => {
+    const items = [
+      { kind: "connection", label: "prod" },
+      { kind: "object", label: "product" },
+      { kind: "action", label: "Settings" },
+    ];
+    expect(groupResults(items, true).map((g) => g.title)).toEqual(["Connections", "Tables and views", "Actions"]);
+    expect(groupResults(items, true).flatMap((g) => g.items)[0]!.label).toBe("prod");
+  });
 });

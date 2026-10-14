@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import type { AppInfo } from "../../types/backend";
 import { Dialog } from "../../components/Dialog";
 import { Icon } from "../../components/Icon";
@@ -50,9 +50,10 @@ function NumberField({ label, k, min, max, hint }: { label: string; k: keyof Set
 function Toggle({ label, k, description }: { label: string; k: keyof Settings; description?: string }) {
   const value = useSettings((s) => s.settings[k]) as boolean;
   const set = useSettings((s) => s.set);
+  const id = useId();
   return (
-    <SettingRow label={label} description={description}>
-      <input type="checkbox" className="switch" role="switch" aria-label={label} checked={value} onChange={(e) => void set(k, e.target.checked as never)} />
+    <SettingRow label={label} description={description} htmlFor={id}>
+      <input id={id} type="checkbox" className="switch" role="switch" checked={value} onChange={(e) => void set(k, e.target.checked as never)} />
     </SettingRow>
   );
 }
@@ -78,7 +79,8 @@ function Shortcuts() {
     ["New query", `${mod} T`],
     ["Reopen closed tab", `${mod} Shift T`],
     ["Close tab", `${mod} W`],
-    ["Next / previous tab", `${mod} Tab  /  ${mod} Shift Tab`],
+    // ⌘ Tab is the macOS app switcher; the handler also takes Ctrl there.
+    ["Next / previous tab", isMacPlatform() ? "⌃ Tab  /  ⌃ Shift Tab" : "Ctrl Tab  /  Ctrl Shift Tab"],
     ["Run statement or selection", `${mod} Enter`],
     ["Run all", `${mod} Shift Enter`],
     ["Format SQL", `${mod} Shift F`],

@@ -74,7 +74,7 @@ describe("first-run consent", () => {
   it("says in the consent dialog what a check reveals and that it can be changed later", async () => {
     await useUpdates.getState().init();
     render(<FirstRunUpdatePrompt />);
-    expect(screen.getByText("Asked once. You can change this, or check by hand, in Settings › Updates.")).toBeInTheDocument();
+    expect(screen.getByText("You won't be asked again once you choose. You can change this, or check by hand, in Settings › Updates.")).toBeInTheDocument();
     expect(screen.getByText(/GitHub sees your IP address and that you use the app/)).toBeInTheDocument();
   });
 

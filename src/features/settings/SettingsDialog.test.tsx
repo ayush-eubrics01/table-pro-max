@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { SettingsDialog } from "./SettingsDialog";
 import { DEFAULT_SETTINGS, useSettings } from "../../stores/settings";
@@ -62,5 +62,22 @@ describe("SettingsDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reset to defaults" }));
     expect(await screen.findByText("Reset all settings?")).toBeInTheDocument();
     expect(reset).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Reset settings" }));
+    await waitFor(() => expect(reset).toHaveBeenCalled());
+  });
+
+  it("keeps a typed number when switching sections, and toggles from the label text", () => {
+    render(<SettingsDialog appInfo={appInfo} onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "Editor" }));
+    const size = screen.getByLabelText("Editor font size");
+    size.focus();
+    fireEvent.change(size, { target: { value: "15" } });
+    const general = screen.getByRole("button", { name: "General" });
+    general.focus();
+    fireEvent.click(general);
+    expect(useSettings.getState().settings["editor.fontSize"]).toBe(15);
+    fireEvent.click(screen.getByRole("button", { name: "Editor" }));
+    fireEvent.click(screen.getByText("Wrap long lines in the editor"));
+    expect(useSettings.getState().settings["editor.wordWrap"]).toBe(!DEFAULT_SETTINGS["editor.wordWrap"]);
   });
 });

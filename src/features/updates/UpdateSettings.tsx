@@ -35,12 +35,16 @@ export function UpdateSettings() {
 
   return (
     <>
-      <SettingRow label="Check for updates automatically (once a day, from GitHub)" description="Updates install only after you click, and only when signed by the project.">
+      <SettingRow
+        label="Check for updates automatically (once a day, from GitHub)"
+        description="Updates install only after you click, and only when signed by the project."
+        htmlFor="updates-auto"
+      >
         <input
+          id="updates-auto"
           type="checkbox"
           className="switch"
           role="switch"
-          aria-label="Check for updates automatically (once a day, from GitHub)"
           checked={auto === "on"}
           onChange={(e) => void toggle(e.target.checked)}
         />
