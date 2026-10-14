@@ -3,6 +3,7 @@ import { Icon } from "../components/Icon";
 import { useWorkspaces, type Tab, type Workspace } from "../stores/workspaces";
 import { usePendingEdits } from "../stores/pendingEdits";
 import { Sidebar } from "../features/database-explorer/Sidebar";
+import { ObjectTabs } from "./ObjectTabs";
 import { TableView } from "../features/data-browser/TableView";
 import { QueryTab } from "../features/sql-editor/QueryTab";
 import { DefinitionView } from "../features/schema-browser/DefinitionView";
@@ -13,17 +14,9 @@ import { envColorVar, envLabel, envStyle, safetyLabel } from "../lib/env";
 import { confirmAction, notifyError } from "../stores/ui";
 import { connectWithPrompt, reconnectWithPrompt } from "../features/connections/connectFlow";
 
-function TabIcon({ tab }: { tab: Tab }) {
-  if (tab.kind === "query") return <Icon name="terminal" size={13} />;
-  if (tab.kind === "definition") return <Icon name="code_blocks" size={13} />;
-  if (tab.kind === "dashboard") return <Icon name="bar_chart" size={13} />;
-  return tab.objectKind === "table" ? <Icon name="table" size={13} /> : <Icon name="visibility" size={13} />;
-}
-
 export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean }) {
-  const { activateTab, closeTab, openQuery, moveTab, update } = useWorkspaces.getState();
+  const { closeTab, openQuery, update } = useWorkspaces.getState();
   const [dirtyTables, setDirtyTables] = useState<Record<string, boolean>>({});
-  const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(264);
 
   // Tell app-wide actions (updates) how many tables here have uncommitted edits.
@@ -103,46 +96,7 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
         <div className="sidebar-resizer" role="separator" aria-orientation="vertical" onMouseDown={onSidebarResize} />
       </div>
       <div className="main">
-        <div className="tabbar" role="tablist" aria-label="Open tabs">
-          {ws.tabs.map((t, i) => (
-            <div
-              key={t.id}
-              role="tab"
-              tabIndex={0}
-              aria-selected={ws.activeTabId === t.id}
-              className={`tab ${dragIndex === i ? "dragging" : ""}`}
-              draggable
-              onDragStart={() => setDragIndex(i)}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={() => {
-                if (dragIndex !== null && dragIndex !== i) moveTab(ws.id, dragIndex, i);
-                setDragIndex(null);
-              }}
-              onDragEnd={() => setDragIndex(null)}
-              onClick={() => activateTab(ws.id, t.id)}
-              onKeyDown={(e) => e.key === "Enter" && activateTab(ws.id, t.id)}
-              onAuxClick={(e) => e.button === 1 && void requestClose(t)}
-              title={"schema" in t ? `${t.schema}.${t.name}` : t.title}
-            >
-              <TabIcon tab={t} />
-              <span className="label">{t.title}</span>
-              {((t.kind === "query" && t.dirty && !t.savedQueryId && t.sql.trim()) || dirtyTables[t.id]) && <span className="dirty" aria-label="Unsaved changes" />}
-              <button
-                className="tab-close"
-                aria-label={`Close ${t.title}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void requestClose(t);
-                }}
-              >
-                <Icon name="close" size={12} />
-              </button>
-            </div>
-          ))}
-          <button className="tab-add" aria-label="New query tab" title="New query (Ctrl+T)" onClick={() => openQuery(ws.id)}>
-            <Icon name="add" size={14} />
-          </button>
-        </div>
+        <ObjectTabs ws={ws} dirtyTables={dirtyTables} onClose={(t) => void requestClose(t)} />
         {ws.tabs.length === 0 && (
           <div className="empty">
             <p>Open a table from the sidebar, or start a query.</p>
