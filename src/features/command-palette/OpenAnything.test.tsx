@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { OpenAnything } from "./OpenAnything";
 import { useConnections } from "../../stores/connections";
@@ -51,5 +51,11 @@ describe("OpenAnything", () => {
     render(<OpenAnything onConnect={() => undefined} />);
     expect(await screen.findByRole("option", { name: /^Settings/ })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /^set/ })).toBeInTheDocument();
+  });
+
+  it("announces each section as a named group of options", async () => {
+    render(<OpenAnything onConnect={() => undefined} />);
+    const actions = await screen.findByRole("group", { name: "Actions" });
+    expect(within(actions).getByRole("option", { name: /^Settings/ })).toBeInTheDocument();
   });
 });

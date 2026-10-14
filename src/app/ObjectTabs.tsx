@@ -17,12 +17,11 @@ export function ObjectTabs({ ws, dirtyTables, onClose }: { ws: Workspace; dirtyT
   return (
     <div className="tabbar" role="tablist" aria-label="Open tabs">
       {ws.tabs.map((t, i) => (
+        // The close button sits beside the tab, not inside it, so its keys never activate the tab.
         <div
           key={t.id}
-          role="tab"
-          tabIndex={0}
-          aria-selected={ws.activeTabId === t.id}
           className={`tab ${dragIndex === i ? "dragging" : ""}`}
+          data-selected={ws.activeTabId === t.id || undefined}
           draggable
           onDragStart={() => setDragIndex(i)}
           onDragOver={(e) => e.preventDefault()}
@@ -31,14 +30,25 @@ export function ObjectTabs({ ws, dirtyTables, onClose }: { ws: Workspace; dirtyT
             setDragIndex(null);
           }}
           onDragEnd={() => setDragIndex(null)}
-          onClick={() => activateTab(ws.id, t.id)}
-          onKeyDown={(e) => e.key === "Enter" && activateTab(ws.id, t.id)}
           onAuxClick={(e) => e.button === 1 && onClose(t)}
           title={"schema" in t ? `${t.schema}.${t.name}` : t.title}
         >
-          <TabIcon tab={t} />
-          <span className="label">{t.title}</span>
-          {((t.kind === "query" && t.dirty && !t.savedQueryId && t.sql.trim()) || dirtyTables[t.id]) && <span className="dirty" aria-label="Unsaved changes" />}
+          <div
+            className="tab-main"
+            role="tab"
+            tabIndex={0}
+            aria-selected={ws.activeTabId === t.id}
+            onClick={() => activateTab(ws.id, t.id)}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter" && e.key !== " ") return;
+              e.preventDefault();
+              activateTab(ws.id, t.id);
+            }}
+          >
+            <TabIcon tab={t} />
+            <span className="label">{t.title}</span>
+            {((t.kind === "query" && t.dirty && !t.savedQueryId && t.sql.trim()) || dirtyTables[t.id]) && <span className="dirty" aria-label="Unsaved changes" />}
+          </div>
           <button
             className="tab-close"
             aria-label={`Close ${t.title}`}

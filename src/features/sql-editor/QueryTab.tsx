@@ -53,13 +53,13 @@ export function RunButton({ onRun, disabled }: { onRun: () => void; disabled: bo
 
 export function PlanTabs({ onBack }: { onBack: () => void }) {
   return (
-    <div className="results-tabs" role="tablist" aria-label="Plan">
-      <button role="tab" aria-selected="true">
-        Plan
-      </button>
-      <button role="tab" aria-selected="false" onClick={onBack}>
-        Back to results
-      </button>
+    <div className="results-tabs">
+      <div className="results-tablist" role="tablist" aria-label="Plan">
+        <button role="tab" aria-selected="true">
+          Plan
+        </button>
+      </div>
+      <button onClick={onBack}>Back to results</button>
     </div>
   );
 }
@@ -405,7 +405,7 @@ export function QueryTab({ ws, tab, active }: Props) {
     <div className="tab-panel">
       <div className="toolbar" role="toolbar" aria-label="Query tools">
         <RunButton onRun={() => void run("current")} disabled={!!running} />
-        <button className="btn" onClick={() => run("all")} disabled={!!running} title="Run all statements (Ctrl+Shift+Enter)">
+        <button className="btn" onClick={() => run("all")} disabled={!!running} title={`Run all statements (${isMacPlatform() ? "⌘" : "Ctrl"}+Shift+Enter)`}>
           <Icon name="play_circle" size={14} /> Run all
         </button>
         {running && (

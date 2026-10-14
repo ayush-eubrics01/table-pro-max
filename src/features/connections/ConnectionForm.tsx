@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { AppInfo, ConnectionProfile, Driver, ServerInfo, SshConfig } from "../../types/backend";
 import { withoutPassword } from "../../lib/url";
+import { radioKeyDown } from "../../lib/radio";
 import { api, toError, type BackendError } from "../../lib/ipc";
 import { DRIVERS, ENVIRONMENTS, SAFETY_MODES, envStyle, isFileDriver } from "../../lib/env";
 import { Icon } from "../../components/Icon";
@@ -39,14 +40,27 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
     setTested(null);
   };
 
+  // Switching engine (by click or by arrowing through the tiles) must not lose what was typed:
+  // each engine keeps its own port, and the server settings come back after a file engine.
+  const ports = useRef<Partial<Record<Driver, number | null>>>({});
+  const network = useRef<Pick<ConnectionProfile, "host" | "ssh" | "passwordMode"> | null>(null);
   const setDriver = (driver: Driver) => {
     const fresh = newProfile(driver);
+    ports.current[p.driver] = p.port;
+    if (!isFileDriver(p.driver)) network.current = { host: p.host, ssh: p.ssh, passwordMode: p.passwordMode };
+    const net = network.current;
     set({
       driver,
-      port: fresh.port,
-      host: isFileDriver(driver) ? "" : p.host || "localhost",
-      ssh: isFileDriver(driver) ? null : p.ssh,
-      passwordMode: isFileDriver(driver) ? "none" : p.passwordMode === "none" ? (keychainAvailable ? "keychain" : "ask") : p.passwordMode,
+      port: ports.current[driver] !== undefined ? ports.current[driver]! : fresh.port,
+      host: isFileDriver(driver) ? "" : net?.host || p.host || "localhost",
+      ssh: isFileDriver(driver) ? null : (net?.ssh ?? p.ssh),
+      passwordMode: isFileDriver(driver)
+        ? "none"
+        : (net?.passwordMode ?? p.passwordMode) === "none"
+          ? keychainAvailable
+            ? "keychain"
+            : "ask"
+          : (net?.passwordMode ?? p.passwordMode),
     });
   };
 
@@ -220,8 +234,18 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
             key={d.value}
             role="radio"
             aria-checked={p.driver === d.value}
+            tabIndex={p.driver === d.value ? 0 : -1}
             disabled={isEdit && p.driver !== d.value}
             onClick={() => d.value !== p.driver && setDriver(d.value)}
+            onKeyDown={(e) =>
+              radioKeyDown(
+                e,
+                DRIVERS.map((x) => x.value),
+                p.driver,
+                (v) => v !== p.driver && setDriver(v),
+                (v) => !(isEdit && v !== p.driver),
+              )
+            }
           >
             <span className="driver-mark">{d.short}</span>
             {d.label}
@@ -244,7 +268,22 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
         <span className="hint">Environment — colours the window so you always know where you are</span>
         <div role="radiogroup" aria-label="Environment" className="env-chips">
           {ENVIRONMENTS.map((e) => (
-            <button key={e.value} role="radio" aria-checked={p.environment === e.value} style={envStyle(e.value)} onClick={() => set({ environment: e.value })}>
+            <button
+              key={e.value}
+              role="radio"
+              aria-checked={p.environment === e.value}
+              tabIndex={p.environment === e.value ? 0 : -1}
+              style={envStyle(e.value)}
+              onClick={() => set({ environment: e.value })}
+              onKeyDown={(k) =>
+                radioKeyDown(
+                  k,
+                  ENVIRONMENTS.map((x) => x.value),
+                  p.environment,
+                  (v) => set({ environment: v }),
+                )
+              }
+            >
               <span className="env-dot" />
               {e.label}
             </button>
@@ -311,7 +350,7 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
             </label>
             <div className="field">
               <span>Remember password</span>
-              {passwordStorage(p.passwordMode, (v) => set({ passwordMode: v as ConnectionProfile["passwordMode"] }), "Password storage", "No password")}
+              {passwordStorage(p.passwordMode, (v) => set({ passwordMode: v as ConnectionProfile["passwordMode"] }), "Remember password", "No password")}
             </div>
           </div>
           {!keychainAvailable && (
@@ -420,7 +459,7 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
                 </label>
                 <div className="field">
                   <span>Remember SSH secret</span>
-                  {passwordStorage(p.ssh.secretMode, (v) => setSsh({ secretMode: v as SshConfig["secretMode"] }), "SSH secret storage", "None (unencrypted key)")}
+                  {passwordStorage(p.ssh.secretMode, (v) => setSsh({ secretMode: v as SshConfig["secretMode"] }), "Remember SSH secret", "None (unencrypted key)")}
                 </div>
               </div>
               <p className="hint" style={{ margin: 0 }}>

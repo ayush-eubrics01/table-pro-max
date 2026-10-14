@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
 import type { ConnectionProfile, DbObject, SavedQuery } from "../../types/backend";
 import { api } from "../../lib/ipc";
@@ -134,21 +134,23 @@ export function OpenAnything({ onConnect }: { onConnect: (p: ConnectionProfile) 
         </div>
         <ul id="palette-results" role="listbox" ref={listRef}>
           {groups.map((g) => (
-            <Fragment key={g.kind}>
-              <li role="presentation" className="palette-group">
+            <li key={g.kind} role="group" aria-labelledby={`palette-group-${g.kind}`} className="palette-section">
+              <div id={`palette-group-${g.kind}`} className="palette-group">
                 {g.title}
-              </li>
-              {g.items.map((r) => {
-                const i = flat.indexOf(r);
-                return (
-                  <li key={i} id={`palette-${i}`} role="option" aria-selected={i === index} onMouseEnter={() => setIndex(i)} onClick={() => choose(r)}>
-                    {icon(r)}
-                    <span className="label">{r.label}</span>
-                    {r.where && <span className="where">{r.where}</span>}
-                  </li>
-                );
-              })}
-            </Fragment>
+              </div>
+              <ul role="presentation">
+                {g.items.map((r) => {
+                  const i = flat.indexOf(r);
+                  return (
+                    <li key={i} id={`palette-${i}`} role="option" aria-selected={i === index} onMouseEnter={() => setIndex(i)} onClick={() => choose(r)}>
+                      {icon(r)}
+                      <span className="label">{r.label}</span>
+                      {r.where && <span className="where">{r.where}</span>}
+                    </li>
+                  );
+                })}
+              </ul>
+            </li>
           ))}
           {flat.length === 0 && <li className="hint">Nothing matches. Objects appear here after their schema has been opened.</li>}
         </ul>

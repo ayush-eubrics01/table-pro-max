@@ -21,7 +21,9 @@ export function TitleBar({ mac, onCloseWorkspace }: Props) {
 
   // With many connections the strip scrolls; keep the active tab visible.
   useEffect(() => {
-    tabs.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    // Scroll the whole tab (with its close button), not just the tab label.
+    const tab = tabs.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]');
+    (tab?.closest<HTMLElement>(".tb-tab") ?? tab)?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
   }, [activeId, workspaces.length]);
 
   return (
@@ -47,19 +49,23 @@ export function TitleBar({ mac, onCloseWorkspace }: Props) {
           }}
         >
         {workspaces.map((w) => (
-          <div
-            key={w.id}
-            className="tb-tab"
-            role="tab"
-            tabIndex={0}
-            aria-selected={activeId === w.id}
-            style={envStyle(w.session.environment)}
-            onClick={() => activate(w.id)}
-            onKeyDown={(e) => e.key === "Enter" && activate(w.id)}
-            title={w.session.target}
-          >
-            {w.health === "down" ? <Icon name="link_off" size={13} label="Connection lost" color="var(--danger)" /> : <span className="env-dot" />}
-            <span className="label">{w.profile.name}</span>
+          // The close button sits beside the tab, not inside it, so its keys never activate the tab.
+          <div key={w.id} className="tb-tab" data-selected={activeId === w.id || undefined} style={envStyle(w.session.environment)} title={w.session.target}>
+            <div
+              className="tb-tab-main"
+              role="tab"
+              tabIndex={0}
+              aria-selected={activeId === w.id}
+              onClick={() => activate(w.id)}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter" && e.key !== " ") return;
+                e.preventDefault();
+                activate(w.id);
+              }}
+            >
+              {w.health === "down" ? <Icon name="link_off" size={13} label="Connection lost" color="var(--danger)" /> : <span className="env-dot" />}
+              <span className="label">{w.profile.name}</span>
+            </div>
             <button
               className="tab-close"
               aria-label={`Disconnect ${w.profile.name}`}
@@ -84,12 +90,12 @@ export function TitleBar({ mac, onCloseWorkspace }: Props) {
         <button
           className="btn btn-ghost btn-icon"
           aria-label="New window"
-          title="New window (Ctrl+Shift+N)"
+          title={`New window (${mac ? "⇧⌘N" : "Ctrl+Shift+N"})`}
           onClick={() => void api.openWindow().catch((err) => notifyError(err, "Could not open a window"))}
         >
           <Icon name="new_window" size={16} />
         </button>
-        <button className="btn btn-ghost btn-icon" aria-label="Settings" title="Settings (Ctrl+,)" onClick={() => useUi.getState().setSettingsOpen(true)}>
+        <button className="btn btn-ghost btn-icon" aria-label="Settings" title={`Settings (${mac ? "⌘," : "Ctrl+,"})`} onClick={() => useUi.getState().setSettingsOpen(true)}>
           <Icon name="settings" size={16} />
         </button>
       </div>

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, cleanup, within } from "@testing-library/react";
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks";
 import type { AppInfo, ConnectionProfile } from "../../types/backend";
 import { ConnectionForm } from "./ConnectionForm";
@@ -77,7 +77,7 @@ describe("ConnectionForm", () => {
   it("falls back to asking for the password when no credential store exists", async () => {
     render(<ConnectionForm appInfo={appInfo(false)} onClose={() => undefined} onSaved={() => undefined} />);
     expect(screen.getByText(/No system credential store was found/)).toBeInTheDocument();
-    expect((screen.getByLabelText("Password storage") as HTMLSelectElement).value).toBe("ask");
+    expect((screen.getByLabelText("Remember password") as HTMLSelectElement).value).toBe("ask");
   });
 
   it("warns about unverified TLS", async () => {
@@ -127,5 +127,36 @@ describe("ConnectionForm", () => {
   it("opens Safety & timeouts when editing a connection whose safety is not the default", () => {
     render(<ConnectionForm appInfo={appInfo(true)} initial={{ ...profile, safetyMode: "read_only" }} onClose={() => undefined} onSaved={() => undefined} />);
     expect(screen.getByText("Safety & timeouts").closest("details")).toHaveAttribute("open");
+  });
+
+  it("moves through engines and environments with the arrow keys, one Tab stop per group", () => {
+    render(<ConnectionForm appInfo={appInfo(true)} onClose={() => undefined} onSaved={() => undefined} />);
+    const engines = screen.getByRole("radiogroup", { name: "Database type" });
+    const tiles = within(engines).getAllByRole("radio");
+    expect(tiles.filter((t) => t.tabIndex === 0)).toHaveLength(1);
+    fireEvent.keyDown(tiles[0]!, { key: "ArrowRight" });
+    expect(within(engines).getByRole("radio", { name: /MySQL/ })).toHaveAttribute("aria-checked", "true");
+    expect(document.activeElement).toBe(within(engines).getByRole("radio", { name: /MySQL/ }));
+    const envs = screen.getByRole("radiogroup", { name: "Environment" });
+    fireEvent.keyDown(within(envs).getByRole("radio", { name: "Local" }), { key: "ArrowRight" });
+    expect(within(envs).getByRole("radio", { name: "Development" })).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("keeps host, port and tunnel when arrowing through file engines and back", async () => {
+    render(<ConnectionForm appInfo={appInfo(true)} initialUrl="postgres://svc:s3cret@db.internal:6543/shop" onClose={() => undefined} onSaved={() => undefined} />);
+    await waitFor(() => expect(screen.getByDisplayValue("6543")).toBeInTheDocument());
+    const engines = screen.getByRole("radiogroup", { name: "Database type" });
+    within(engines).getByRole("radio", { name: /PostgreSQL/ }).focus();
+    for (const key of ["ArrowRight", "ArrowRight", "ArrowRight", "ArrowLeft", "ArrowLeft", "ArrowLeft"]) fireEvent.keyDown(document.activeElement!, { key });
+    expect(within(engines).getByRole("radio", { name: /PostgreSQL/ })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByDisplayValue("db.internal")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("6543")).toBeInTheDocument();
+  });
+
+  it("ignores arrow keys pressed with a modifier", () => {
+    render(<ConnectionForm appInfo={appInfo(true)} onClose={() => undefined} onSaved={() => undefined} />);
+    const engines = screen.getByRole("radiogroup", { name: "Database type" });
+    fireEvent.keyDown(within(engines).getByRole("radio", { name: /PostgreSQL/ }), { key: "ArrowRight", ctrlKey: true });
+    expect(within(engines).getByRole("radio", { name: /PostgreSQL/ })).toHaveAttribute("aria-checked", "true");
   });
 });

@@ -469,8 +469,8 @@ pre,
 .tb-tab {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 8px 0 12px;
+  gap: 0;
+  padding: 0 4px 0 0;
   border: 0;
   border-radius: 8px 8px 0 0;
   background: transparent;
@@ -484,12 +484,30 @@ pre,
 .titlebar-tabs > .tb-tab {
   flex: none;
   min-width: 0;
+  gap: 8px;
+  padding: 0 12px;
+}
+.tb-tab-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  align-self: stretch;
+  padding: 0 8px 0 12px;
+  border-radius: 8px 8px 0 0;
+}
+.tb-tab:focus-visible,
+.tb-tab-main:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
 }
 .tb-tab:hover {
   color: var(--text);
   background: var(--surface-hover);
 }
-.tb-tab[aria-selected="true"] {
+.tb-tab[aria-selected="true"],
+.tb-tab[data-selected] {
   background: var(--bg);
   color: var(--text);
 }
@@ -697,8 +715,10 @@ pre,
   text-overflow: ellipsis;
   cursor: pointer;
 }
+/* Both selects share the box's focus ring, so the focused one also gets an accent underline. */
 .db-switch-select:focus-visible {
   outline: none;
+  box-shadow: inset 0 -2px 0 var(--focus);
 }
 .db-switch-select.db {
   font-weight: 600;
@@ -871,7 +891,7 @@ pre,
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: 0 8px 0 14px;
+  padding: 0 6px 0 0;
   border: 0;
   border-right: 1px solid var(--border-hairline);
   background: transparent;
@@ -884,16 +904,25 @@ pre,
   color: var(--text);
   background: var(--surface-hover);
 }
-.tab:focus-visible {
+.tab-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+  align-self: stretch;
+  padding: 0 8px 0 14px;
+}
+.tab-main:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: -2px;
 }
-.tab[aria-selected="true"] {
+.tab[data-selected] {
   background: var(--surface);
   color: var(--text);
   box-shadow: inset 0 -2px 0 var(--accent);
 }
-.tab[aria-selected="true"] > .icon:first-child {
+.tab[data-selected] .tab-main > .icon:first-child {
   color: var(--accent);
 }
 .tab.dragging {
@@ -1534,6 +1563,10 @@ pre,
   overflow-x: auto;
   flex: none;
 }
+.results-tablist {
+  display: flex;
+  gap: 4px;
+}
 .results-tabs button {
   height: 26px;
   padding: 0 10px;
@@ -1754,8 +1787,18 @@ pre,
   display: inline-flex;
   align-items: center;
   gap: 2px;
+  height: 28px;
+  padding: 0 4px 0 8px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
   color: var(--accent);
+  font: inherit;
   font-weight: 500;
+  cursor: pointer;
+}
+.connect-link:hover {
+  background: var(--surface-hover);
 }
 
 .driver-mark {
@@ -2054,6 +2097,14 @@ pre,
   padding: 6px;
   max-height: 50vh;
   overflow: auto;
+}
+.palette-section {
+  list-style: none;
+}
+.palette ul ul {
+  padding: 0;
+  max-height: none;
+  overflow: visible;
 }
 .palette-group {
   padding: 10px 10px 4px;

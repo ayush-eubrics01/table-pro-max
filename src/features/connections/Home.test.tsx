@@ -40,10 +40,13 @@ describe("Home", () => {
   it("shows group, tunnel and read-only facts on the card, and connects on click", () => {
     const onConnect = vi.fn();
     render(<Home appInfo={null} connecting={null} onConnect={onConnect} />);
-    const card = screen.getByRole("button", { name: "Connect to Prod Core" });
+    const connect = screen.getByRole("button", { name: "Connect to Prod Core" });
+    const card = connect.closest(".conn-card") as HTMLElement;
     expect(within(card).getByText(/Pilot · SSH tunnel · Opens read-only/)).toBeInTheDocument();
-    fireEvent.click(card);
+    fireEvent.click(connect);
     expect(onConnect).toHaveBeenCalledWith(expect.objectContaining({ id: "p" }));
+    // Edit is its own button, not nested inside another interactive element.
+    expect(within(card).getByRole("button", { name: "Edit Prod Core" }).parentElement?.closest('[role="button"], button')).toBeNull();
   });
 
   it("filters by search text and sorts by name", () => {
@@ -87,5 +90,19 @@ describe("Home", () => {
     render(<Home appInfo={info} connecting={null} onConnect={() => undefined} />);
     expect(screen.getByText(/Passwords are asked for each time you connect\./)).toBeInTheDocument();
     expect(screen.queryByText(/Passwords go to your system keychain/)).not.toBeInTheDocument();
+  });
+
+  it("names each environment group with its count for screen readers", () => {
+    render(<Home appInfo={null} connecting={null} onConnect={() => undefined} />);
+    expect(screen.getByRole("heading", { name: "Production, 1 connection" })).toBeInTheDocument();
+  });
+
+  it("connects from a click on the card body, but not from Edit", () => {
+    const onConnect = vi.fn();
+    render(<Home appInfo={null} connecting={null} onConnect={onConnect} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit Prod Core" }));
+    expect(onConnect).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Prod Core"));
+    expect(onConnect).toHaveBeenCalledWith(expect.objectContaining({ id: "p" }));
   });
 });
