@@ -191,7 +191,8 @@ export function ResultsPanel({
   const detailColumns: ColumnInfo[] = (current?.columns ?? []).map((c) => ({
     name: c.name,
     dataType: c.typeName,
-    nullable: true,
+    // Unknown for query results; false keeps the inspector from labelling every field "nullable".
+    nullable: false,
     default: null,
     primaryKey: null,
     autoIncrement: false,
@@ -252,6 +253,7 @@ export function ResultsPanel({
                 columns={detailColumns}
                 row={selectedRow?.map((_, c) => displayCell(curEdits, curApplied, current, selectedRow, c))}
                 editable={(c) => editable && readOnlyReason(current, selectedRow, c) === null}
+                readOnlyReason={(c) => (selectedRow ? readOnlyReason(current, selectedRow, c) : null)}
                 onEdit={(c, v) => selectedRow && onEdit(selectedRow, c, v)}
                 heading="Selected row"
                 subheading={current.editing?.tables.map((t) => t.table).join(", ") || "Query result"}

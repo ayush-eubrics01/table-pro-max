@@ -98,6 +98,20 @@ describe("editable results", () => {
     expect(screen.getByText("Add id to the SELECT to edit users")).toBeInTheDocument();
   });
 
+  it("inspector edits the row and says why a field is read-only", async () => {
+    render(<ResultsPanel result={scriptOf(editable)} running={false} dialect="postgres" session={session} />);
+    fireEvent.mouseDown(screen.getByText("grace@example.com").closest(".grid-cell")!);
+    fireEvent.click(screen.getByRole("button", { name: "Toggle row details" }));
+    const details = await screen.findByRole("complementary", { name: "Row details" });
+    expect(details).toHaveTextContent("Computed column");
+    expect(details).not.toHaveTextContent("nullable");
+    const email = screen.getByRole("textbox", { name: "email" });
+    fireEvent.change(email, { target: { value: "g@example.com" } });
+    fireEvent.blur(email);
+    expect(await screen.findByText("1 pending change")).toBeInTheDocument();
+    expect(screen.getAllByText("g@example.com").length).toBeGreaterThan(0);
+  });
+
   it("keeps edits on loaded rows when more pages arrive", async () => {
     // Paging happens inside the grid; the result object stays the same (a new object means a new run).
     const big = scriptOf({ ...editable, totalRows: 3000, rows: editable.rows });
