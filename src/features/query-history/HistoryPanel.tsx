@@ -64,7 +64,7 @@ export function HistoryPanel({ connectionId, onInsert, onOpen, refreshKey, onClo
           >
             <span className="meta">
               <span className="dot" />
-              {new Date(e.startedAt).toLocaleString()}
+              {e.status} · {new Date(e.startedAt).toLocaleString()}
               {e.durationMs !== null ? ` · ${formatDuration(e.durationMs)}` : ""}
             </span>
             <pre>{e.sql}</pre>

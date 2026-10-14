@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { createElement } from "react";
 import { queryTarget } from "./queryTarget";
-import { QueryToolbarTarget } from "./QueryTab";
+import { QueryToolbarTarget, RunButton } from "./QueryTab";
 
 afterEach(cleanup);
 
@@ -14,6 +14,7 @@ describe("queryTarget", () => {
     expect(queryTarget("sqlite", "sqlite", "/data/shop.db", "main")).toBe("main");
     expect(queryTarget("postgres", "duckdb", "memory", "main")).toBe("main");
     expect(queryTarget("postgres", "postgres", "app", "")).toBe("app");
+    expect(queryTarget("mysql", "mysql", "", "", "root@db:3306")).toBe("root@db:3306");
   });
 });
 
@@ -35,4 +36,11 @@ describe("Plan tabs", () => {
     screen.getByRole("tab", { name: "Back to results" }).click();
     expect(back).toBe(true);
   });
+
+describe("RunButton", () => {
+  it("is named Run, with the shortcut shown but not read out", () => {
+    render(createElement(RunButton, { onRun: () => undefined, disabled: false }));
+    expect(screen.getByRole("button", { name: "Run" })).toBeInTheDocument();
+  });
+});
 });

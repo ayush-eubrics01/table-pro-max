@@ -22,6 +22,8 @@ describe("HistoryPanel", () => {
     expect(screen.getByRole("heading", { name: "History" })).toBeInTheDocument();
     const failed = await screen.findByText("selec 2");
     expect(failed.closest("button")).toHaveAttribute("data-status", "error");
+    expect(failed.closest("button")).toHaveTextContent(/error/);
+    expect(screen.getByText("select 1").closest("button")).toHaveTextContent(/success/);
     fireEvent.click(screen.getByText("select 1"));
     expect(onInsert).toHaveBeenCalledWith("select 1");
     fireEvent.click(screen.getByRole("button", { name: "Close history" }));

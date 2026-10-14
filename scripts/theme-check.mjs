@@ -99,6 +99,7 @@ export const PAIRS = [
   ["--text-muted", ["--env-production-bg"], 4.5],
   ["--accent", SURFACES, 4.5],
   ["--danger", SURFACES, 4.5],
+  ["--danger", ["--surface-active"], 4.5],
   ["--warning", SURFACES, 4.5],
   ["--focus", SURFACES, 3],
   ["--accent-text", ["--accent", "--accent-strong"], 4.5],

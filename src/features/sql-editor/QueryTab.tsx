@@ -39,7 +39,18 @@ interface Props {
   active: boolean;
 }
 
-/** One query tab: its own editor, its own connection session and its own results. */
+export function RunButton({ onRun, disabled }: { onRun: () => void; disabled: boolean }) {
+  const mod = isMacPlatform() ? "⌘" : "Ctrl";
+  return (
+    <button className="btn btn-primary btn-run" onClick={onRun} disabled={disabled} title={`Run current statement or selection (${mod}+Enter)`}>
+      <Icon name="play_arrow" size={15} /> Run{" "}
+      <span className="kbd" aria-hidden>
+        {mod} ↵
+      </span>
+    </button>
+  );
+}
+
 export function PlanTabs({ onBack }: { onBack: () => void }) {
   return (
     <div className="results-tabs" role="tablist" aria-label="Plan">
@@ -69,6 +80,7 @@ export function QueryToolbarTarget({ target, readOnly, env }: { target: string; 
   );
 }
 
+/** One query tab: its own editor, its own connection session and its own results. */
 export function QueryTab({ ws, tab, active }: Props) {
   const settings = useSettings((s) => s.settings);
   const updateTab = useWorkspaces((s) => s.updateTab);
@@ -392,9 +404,7 @@ export function QueryTab({ ws, tab, active }: Props) {
   return (
     <div className="tab-panel">
       <div className="toolbar" role="toolbar" aria-label="Query tools">
-        <button className="btn btn-primary btn-run" onClick={() => run("current")} disabled={!!running} title="Run current statement or selection (Ctrl+Enter)">
-          <Icon name="play_arrow" size={15} /> Run <span className="kbd">{isMacPlatform() ? "⌘" : "Ctrl"} ↵</span>
-        </button>
+        <RunButton onRun={() => void run("current")} disabled={!!running} />
         <button className="btn" onClick={() => run("all")} disabled={!!running} title="Run all statements (Ctrl+Shift+Enter)">
           <Icon name="play_circle" size={14} /> Run all
         </button>
@@ -455,7 +465,7 @@ export function QueryTab({ ws, tab, active }: Props) {
           </button>
         )}
         <span className="grow" />
-        <QueryToolbarTarget target={queryTarget(info.dialect, ws.profile.driver, info.database, ws.schema)} readOnly={info.readOnly} env={info.environment} />
+        <QueryToolbarTarget target={queryTarget(info.dialect, ws.profile.driver, info.database, ws.schema, info.target)} readOnly={info.readOnly} env={info.environment} />
       </div>
       <div className="split-h" style={{ minHeight: 0 }}>
         <div ref={container} className="split-v">
