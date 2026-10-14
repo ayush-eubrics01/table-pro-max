@@ -83,7 +83,7 @@ export function QueryToolbarTarget({ target, readOnly, env }: { target: string; 
 }
 
 /** One query tab: its own editor, its own connection session and its own results. */
-export function QueryTab({ ws, tab, active, onDirtyChange }: Props) {
+export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props) {
   const settings = useSettings((s) => s.settings);
   const updateTab = useWorkspaces((s) => s.updateTab);
   const openQuery = useWorkspaces((s) => s.openQuery);
@@ -530,6 +530,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange }: Props) {
               session={session ?? undefined}
               onRunAgain={() => lastRun.current && void run(lastRun.current.mode, false, lastRun.current.target)}
               onDirtyChange={reportDirty}
+              onOpenTable={onOpenTable}
             />
           </div>
         </div>

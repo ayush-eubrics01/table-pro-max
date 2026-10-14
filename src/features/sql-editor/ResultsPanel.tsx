@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
-import type { Cell, ColumnInfo, Dialect, ScriptResult, SessionInfo, StatementResult } from "../../types/backend";
+import type { Cell, ColumnInfo, Dialect, ScriptResult, SessionInfo, StatementResult, TableStructure } from "../../types/backend";
 import { api } from "../../lib/ipc";
 import { formatCount, formatDuration, pluralize } from "../../lib/text";
 import { DataGrid, type CellPos } from "../data-grid/DataGrid";
+import { linkFilter, linkLabel, resultLinks, type FkLink } from "../data-browser/fkLinks";
+import type { GroupNode } from "../filters/filterModel";
 import { ValueEditor } from "../value-editor/ValueEditor";
 import { useSettings } from "../../stores/settings";
 import { isJsonType, isLargeText, isPartial } from "../../lib/cells";
@@ -26,6 +28,8 @@ function ResultGrid({
   onSelectRow,
   valueAt,
   onValueAt,
+  links,
+  onOpenTable,
 }: {
   st: StatementResult;
   editable: boolean;
@@ -36,6 +40,9 @@ function ResultGrid({
   /** The cell open in the value editor (owned by the panel so the inspector can open it too). */
   valueAt: { row: number; col: number } | null;
   onValueAt: (at: { row: number; col: number } | null) => void;
+  /** Foreign keys per result column, traced through column origins. */
+  links: FkLink[][];
+  onOpenTable?: (schema: string, table: string, filter: GroupNode) => void;
 }) {
   const [rows, setRows] = useState<(Cell[] | undefined)[]>(() => st.rows ?? []);
   const inflight = useRef(new Set<number>());
@@ -131,6 +138,25 @@ function ResultGrid({
         return false;
       }}
       loadFull={(cells: CellPos[]) => Promise.all(cells.map((p) => fullValue(p.row, p.col)))}
+      cellLink={(r, c) => {
+        const link = links[c]?.[0];
+        const cells = getRow(r);
+        if (!link || !cells || !onOpenTable) return null;
+        const label = linkLabel(link, cells);
+        const filter = linkFilter(link, cells);
+        return label && filter ? { label, open: () => onOpenTable(link.fk.refSchema, link.fk.refTable, filter) } : null;
+      }}
+      contextItems={(sel) => {
+        if (!sel.active || !onOpenTable) return [];
+        const cells = getRow(sel.active.row);
+        const ls = links[sel.active.col] ?? [];
+        return ls.flatMap((link) => {
+          const filter = cells ? linkFilter(link, cells) : null;
+          return filter
+            ? [{ label: ls.length > 1 ? `Open referenced row in ${link.fk.refTable}` : "Open referenced row", onSelect: () => onOpenTable(link.fk.refSchema, link.fk.refTable, filter) }]
+            : [];
+        });
+      }}
     />
     {valueAt && st.columns?.[valueAt.col] && (
       <ValueEditor
@@ -164,6 +190,7 @@ export function ResultsPanel({
   session,
   onRunAgain,
   onDirtyChange,
+  onOpenTable,
 }: {
   result: ScriptResult | null;
   running: boolean;
@@ -172,6 +199,8 @@ export function ResultsPanel({
   session?: SessionInfo;
   onRunAgain?: () => void;
   onDirtyChange?: (dirty: boolean) => void;
+  /** Opens a table in a new tab filtered to one row (following a foreign key). */
+  onOpenTable?: (schema: string, table: string, filter: GroupNode) => void;
 }) {
   const [tab, setTab] = useState<number | "messages">("messages");
   const [exporting, setExporting] = useState<StatementResult | null>(null);
@@ -198,6 +227,27 @@ export function ResultsPanel({
   useEffect(() => onDirtyChange?.(nPending > 0), [nPending, onDirtyChange]);
   // The value editor belongs to one statement's grid; switching result tabs closes it.
   useEffect(() => setValueAt(null), [tab]);
+
+  // Foreign keys of the tables the current result's columns come from (structures are cached
+  // by the engine), so cells traced to a foreign-key column can link to the referenced row.
+  const shown = result && typeof tab === "number" ? result.statements[tab] : undefined;
+  const [structures, setStructures] = useState<TableStructure[]>([]);
+  useEffect(() => {
+    setStructures([]);
+    if (!shown?.columns || !session || !onOpenTable) return;
+    const tables = new Map<string, { schema: string; table: string }>();
+    for (const c of shown.columns) if (c.origin) tables.set(`${c.origin.schema}.${c.origin.table}`, { schema: c.origin.schema, table: c.origin.table });
+    if (tables.size === 0) return;
+    let alive = true;
+    void Promise.all([...tables.values()].map((t) => api.tableStructure(session.sessionId, t.schema, t.table).catch(() => null))).then(
+      (all) => alive && setStructures(all.filter((s): s is TableStructure => s !== null)),
+    );
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per statement shown
+  }, [shown, session?.sessionId]);
+  const fkByColumn = useMemo(() => (shown?.columns ? resultLinks(shown.columns, structures) : []), [shown, structures]);
   const withRows = result?.statements.filter((s) => s.columns) ?? [];
   const mod = isMacPlatform() ? "⌘" : "Ctrl";
 
@@ -318,6 +368,8 @@ export function ResultsPanel({
                 }}
                 valueAt={valueAt}
                 onValueAt={setValueAt}
+                links={fkByColumn}
+                onOpenTable={onOpenTable}
               />
               {nCur > 0 && (
                 <div className="commit-bar" role="region" aria-label="Pending changes">
