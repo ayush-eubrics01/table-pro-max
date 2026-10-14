@@ -1206,6 +1206,31 @@ pre,
   outline: none;
   user-select: text;
 }
+.grid-hcell .icon {
+  color: var(--warning);
+}
+.grid-hcell .icon[aria-label="Foreign key"] {
+  color: var(--syn-number);
+}
+.grid-cell .tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: var(--text-xs);
+  line-height: 16px;
+  letter-spacing: 0.02em;
+}
+.grid-cell.bool-true > span {
+  color: var(--accent);
+}
+.grid-cell.bool-false > span {
+  color: var(--text-muted);
+}
+.grid-row.inserted .grid-rownum {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
 .grid-footer {
   display: flex;
   align-items: center;

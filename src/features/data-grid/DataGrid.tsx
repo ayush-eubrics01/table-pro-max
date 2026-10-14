@@ -2,13 +2,14 @@ import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState,
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Icon } from "../../components/Icon";
 import type { Cell, SortSpec } from "../../types/backend";
-import { cellDisplay, isBinary, isNumericType, toTsv } from "../../lib/cells";
+import { cellDisplay, cellTone, isBinary, isNumericType, toTsv } from "../../lib/cells";
 import { ContextMenu, useContextMenu, type MenuEntry } from "../../components/Menu";
 
 export interface GridColumn {
   name: string;
   typeName: string;
   primaryKey?: boolean;
+  foreignKey?: boolean;
 }
 
 export interface CellPos {
@@ -462,6 +463,7 @@ export function DataGrid(props: DataGridProps) {
                   onContextMenu={(e) => menu.open(e, headerMenu(col))}
                 >
                   {c.primaryKey && <Icon name="key" size={12} label="Primary key" />}
+                  {c.foreignKey && <Icon name="link" size={12} label="Foreign key" />}
                   <span className="name">{c.name}</span>
                   <span className="type">{c.typeName}</span>
                   {s && (s.descending ? <Icon name="arrow_downward" size={12} /> : <Icon name="arrow_upward" size={12} />)}
@@ -517,6 +519,7 @@ export function DataGrid(props: DataGridProps) {
                   const isEditing = editing && editing.pos.row === ri.index && editing.pos.col === col;
                   const selected = inSelection(ri.index, col);
                   const active = focus?.row === ri.index && focus.col === col;
+                  const tone = cellTone(c.typeName, v);
                   const cls = [
                     "grid-cell",
                     v === null ? "null" : "",
@@ -525,6 +528,7 @@ export function DataGrid(props: DataGridProps) {
                     selected ? "selected" : "",
                     active ? "active" : "",
                     isEdited?.(ri.index, col) ? "edited" : "",
+                    tone === "true" ? "bool-true" : tone === "false" ? "bool-false" : "",
                   ].join(" ");
                   return (
                     <div
@@ -574,7 +578,7 @@ export function DataGrid(props: DataGridProps) {
                           }}
                         />
                       ) : (
-                        <span>{v === undefined ? "…" : cellDisplay(v)}</span>
+                        <span className={tone === "enum" ? "tag" : undefined}>{v === undefined ? "…" : cellDisplay(v)}</span>
                       )}
                     </div>
                   );

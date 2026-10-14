@@ -424,7 +424,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange }
                 <DataGrid
                   ref={gridRef}
                   ariaLabel={`Rows of ${table}`}
-                  columns={structure.columns.map((c) => ({ name: c.name, typeName: c.dataType, primaryKey: c.primaryKey !== null }))}
+                  columns={structure.columns.map((c) => ({ name: c.name, typeName: c.dataType, primaryKey: c.primaryKey !== null, foreignKey: structure.foreignKeys.some((f) => f.columns.includes(c.name)) }))}
                   rowCount={rowCount}
                   getRow={getRow}
                   rowState={(i) => (i >= rows.length ? "inserted" : pending.deleted.includes(i) ? "deleted" : undefined)}

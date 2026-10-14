@@ -42,6 +42,18 @@ export function isBooleanType(typeName: string): boolean {
   return BOOLEAN.test(typeName.trim());
 }
 
+const ENUM = /enum/i;
+const TRUE = /^(t|true|1|yes|on)$/i;
+const FALSE = /^(f|false|0|no|off)$/i;
+
+/** How a cell is drawn: enum values as tags, booleans coloured. NULL and binary values are never toned. */
+export function cellTone(typeName: string, value: Cell | undefined): "enum" | "true" | "false" | null {
+  if (value === null || value === undefined || isBinary(value)) return null;
+  if (isBooleanType(typeName)) return TRUE.test(value) ? "true" : FALSE.test(value) ? "false" : null;
+  if (ENUM.test(typeName)) return "enum";
+  return null;
+}
+
 const DATE = /date|time/i;
 export function isDateType(typeName: string): boolean {
   return DATE.test(typeName);
