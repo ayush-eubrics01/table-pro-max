@@ -5,6 +5,7 @@ import type { KeyboardEvent } from "react";
  * select it and focus it. Only the checked option is a Tab stop (tabIndex 0, others -1).
  */
 export function radioKeyDown<T>(e: KeyboardEvent<HTMLElement>, values: readonly T[], current: T, select: (v: T) => void, enabled: (v: T) => boolean = () => true) {
+  if (e.altKey || e.ctrlKey || e.metaKey) return;
   const step = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
   if (!step) return;
   e.preventDefault();

@@ -21,7 +21,9 @@ export function TitleBar({ mac, onCloseWorkspace }: Props) {
 
   // With many connections the strip scrolls; keep the active tab visible.
   useEffect(() => {
-    tabs.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    // Scroll the whole tab (with its close button), not just the tab label.
+    const tab = tabs.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]');
+    (tab?.closest<HTMLElement>(".tb-tab") ?? tab)?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
   }, [activeId, workspaces.length]);
 
   return (

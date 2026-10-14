@@ -105,6 +105,6 @@ describe("Sidebar", () => {
 
   it("shows which of the two switcher selects has keyboard focus", () => {
     const css = readFileSync("src/styles/app.css", "utf8");
-    expect(css).toMatch(/\.db-switch-select:focus-visible\s*\{[^}]*text-decoration:\s*underline/);
+    expect(css).toMatch(/\.db-switch-select:focus-visible\s*\{[^}]*box-shadow:\s*inset 0 -2px 0 var\(--focus\)/);
   });
 });

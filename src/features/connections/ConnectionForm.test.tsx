@@ -141,4 +141,22 @@ describe("ConnectionForm", () => {
     fireEvent.keyDown(within(envs).getByRole("radio", { name: "Local" }), { key: "ArrowRight" });
     expect(within(envs).getByRole("radio", { name: "Development" })).toHaveAttribute("aria-checked", "true");
   });
+
+  it("keeps host, port and tunnel when arrowing through file engines and back", async () => {
+    render(<ConnectionForm appInfo={appInfo(true)} initialUrl="postgres://svc:s3cret@db.internal:6543/shop" onClose={() => undefined} onSaved={() => undefined} />);
+    await waitFor(() => expect(screen.getByDisplayValue("6543")).toBeInTheDocument());
+    const engines = screen.getByRole("radiogroup", { name: "Database type" });
+    within(engines).getByRole("radio", { name: /PostgreSQL/ }).focus();
+    for (const key of ["ArrowRight", "ArrowRight", "ArrowRight", "ArrowLeft", "ArrowLeft", "ArrowLeft"]) fireEvent.keyDown(document.activeElement!, { key });
+    expect(within(engines).getByRole("radio", { name: /PostgreSQL/ })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByDisplayValue("db.internal")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("6543")).toBeInTheDocument();
+  });
+
+  it("ignores arrow keys pressed with a modifier", () => {
+    render(<ConnectionForm appInfo={appInfo(true)} onClose={() => undefined} onSaved={() => undefined} />);
+    const engines = screen.getByRole("radiogroup", { name: "Database type" });
+    fireEvent.keyDown(within(engines).getByRole("radio", { name: /PostgreSQL/ }), { key: "ArrowRight", ctrlKey: true });
+    expect(within(engines).getByRole("radio", { name: /PostgreSQL/ })).toHaveAttribute("aria-checked", "true");
+  });
 });

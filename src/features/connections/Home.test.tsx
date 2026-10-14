@@ -96,4 +96,13 @@ describe("Home", () => {
     render(<Home appInfo={null} connecting={null} onConnect={() => undefined} />);
     expect(screen.getByRole("heading", { name: "Production, 1 connection" })).toBeInTheDocument();
   });
+
+  it("connects from a click on the card body, but not from Edit", () => {
+    const onConnect = vi.fn();
+    render(<Home appInfo={null} connecting={null} onConnect={onConnect} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit Prod Core" }));
+    expect(onConnect).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Prod Core"));
+    expect(onConnect).toHaveBeenCalledWith(expect.objectContaining({ id: "p" }));
+  });
 });

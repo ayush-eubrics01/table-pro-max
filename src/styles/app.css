@@ -469,8 +469,8 @@ pre,
 .tb-tab {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 8px 0 0;
+  gap: 0;
+  padding: 0 4px 0 0;
   border: 0;
   border-radius: 8px 8px 0 0;
   background: transparent;
@@ -484,7 +484,8 @@ pre,
 .titlebar-tabs > .tb-tab {
   flex: none;
   min-width: 0;
-  padding-left: 12px;
+  gap: 8px;
+  padding: 0 12px;
 }
 .tb-tab-main {
   display: flex;
@@ -493,7 +494,7 @@ pre,
   flex: 1;
   min-width: 0;
   align-self: stretch;
-  padding-left: 12px;
+  padding: 0 8px 0 12px;
   border-radius: 8px 8px 0 0;
 }
 .tb-tab:focus-visible,
@@ -714,13 +715,10 @@ pre,
   text-overflow: ellipsis;
   cursor: pointer;
 }
-/* Both selects share the box's focus ring, so the focused one is also underlined. */
+/* Both selects share the box's focus ring, so the focused one also gets an accent underline. */
 .db-switch-select:focus-visible {
   outline: none;
-  text-decoration: underline;
-  text-decoration-color: var(--focus);
-  text-decoration-thickness: 2px;
-  text-underline-offset: 4px;
+  box-shadow: inset 0 -2px 0 var(--focus);
 }
 .db-switch-select.db {
   font-weight: 600;
@@ -893,7 +891,7 @@ pre,
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: 0 8px 0 14px;
+  padding: 0 6px 0 0;
   border: 0;
   border-right: 1px solid var(--border-hairline);
   background: transparent;
@@ -910,8 +908,10 @@ pre,
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  flex: 1;
   min-width: 0;
   align-self: stretch;
+  padding: 0 8px 0 14px;
 }
 .tab-main:focus-visible {
   outline: 2px solid var(--focus);

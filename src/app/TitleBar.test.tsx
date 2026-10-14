@@ -74,7 +74,8 @@ describe("TitleBar", () => {
       seen.push(this);
     };
     render(<TitleBar mac={false} onCloseWorkspace={() => undefined} />);
-    expect(seen.some((el) => el.getAttribute("aria-selected") === "true" && el.textContent?.includes("Local PG"))).toBe(true);
+    // The whole tab (label and close button) is scrolled into view.
+    expect(seen.some((el) => el.classList.contains("tb-tab") && el.querySelector('[aria-selected="true"]') && el.textContent?.includes("Local PG"))).toBe(true);
   });
 
   it("keeps the Connections tab outside the scrolling strip and scrolls it with the mouse wheel", () => {

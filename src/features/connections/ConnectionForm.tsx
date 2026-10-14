@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { AppInfo, ConnectionProfile, Driver, ServerInfo, SshConfig } from "../../types/backend";
 import { withoutPassword } from "../../lib/url";
@@ -40,14 +40,27 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
     setTested(null);
   };
 
+  // Switching engine (by click or by arrowing through the tiles) must not lose what was typed:
+  // each engine keeps its own port, and the server settings come back after a file engine.
+  const ports = useRef<Partial<Record<Driver, number | null>>>({});
+  const network = useRef<Pick<ConnectionProfile, "host" | "ssh" | "passwordMode"> | null>(null);
   const setDriver = (driver: Driver) => {
     const fresh = newProfile(driver);
+    ports.current[p.driver] = p.port;
+    if (!isFileDriver(p.driver)) network.current = { host: p.host, ssh: p.ssh, passwordMode: p.passwordMode };
+    const net = network.current;
     set({
       driver,
-      port: fresh.port,
-      host: isFileDriver(driver) ? "" : p.host || "localhost",
-      ssh: isFileDriver(driver) ? null : p.ssh,
-      passwordMode: isFileDriver(driver) ? "none" : p.passwordMode === "none" ? (keychainAvailable ? "keychain" : "ask") : p.passwordMode,
+      port: ports.current[driver] !== undefined ? ports.current[driver]! : fresh.port,
+      host: isFileDriver(driver) ? "" : net?.host || p.host || "localhost",
+      ssh: isFileDriver(driver) ? null : (net?.ssh ?? p.ssh),
+      passwordMode: isFileDriver(driver)
+        ? "none"
+        : (net?.passwordMode ?? p.passwordMode) === "none"
+          ? keychainAvailable
+            ? "keychain"
+            : "ask"
+          : (net?.passwordMode ?? p.passwordMode),
     });
   };
 

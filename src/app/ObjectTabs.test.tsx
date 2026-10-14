@@ -49,4 +49,10 @@ describe("ObjectTabs", () => {
     fireEvent.keyDown(screen.getByRole("tab", { name: /Query 1/ }), { key: " " });
     expect(useWorkspaces.getState().workspaces[0]!.activeTabId).toBe("q1");
   });
+
+  it("makes the whole tab clickable: padding sits inside the tab element", () => {
+    const css = readFileSync("src/styles/app.css", "utf8");
+    expect(css).toMatch(/\.tab-main\s*\{[^}]*flex:\s*1[^}]*padding:\s*0 8px 0 14px/);
+    expect(css).toMatch(/\.tab\s*\{[^}]*padding:\s*0 6px 0 0;/);
+  });
 });
