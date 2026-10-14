@@ -116,6 +116,8 @@ pub fn run() {
             commands::query::count_rows,
             commands::query::preview_changes,
             commands::query::apply_changes,
+            commands::query::preview_change_sets,
+            commands::query::apply_change_sets,
             commands::query::preview_create_table,
             commands::query::preview_alter_table,
             commands::query::apply_ddl,

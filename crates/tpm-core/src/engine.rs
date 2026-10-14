@@ -154,6 +154,9 @@ pub struct StatementResult {
     pub rows_affected: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<AppError>,
+    /// Which cells of this result can be edited (row-returning SELECTs only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub editing: Option<crate::result_edit::ResultEditing>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -541,9 +544,17 @@ impl Engine {
                             truncated: false,
                             rows_affected: None,
                             error: Some(e),
+                            editing: None,
                         }]
                     }
                 };
+                if stmt.class == crate::safety::StatementClass::Read {
+                    for r in produced.iter_mut() {
+                        if let Some(cols) = r.columns.clone() {
+                            r.editing = Some(self.editing_for(&handle, session_id, &cols).await);
+                        }
+                    }
+                }
                 let failed = produced.iter().any(|r| r.error.is_some());
                 if let Some(p) = &progress {
                     for r in &produced {
@@ -652,6 +663,7 @@ impl Engine {
                 truncated: false,
                 rows_affected: None,
                 error: None,
+                editing: None,
             };
             match o {
                 StatementOutcome::Affected { rows_affected } => r.rows_affected = Some(rows_affected),
@@ -773,10 +785,35 @@ impl Engine {
             .ok_or_else(|| AppError::internal("COUNT returned no value"))
     }
 
+    /// Which cells of a result can be edited (see result_edit.rs). Never fails: problems make cells read-only.
+    async fn editing_for(&self, handle: &Arc<SessionHandle>, session_id: &str, cols: &[ColumnMeta]) -> crate::result_edit::ResultEditing {
+        use crate::result_edit::{not_editable, origin_tables, result_editing};
+        if handle.profile.read_only() {
+            return not_editable(cols, "Read-only connection");
+        }
+        if handle.profile.driver == crate::config::Driver::Duckdb {
+            return not_editable(cols, "Query results can't be edited on DuckDB");
+        }
+        let mut structures = Vec::new();
+        for (schema, table) in origin_tables(cols) {
+            if let Ok(s) = self.table_structure(session_id, &schema, &table, false).await {
+                structures.push(s);
+            }
+        }
+        result_editing(cols, &structures)
+    }
+
     pub async fn preview_changes(&self, session_id: &str, set: &ChangeSet) -> Result<ChangePreview> {
+        self.preview_change_sets(session_id, std::slice::from_ref(set)).await
+    }
+
+    pub async fn preview_change_sets(&self, session_id: &str, sets: &[ChangeSet]) -> Result<ChangePreview> {
         let handle = self.handle(session_id)?;
-        let structure = self.table_structure(session_id, &set.schema, &set.table, false).await?;
-        let statements = build_statements(handle.info.dialect, &structure, set)?;
+        let mut statements = Vec::new();
+        for set in sets {
+            let structure = self.table_structure(session_id, &set.schema, &set.table, false).await?;
+            statements.extend(build_statements(handle.info.dialect, &structure, set)?);
+        }
         Ok(ChangePreview {
             sql: preview(handle.info.dialect, &statements),
             statement_count: statements.len(),
@@ -787,6 +824,11 @@ impl Engine {
     /// Commits pending grid edits in one transaction. The review dialog in the UI is
     /// the confirmation step, so `confirmed` must be true.
     pub async fn apply_changes(&self, session_id: &str, set: &ChangeSet, confirmed: bool) -> Result<Vec<u64>> {
+        self.apply_change_sets(session_id, std::slice::from_ref(set), confirmed).await
+    }
+
+    /// Commits edits to one or more tables (e.g. from a joined query result) in one transaction.
+    pub async fn apply_change_sets(&self, session_id: &str, sets: &[ChangeSet], confirmed: bool) -> Result<Vec<u64>> {
         let handle = self.handle(session_id)?;
         if handle.profile.read_only() {
             return Err(AppError::new(ErrorKind::PolicyViolation, "This connection is read-only"));
@@ -794,8 +836,11 @@ impl Engine {
         if !confirmed {
             return Err(AppError::new(ErrorKind::ConfirmationRequired, "Review the pending changes before committing"));
         }
-        let structure = self.table_structure(session_id, &set.schema, &set.table, true).await?;
-        let statements = build_statements(handle.info.dialect, &structure, set)?;
+        let mut statements = Vec::new();
+        for set in sets {
+            let structure = self.table_structure(session_id, &set.schema, &set.table, true).await?;
+            statements.extend(build_statements(handle.info.dialect, &structure, set)?);
+        }
         let atomic = handle.info.capabilities.transactions;
         self.with_session(session_id, move |s| Box::pin(async move { s.apply(&statements, atomic).await })).await
     }
