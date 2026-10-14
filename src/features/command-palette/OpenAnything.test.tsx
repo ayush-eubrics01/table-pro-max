@@ -5,7 +5,7 @@ import { OpenAnything } from "./OpenAnything";
 import { useConnections } from "../../stores/connections";
 import { useWorkspaces } from "../../stores/workspaces";
 import { useUi } from "../../stores/ui";
-import { profile } from "../../test/fixtures";
+import { profile, session } from "../../test/fixtures";
 
 beforeEach(() => {
   // jsdom has no layout, so no scrollIntoView.
@@ -40,5 +40,16 @@ describe("OpenAnything", () => {
     fireEvent.keyDown(input, { key: "ArrowDown" });
     expect(input).toHaveAttribute("aria-activedescendant", options[1]!.id);
     expect(options[1]).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("keeps actions and connections in view with many cached objects", async () => {
+    const objects = Array.from({ length: 80 }, (_, i) => ({ schema: "public", name: `t${i}`, kind: "table" as const }));
+    useWorkspaces.setState({
+      workspaces: [{ id: "w", kind: "sql", profile, session, schema: "public", schemas: ["public"], objects: { public: objects }, columns: {}, tabs: [], activeTabId: null, closed: [], health: "ok" }],
+      activeId: "w",
+    } as never);
+    render(<OpenAnything onConnect={() => undefined} />);
+    expect(await screen.findByRole("option", { name: /^Settings/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /^set/ })).toBeInTheDocument();
   });
 });

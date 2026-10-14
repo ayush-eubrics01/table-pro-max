@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
+import { ICON_PATHS } from "../components/icons.generated";
+import { WindowControls } from "./WindowControls";
 import { TitleBar } from "./TitleBar";
 import { useUi } from "../stores/ui";
 import { useWorkspaces } from "../stores/workspaces";
@@ -81,5 +83,14 @@ describe("TitleBar", () => {
     expect(scroller.contains(screen.getByRole("tab", { name: /Local PG/ }))).toBe(true);
     fireEvent.wheel(scroller, { deltaY: 120 });
     expect(scroller.scrollLeft).toBe(120);
+  });
+
+  it("shows the restore glyph while maximised", async () => {
+    clearMocks();
+    mockWindows("main");
+    mockIPC((cmd) => (cmd === "plugin:window|is_maximized" ? true : null));
+    render(<WindowControls />);
+    const restore = await screen.findByRole("button", { name: "Restore" });
+    expect(restore.querySelector("path")?.getAttribute("d")).toBe(ICON_PATHS.filter_none);
   });
 });

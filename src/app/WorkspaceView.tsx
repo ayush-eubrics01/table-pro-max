@@ -183,7 +183,8 @@ export function StatusBar({ ws, version }: { ws: Workspace | undefined; version?
       ) : (
         <span className="write-mode">Writes enabled</span>
       )}
-      <span title="Query safety mode">{safetyLabel(s.safetyMode)}</span>
+      {/* A read-only session already says so; don't repeat it as the safety mode. */}
+      {!(s.readOnly && s.safetyMode === "read_only") && <span title="Query safety mode">{safetyLabel(s.safetyMode)}</span>}
       <span className="mono">{ws.schema}</span>
       {version && <span className="version">v{version}</span>}
     </footer>

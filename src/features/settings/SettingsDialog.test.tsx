@@ -80,4 +80,12 @@ describe("SettingsDialog", () => {
     fireEvent.click(screen.getByText("Wrap long lines in the editor"));
     expect(useSettings.getState().settings["editor.wordWrap"]).toBe(!DEFAULT_SETTINGS["editor.wordWrap"]);
   });
+
+  it("keeps a typed number when the dialog closes before the field loses focus", () => {
+    const { unmount } = render(<SettingsDialog appInfo={appInfo} onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "Editor" }));
+    fireEvent.change(screen.getByLabelText("Editor font size"), { target: { value: "16" } });
+    unmount();
+    expect(useSettings.getState().settings["editor.fontSize"]).toBe(16);
+  });
 });

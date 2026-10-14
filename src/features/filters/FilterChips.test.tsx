@@ -32,4 +32,22 @@ describe("FilterChips", () => {
     const { container } = render(<FilterChips filter={{ type: "group", logic: "and", children: [] }} onEdit={() => undefined} />);
     expect(container).toBeEmptyDOMElement();
   });
+
+  it("shows a negated filter as NOT and skips groups with nothing enabled", () => {
+    const negated: GroupNode = {
+      type: "group",
+      logic: "or",
+      negate: true,
+      children: [
+        { type: "condition", column: "a", op: "eq", value: "1" },
+        { type: "condition", column: "b", op: "eq", value: "2" },
+        { type: "group", logic: "and", children: [{ type: "condition", column: "c", op: "eq", value: "3", enabled: false }] },
+      ],
+    };
+    render(<FilterChips filter={negated} onEdit={() => undefined} />);
+    const list = screen.getByRole("list", { name: "Active filters" });
+    expect(list.querySelectorAll("li")).toHaveLength(2);
+    expect(list).toHaveTextContent(/or/);
+    expect(screen.getByText("NOT")).toBeInTheDocument();
+  });
 });

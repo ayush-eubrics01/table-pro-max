@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { AppInfo } from "../../types/backend";
 import { Dialog } from "../../components/Dialog";
 import { Icon } from "../../components/Icon";
@@ -29,6 +29,15 @@ function NumberField({ label, k, min, max, hint }: { label: string; k: keyof Set
   const value = useSettings((s) => s.settings[k]) as number;
   const set = useSettings((s) => s.set);
   const [draft, setDraft] = useState(String(value));
+  const commit = (raw: string) => {
+    const n = Math.min(max, Math.max(min, Number(raw) || min));
+    setDraft(String(n));
+    if (n !== value) void set(k, n as never);
+  };
+  // Closing Settings (Esc, Done) unmounts the field without a blur: save what was typed.
+  const latest = useRef({ draft, commit });
+  latest.current = { draft, commit };
+  useEffect(() => () => latest.current.commit(latest.current.draft), []);
   return (
     <SettingRow label={label} description={hint}>
       <input
@@ -37,11 +46,7 @@ function NumberField({ label, k, min, max, hint }: { label: string; k: keyof Set
         aria-label={label}
         value={draft}
         onChange={(e) => setDraft(e.target.value.replace(/\D/g, ""))}
-        onBlur={() => {
-          const n = Math.min(max, Math.max(min, Number(draft) || min));
-          setDraft(String(n));
-          void set(k, n as never);
-        }}
+        onBlur={() => commit(draft)}
       />
     </SettingRow>
   );

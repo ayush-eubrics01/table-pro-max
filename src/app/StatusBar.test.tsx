@@ -27,4 +27,9 @@ describe("StatusBar", () => {
     expect(screen.getByText("No connection open")).toBeInTheDocument();
     expect(screen.getByText("v0.1.0")).toBeInTheDocument();
   });
+
+  it("says Read-only once when the safety mode is read-only too", () => {
+    render(<StatusBar ws={ws({ readOnly: true, safetyMode: "read_only" })} version="0.1.0" />);
+    expect(screen.getAllByText("Read-only")).toHaveLength(1);
+  });
 });
