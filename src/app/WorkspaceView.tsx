@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../components/Icon";
 import { useWorkspaces, type Tab, type Workspace } from "../stores/workspaces";
 import { usePendingEdits } from "../stores/pendingEdits";
@@ -41,6 +41,22 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
     }
     closeTab(ws.id, tab.id);
   };
+
+  // Ctrl/⌘+W closes the active tab of the visible workspace, asking first like the tab's × does.
+  const requestCloseRef = useRef(requestClose);
+  requestCloseRef.current = requestClose;
+  useEffect(() => {
+    if (!visible) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "w" || e.shiftKey || e.altKey) return;
+      const tab = ws.tabs.find((t) => t.id === ws.activeTabId);
+      if (!tab) return;
+      e.preventDefault();
+      void requestCloseRef.current(tab);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [visible, ws.tabs, ws.activeTabId]);
 
   const reconnect = useCallback(async () => {
     const info = await reconnectWithPrompt(ws.session.sessionId, ws.profile);
