@@ -235,6 +235,9 @@ pub struct RestoreNote {
     /// Why there is no restore point.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The point was kept, but may not match what the statement changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -676,7 +679,7 @@ impl Engine {
                         None,
                     ),
                     CaptureState::Skipped { reason, .. } => {
-                        (None, Some(RestoreNote { point_id: None, reason: Some(reason.clone()) }))
+                        (None, Some(RestoreNote { point_id: None, reason: Some(reason.clone()), warning: None }))
                     }
                     CaptureState::Off => (None, None),
                 };
@@ -1058,13 +1061,14 @@ impl Engine {
     fn keep_restore_point(&self, handle: &SessionHandle, statement: &str, c: Captured) -> Option<RestoreNote> {
         use crate::restore::{RestoreKind, RestorePoint, RestoreStatus};
         if let Some(reason) = c.dropped {
-            return Some(RestoreNote { point_id: None, reason: Some(reason) });
+            return Some(RestoreNote { point_id: None, reason: Some(reason), warning: None });
         }
         // Nothing matched: nothing to put back (a dropped table or column still comes back).
         if c.data.before.is_empty() && !matches!(c.kind, RestoreKind::DropTable | RestoreKind::DropColumn) {
             return None;
         }
         let store = self.restore_store()?;
+        let warning = c.warning;
         let point = RestorePoint {
             id: uuid::Uuid::new_v4().to_string(),
             connection_id: handle.profile.id.clone(),
@@ -1084,7 +1088,7 @@ impl Engine {
                 if c.pending {
                     lock(&handle.pending_restore).push(point.id.clone());
                 }
-                Some(RestoreNote { point_id: Some(point.id), reason: None })
+                Some(RestoreNote { point_id: Some(point.id), reason: None, warning })
             }
             Err(e) => {
                 let reason = if e.code.as_deref() == Some("restore_too_large") {
@@ -1092,7 +1096,7 @@ impl Engine {
                 } else {
                     format!("could not be saved: {}", e.message)
                 };
-                Some(RestoreNote { point_id: None, reason: Some(reason) })
+                Some(RestoreNote { point_id: None, reason: Some(reason), warning: None })
             }
         }
     }
@@ -1587,7 +1591,9 @@ impl Engine {
                         grid_captures
                             .push(GridCapture { statement: statement.clone().unwrap_or(gc.statement.clone()), ..gc });
                     }
-                    GridPlan::Skip(reason) => notes.push(RestoreNote { point_id: None, reason: Some(reason) }),
+                    GridPlan::Skip(reason) => {
+                        notes.push(RestoreNote { point_id: None, reason: Some(reason), warning: None })
+                    }
                     GridPlan::Nothing => {}
                 }
             }
@@ -2329,6 +2335,8 @@ struct Captured {
     /// Made inside the user's transaction: kept on COMMIT, deleted on ROLLBACK.
     pending: bool,
     dropped: Option<String>,
+    /// Kept, but may not match what the statement changed.
+    warning: Option<String>,
 }
 
 /// Puts a describe's column origins (and missing type names) into the results that lack them.
@@ -2377,6 +2385,7 @@ impl Captured {
             bytes: 0,
             pending: false,
             dropped: None,
+            warning: None,
         }
     }
 }
@@ -2424,6 +2433,55 @@ fn is_fatal(e: &AppError) -> bool {
 /// transaction inside our own, so the rows read are exactly the rows changed; before rows, the
 /// statement, after rows (UPDATE), commit. A read that fails leaves the statement to run without
 /// a restore point; the statement's own failure rolls everything back.
+/// Why a capture may not match what the statement changed: it changed more rows than were read
+/// before it (a volatile WHERE, rows another session added), or fewer. MySQL counts only the rows
+/// whose values changed, so an UPDATE there may report fewer.
+fn capture_mismatch(
+    kind: crate::restore::RestoreKind,
+    captured: usize,
+    affected: Option<u64>,
+    counts_changed_only: bool,
+) -> Option<String> {
+    use crate::restore::RestoreKind;
+    if !matches!(kind, RestoreKind::Update | RestoreKind::Delete) {
+        return None;
+    }
+    let affected = affected?;
+    let read = captured as u64;
+    if affected > read {
+        Some(format!(
+            "{} changed, but only {read} were read before the statement ran; only those can be put back",
+            rows_text(affected)
+        ))
+    } else if affected < read && !(counts_changed_only && kind == RestoreKind::Update) {
+        Some(format!(
+            "{} changed, but {read} were read before the statement ran; restoring may put back rows it didn't change",
+            rows_text(affected)
+        ))
+    } else {
+        None
+    }
+}
+
+fn rows_text(n: u64) -> String {
+    if n == 1 { "1 row".into() } else { format!("{n} rows") }
+}
+
+/// PostgreSQL: lock the table before reading it for TRUNCATE or DROP, so no row is added between
+/// the read and the statement. Row changes lock their rows with `FOR UPDATE` instead.
+fn capture_lock(
+    driver: crate::config::Driver,
+    kind: crate::restore_plan::CaptureKind,
+    st: &TableStructure,
+) -> Result<Option<String>> {
+    use crate::restore_plan::CaptureKind;
+    if driver != crate::config::Driver::Postgres || matches!(kind, CaptureKind::Update | CaptureKind::Delete) {
+        return Ok(None);
+    }
+    let table = crate::dialect::Dialect::Postgres.qualified(Some(&st.schema), &st.name)?;
+    Ok(Some(format!("LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE")))
+}
+
 async fn run_captured(
     s: &mut Box<dyn Session>,
     sql: &str,
@@ -2473,17 +2531,22 @@ async fn run_captured(
         bytes: 0,
         pending: in_txn && !implicit_commit,
         dropped: None,
+        warning: None,
     };
 
     if own_txn {
         s.begin().await?;
     }
     let select = capture_select(plan, st, job.dialect, lock)?;
+    let lock_table = capture_lock(job.driver, plan.kind, st)?;
     let limit = job.max_rows as usize;
     let want_ddl = plan.kind == CaptureKind::DropTable;
     let (schema, table) = (st.schema.clone(), st.name.clone());
     let read = guarded(s, guard, move |s| {
         Box::pin(async move {
+            if let Some(l) = lock_table {
+                s.execute(&l, 1).await?;
+            }
             let rows = s.query(&select, &[], limit.saturating_add(1)).await?;
             let ddl =
                 if want_ddl { Some(s.object_definition(&schema, &table, ObjectKind::Table).await?) } else { None };
@@ -2527,6 +2590,22 @@ async fn run_captured(
             return Err(e);
         }
     };
+    if cap.dropped.is_none() && row_change {
+        let affected = outcomes.iter().find_map(|o| match o {
+            StatementOutcome::Affected { rows_affected } => Some(*rows_affected),
+            _ => None,
+        });
+        if cap.data.before.is_empty() {
+            cap.dropped = Some(match affected {
+                Some(n) if n > 0 => {
+                    format!("{} changed, but none matched when they were read before the statement ran", rows_text(n))
+                }
+                _ => "no rows matched".into(),
+            });
+        } else {
+            cap.warning = capture_mismatch(cap.kind, cap.data.before.len(), affected, mysql);
+        }
+    }
 
     if plan.kind == CaptureKind::Update && cap.dropped.is_none() {
         let d = &cap.data;
@@ -2688,6 +2767,7 @@ fn grid_capture(
             bytes: 0,
             pending: false,
             dropped: None,
+            warning: None,
         },
     })))
 }
@@ -2842,6 +2922,38 @@ pub fn default_schema_sql(driver: crate::config::Driver, schema: &str) -> Result
 mod schema_tests {
     use super::*;
     use crate::config::Driver;
+
+    #[test]
+    fn a_capture_that_differs_from_the_change_is_flagged() {
+        use crate::restore::RestoreKind::{Delete, DropTable, Update};
+        assert_eq!(capture_mismatch(Update, 3, Some(3), false), None);
+        assert_eq!(capture_mismatch(Update, 3, None, false), None);
+        let more = capture_mismatch(Delete, 2, Some(5), false).unwrap();
+        assert!(more.contains("5 rows changed") && more.contains("only 2"), "{more}");
+        let fewer = capture_mismatch(Update, 4, Some(1), false).unwrap();
+        assert!(fewer.contains("1 row changed") && fewer.contains('4'), "{fewer}");
+        // MySQL counts only the rows whose values changed.
+        assert_eq!(capture_mismatch(Update, 4, Some(1), true), None);
+        assert!(capture_mismatch(Delete, 4, Some(1), true).is_some());
+        assert!(capture_mismatch(Update, 1, Some(2), true).is_some());
+        assert_eq!(capture_mismatch(DropTable, 3, Some(0), false), None);
+    }
+
+    #[test]
+    fn postgres_locks_the_table_before_reading_it_for_ddl() {
+        use crate::restore_plan::CaptureKind;
+        let st = TableStructure { schema: "public".into(), name: "Orders".into(), ..Default::default() };
+        for kind in [CaptureKind::Truncate, CaptureKind::DropTable, CaptureKind::DropColumn] {
+            assert_eq!(
+                capture_lock(Driver::Postgres, kind, &st).unwrap().as_deref(),
+                Some("LOCK TABLE \"public\".\"Orders\" IN ACCESS EXCLUSIVE MODE")
+            );
+        }
+        // Row changes lock their rows with FOR UPDATE; other databases have no such statement here.
+        assert_eq!(capture_lock(Driver::Postgres, CaptureKind::Update, &st).unwrap(), None);
+        assert_eq!(capture_lock(Driver::Duckdb, CaptureKind::Truncate, &st).unwrap(), None);
+        assert_eq!(capture_lock(Driver::Mysql, CaptureKind::DropTable, &st).unwrap(), None);
+    }
 
     #[test]
     fn transaction_control_is_tracked() {

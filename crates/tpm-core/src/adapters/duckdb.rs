@@ -321,6 +321,21 @@ impl Session for DuckSession {
             .find(|r| r.str(0) == "PRIMARY KEY")
             .map(|r| split_list(&r.str(1)))
             .unwrap_or_default();
+        // duckdb_columns() has no flag for generated columns; the table's definition does.
+        let generated = if kind == ObjectKind::Table {
+            self.rows(
+                "SELECT sql::VARCHAR FROM duckdb_tables() WHERE database_name = current_database() AND schema_name = $1 AND table_name = $2"
+                    .into(),
+                sp(),
+            )
+            .await
+            .unwrap_or_default()
+            .first()
+            .map(|r| generated_columns(&TextRow(r).str(0)))
+            .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let columns = self
             .rows(
                 "SELECT column_name::VARCHAR, data_type::VARCHAR, is_nullable::VARCHAR, column_default::VARCHAR, comment::VARCHAR \
@@ -334,7 +349,9 @@ impl Session for DuckSession {
             .map(|r| {
                 let r = TextRow(r);
                 let name = r.str(0);
-                let default = r.opt(3);
+                let generated = generated.iter().any(|g| g.eq_ignore_ascii_case(&name));
+                // A generated column's expression is reported as its default.
+                let default = if generated { None } else { r.opt(3) };
                 ColumnInfo {
                     primary_key: pk.iter().position(|p| *p == name).map(|i| i as u32 + 1),
                     auto_increment: default.as_deref().is_some_and(|d| d.starts_with("nextval(")),
@@ -342,8 +359,7 @@ impl Session for DuckSession {
                     data_type: r.str(1),
                     default,
                     comment: r.opt(4),
-                    // duckdb_columns() does not say which columns are generated.
-                    generated: false,
+                    generated,
                     name,
                 }
             })
@@ -537,4 +553,36 @@ pub(crate) fn map_error(e: duckdb::Error) -> AppError {
         ErrorKind::Database
     };
     AppError::new(kind, msg)
+}
+
+/// The columns a `CREATE TABLE` defines as generated (`GENERATED ALWAYS AS (…)` or `AS (…)`).
+/// DuckDB's catalog has no flag for them, but keeps each table's definition.
+fn generated_columns(create_sql: &str) -> Vec<String> {
+    use sqlparser::ast::{ColumnOption, Statement};
+    let Ok(statements) = sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::DuckDbDialect {}, create_sql) else {
+        return Vec::new();
+    };
+    let Some(Statement::CreateTable(table)) = statements.into_iter().next() else { return Vec::new() };
+    table
+        .columns
+        .into_iter()
+        .filter(|c| {
+            c.options.iter().any(|o| matches!(&o.option, ColumnOption::Generated { generation_expr: Some(_), .. }))
+        })
+        .map(|c| c.name.value)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::generated_columns;
+
+    #[test]
+    fn generated_columns_come_from_the_table_definition() {
+        let sql = "CREATE TABLE tpm_it_rpg(id INTEGER PRIMARY KEY, qty INTEGER DEFAULT(1), \
+                   total INTEGER GENERATED ALWAYS AS((qty * 2)) VIRTUAL, \"Half\" DOUBLE AS (qty / 2));";
+        assert_eq!(generated_columns(sql), vec!["total".to_string(), "Half".to_string()]);
+        assert!(generated_columns("CREATE TABLE t(a INTEGER, b VARCHAR DEFAULT('x'));").is_empty());
+        assert!(generated_columns("not sql at all").is_empty());
+    }
 }

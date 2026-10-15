@@ -508,6 +508,11 @@ export function ResultsPanel({
                     </button>
                   </div>
                 )}
+                {s.restore?.warning && (
+                  <div className="restore-note warn">
+                    <Icon name="warning" size={14} /> {`Check the restore point: ${s.restore.warning}`}
+                  </div>
+                )}
                 {s.restore?.reason && (
                   <div className="restore-note warn">
                     <Icon name="warning" size={14} /> {`No restore point: ${s.restore.reason}`}
