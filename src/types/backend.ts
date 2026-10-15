@@ -671,4 +671,6 @@ export interface ApplyResult {
 export interface RestoreNote {
   pointId?: string;
   reason?: string;
+  /** Kept, but may not match what the statement changed. */
+  warning?: string;
 }

@@ -941,6 +941,32 @@ async fn restore_point_edges(engine: &Arc<Engine>, sid: &str, driver: Driver) {
         assert_ne!(qty(1).await, "0");
     }
 
+    // A statement that matched nothing says so instead of saying nothing.
+    for sql in ["UPDATE tpm_it_rpe SET qty = 0 WHERE id = -1", "DELETE FROM tpm_it_rpe WHERE id = -1"] {
+        let r = engine.run_script(sid, sql, opts(true), None).await.unwrap();
+        let note = r.statements[0].restore.clone().unwrap_or_else(|| panic!("{driver:?}: {sql}: no note"));
+        assert_eq!((note.point_id, note.reason.as_deref()), (None, Some("no rows matched")), "{driver:?}: {sql}");
+    }
+
+    // The statement changed other rows than the ones read before it (a volatile WHERE): the point
+    // is kept, with a warning.
+    if driver == Driver::Postgres {
+        run(engine, sid, "DROP SEQUENCE IF EXISTS tpm_it_rpe_seq").await;
+        run(engine, sid, "CREATE SEQUENCE tpm_it_rpe_seq").await;
+        let sql = "UPDATE tpm_it_rpe SET qty = qty + 10 WHERE id <= (SELECT nextval('tpm_it_rpe_seq'))";
+        let r = engine.run_script(sid, sql, opts(true), None).await.unwrap();
+        let note = r.statements[0].restore.clone().expect("note");
+        assert!(note.point_id.is_some(), "{note:?}");
+        let warning = note.warning.unwrap_or_default();
+        assert!(warning.contains("rows changed"), "{warning:?}");
+        run(engine, sid, "DROP SEQUENCE tpm_it_rpe_seq").await;
+    } else {
+        let r = engine.run_script(sid, "UPDATE tpm_it_rpe SET qty = qty WHERE id = 1", opts(true), None).await.unwrap();
+        let note = r.statements[0].restore.clone().expect("note");
+        // MySQL counts only the rows whose values changed: not a mismatch.
+        assert_eq!(note.warning, None, "{driver:?}");
+    }
+
     // Runs that ask for no restore points (SQL files) keep none.
     let o = RunOptions { confirmed: true, keep_restore_points: Some(false), ..Default::default() };
     let r = engine.run_script(sid, "DELETE FROM tpm_it_rpe WHERE id = 3", o, None).await.unwrap();

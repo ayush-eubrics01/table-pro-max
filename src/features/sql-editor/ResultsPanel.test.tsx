@@ -36,6 +36,14 @@ describe("ResultsPanel", () => {
     expect(useRestore.getState().open).toBe(true);
   });
 
+  it("warns when a kept restore point may not match the rows the statement changed", () => {
+    const warning = "3 rows changed, but only 2 were read before the statement ran; only those can be put back";
+    const saved: StatementResult = { index: 0, sql: "delete from t where random() < 0.5", start: 0, end: 10, durationMs: 1, truncated: false, rowsAffected: 3, restore: { pointId: "p1", warning } };
+    render(<ResultsPanel result={{ taskId: "t", statements: [saved], cancelled: false, durationMs: 2 }} running={false} dialect="postgres" />);
+    expect(screen.getByText("Restore point saved")).toBeInTheDocument();
+    expect(screen.getByText(`Check the restore point: ${warning}`)).toBeInTheDocument();
+  });
+
   it("opens Messages, marked as an error, after a failing run", () => {
     const result: ScriptResult = { taskId: "t", statements: [ok, bad], cancelled: false, durationMs: 4 };
     render(<ResultsPanel result={result} running={false} dialect="postgres" />);
