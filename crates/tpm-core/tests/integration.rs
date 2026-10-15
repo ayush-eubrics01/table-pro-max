@@ -1351,6 +1351,16 @@ async fn edit_results(engine: &Engine, sid: &str, profile: &ConnectionProfile, p
     }
     assert_eq!(editing.tables.len(), 2, "{driver:?}: {editing:?}");
     assert_eq!(editing.columns, vec![Some(0), Some(0), Some(1), Some(1)]);
+    // The key shown twice (once through *, once under another name) is still one row.
+    let twice = run(engine, sid, "SELECT id, name, id AS x FROM tpm_it_items ORDER BY id").await;
+    let e2 = twice.statements[0].editing.clone().expect("editing info");
+    assert_eq!(e2.tables.len(), 1, "{driver:?}: {e2:?}");
+    assert_eq!(e2.columns, vec![Some(0), Some(0), Some(0)], "{driver:?}: {e2:?}");
+    // A real self-join stays read-only.
+    let selfjoin =
+        run(engine, sid, "SELECT a.id, a.name, b.id FROM tpm_it_items a JOIN tpm_it_items b ON b.id = a.id").await;
+    let e3 = selfjoin.statements[0].editing.clone().expect("editing info");
+    assert!(e3.tables.is_empty(), "{driver:?}: {e3:?}");
     let row = &st.rows.as_ref().unwrap()[0];
     let item_id = text(&row[0]).to_string();
     let item_name = text(&row[1]).to_string();
