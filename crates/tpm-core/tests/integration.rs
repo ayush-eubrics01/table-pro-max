@@ -568,6 +568,7 @@ async fn exercise(t: Target) {
     restore_points(&engine, &sid, &t.schema, driver, &profile, t.password.as_deref()).await;
     restore_point_edges(&engine, &sid, driver).await;
     restore_point_restores(&engine, &sid, &t.schema, driver).await;
+    safety_fixes(&engine, &sid, driver).await;
 
     // --- cleanup ---
     run(&engine, &sid, "DROP TABLE tpm_it_items; DROP TABLE tpm_it_owners").await;
@@ -1083,6 +1084,96 @@ async fn restore_point_restores(engine: &Arc<Engine>, sid: &str, schema: &str, d
         let err = engine.apply_restore(sid, &id, None, true).await.unwrap_err();
         assert!(err.message.contains("transaction"), "{}", err.message);
         run(engine, sid, "DROP TABLE tpm_it_rpp").await;
+    }
+}
+
+/// System tables are never edited from results, and a failed COMMIT leaves no restore points.
+async fn safety_fixes(engine: &Arc<Engine>, sid: &str, driver: Driver) {
+    use tpm_core::restore::RestoreStore;
+    // System tables: read-only in results, and the backend refuses a commit to them. The key
+    // below matches no row, so even a broken refusal would change nothing.
+    let system = match driver {
+        Driver::Postgres => Some((
+            "pg_catalog",
+            "pg_description",
+            "SELECT objoid, classoid, objsubid, description FROM pg_catalog.pg_description LIMIT 1",
+            vec![("objoid", "0"), ("classoid", "0"), ("objsubid", "0")],
+            "description",
+        )),
+        Driver::Mysql | Driver::Mariadb => Some((
+            "mysql",
+            "db",
+            "SELECT Host, Db, User, Select_priv FROM mysql.db LIMIT 1",
+            vec![("Host", "tpm-none"), ("Db", "tpm-none"), ("User", "tpm-none")],
+            "Select_priv",
+        )),
+        _ => None,
+    };
+    if let Some((schema, table, select, key, column)) = system {
+        let r = run(engine, sid, select).await;
+        if let Some(editing) = r.statements[0].editing.clone()
+            && r.statements[0].columns.as_ref().is_some_and(|c| c.iter().any(|c| c.origin.is_some()))
+        {
+            assert!(editing.tables.is_empty(), "{driver:?}: {editing:?}");
+            assert!(editing.read_only.iter().any(|r| r.reason.contains("system table")), "{driver:?}: {editing:?}");
+        }
+        let set = ChangeSet {
+            schema: schema.into(),
+            table: table.into(),
+            changes: vec![RowChange::Update {
+                key: key.iter().map(|(c, v)| ColumnValue { column: (*c).into(), value: Some((*v).into()) }).collect(),
+                edits: vec![ColumnEdit {
+                    column: column.into(),
+                    value: EditValue::Value { value: Some("x".into()) },
+                    original: None,
+                }],
+            }],
+            check_conflicts: true,
+        };
+        let err = engine.apply_change_sets(sid, &[set], true).await.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::PolicyViolation, "{driver:?}: {err:?}");
+        assert!(err.message.contains("system table"), "{driver:?}: {}", err.message);
+    }
+
+    // PostgreSQL: a COMMIT that fails (a deferred constraint) rolls the transaction back. Its
+    // restore points go, and the session is out of the transaction (grid commits work again).
+    if driver == Driver::Postgres {
+        let store = Arc::new(tpm_core::storage::Storage::open_in_memory().unwrap());
+        engine.set_restore_store(store.clone());
+        run(engine, sid, "DROP TABLE IF EXISTS tpm_it_child").await;
+        run(engine, sid, "DROP TABLE IF EXISTS tpm_it_parent").await;
+        run(engine, sid, "CREATE TABLE tpm_it_parent (id integer PRIMARY KEY)").await;
+        run(engine, sid, "CREATE TABLE tpm_it_child (id integer PRIMARY KEY, pid integer REFERENCES tpm_it_parent DEFERRABLE INITIALLY DEFERRED, qty integer)").await;
+        run(engine, sid, "INSERT INTO tpm_it_parent VALUES (1)").await;
+        run(engine, sid, "INSERT INTO tpm_it_child VALUES (1, 1, 1)").await;
+        run(engine, sid, "BEGIN").await;
+        let opts = RunOptions { confirmed: true, ..Default::default() };
+        let r =
+            engine.run_script(sid, "UPDATE tpm_it_child SET qty = 5 WHERE id = 1", opts.clone(), None).await.unwrap();
+        let id = r.statements[0].restore.as_ref().and_then(|n| n.point_id.clone()).expect("saved");
+        run(engine, sid, "INSERT INTO tpm_it_child VALUES (2, 999, 0)").await; // breaks the FK at COMMIT
+        let r = engine.run_script(sid, "COMMIT", opts.clone(), None).await.unwrap();
+        assert!(r.statements[0].error.is_some(), "the deferred constraint fails the COMMIT");
+        assert!(store.get(&id).is_err(), "the transaction was rolled back: no restore point");
+        let r = run(engine, sid, "SELECT qty FROM tpm_it_child WHERE id = 1").await;
+        assert_eq!(text(&r.statements[0].rows.as_ref().unwrap()[0][0]), "1");
+        // Out of the transaction: a grid commit is allowed again.
+        let set = ChangeSet {
+            schema: "public".into(),
+            table: "tpm_it_child".into(),
+            changes: vec![RowChange::Update {
+                key: vec![ColumnValue { column: "id".into(), value: Some("1".into()) }],
+                edits: vec![ColumnEdit {
+                    column: "qty".into(),
+                    value: EditValue::Value { value: Some("2".into()) },
+                    original: Some(Some("1".into())),
+                }],
+            }],
+            check_conflicts: true,
+        };
+        engine.apply_changes(sid, &set, true).await.unwrap();
+        run(engine, sid, "DROP TABLE tpm_it_child").await;
+        run(engine, sid, "DROP TABLE tpm_it_parent").await;
     }
 }
 
