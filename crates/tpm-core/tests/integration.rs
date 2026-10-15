@@ -570,6 +570,7 @@ async fn exercise(t: Target) {
     restore_point_restores(&engine, &sid, &t.schema, driver).await;
     safety_fixes(&engine, &sid, driver).await;
     result_types(&engine, &sid, driver, &profile, t.password.as_deref()).await;
+    text_equality(&engine, &sid, &t.schema, driver).await;
 
     // --- cleanup ---
     run(&engine, &sid, "DROP TABLE tpm_it_items; DROP TABLE tpm_it_owners").await;
@@ -1204,6 +1205,41 @@ async fn result_types(
     assert_eq!(st.columns.as_ref().unwrap()[0].type_name, "jsonb", "read-only: {:?}", st.columns);
     assert_eq!(st.editing.as_ref().unwrap().read_only[0].reason, "Read-only connection");
     engine.close_session(&info.session_id).await;
+}
+
+/// An equality filter on the text the grid shows finds the row even where the stored value is
+/// not text: SQLite columns with no declared type, MySQL FLOAT (the foreign-key jump relies on it).
+async fn text_equality(engine: &Arc<Engine>, sid: &str, schema: &str, driver: Driver) {
+    let (ddl, insert, column, value) = match driver {
+        Driver::Sqlite => ("CREATE TABLE tpm_it_teq (k, v TEXT)", "INSERT INTO tpm_it_teq VALUES (42, 'a')", "k", "42"),
+        Driver::Mysql | Driver::Mariadb => {
+            ("CREATE TABLE tpm_it_teq (k FLOAT, v TEXT)", "INSERT INTO tpm_it_teq VALUES (0.1, 'a')", "k", "0.1")
+        }
+        _ => return,
+    };
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_teq").await;
+    run(engine, sid, ddl).await;
+    run(engine, sid, insert).await;
+    // The value as the grid shows it.
+    let shown = run(engine, sid, &format!("SELECT {column} FROM tpm_it_teq")).await;
+    assert_eq!(text(&shown.statements[0].rows.as_ref().unwrap()[0][0]), value, "{driver:?}");
+    let req = BrowseRequest {
+        schema: schema.into(),
+        table: "tpm_it_teq".into(),
+        filter: Some(FilterNode::Condition {
+            column: column.into(),
+            op: FilterOp::Eq,
+            value: Some(value.into()),
+            value2: None,
+            values: vec![],
+            enabled: true,
+        }),
+        limit: 10,
+        ..Default::default()
+    };
+    let page = engine.browse(sid, &req).await.unwrap();
+    assert_eq!(page.rows.len(), 1, "{driver:?}: {}", page.sql);
+    run(engine, sid, "DROP TABLE tpm_it_teq").await;
 }
 
 /// Following a foreign key: the referenced columns are known (even when the DDL left them

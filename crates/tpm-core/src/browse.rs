@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dialect::Dialect;
 use crate::error::{AppError, Result};
-use crate::filter::{FilterNode, SqlBuilder, compile};
+use crate::filter::{FilterNode, SqlBuilder, compile_with};
 use crate::model::{ObjectKind, Param, TableStructure};
 
 /// Hard ceiling on a single page; keeps one IPC response bounded.
@@ -53,7 +53,15 @@ fn column_names(s: &TableStructure) -> Vec<String> {
 
 fn where_clause(s: &TableStructure, filter: Option<&FilterNode>, b: &mut SqlBuilder) -> Result<String> {
     match filter {
-        Some(f) => Ok(compile(f, &column_names(s), b)?.map(|w| format!(" WHERE {w}")).unwrap_or_default()),
+        Some(f) => {
+            let text_eq: Vec<String> = s
+                .columns
+                .iter()
+                .filter(|c| crate::filter::needs_text_equality(b.dialect, &c.data_type))
+                .map(|c| c.name.clone())
+                .collect();
+            Ok(compile_with(f, &column_names(s), &text_eq, b)?.map(|w| format!(" WHERE {w}")).unwrap_or_default())
+        }
         None => Ok(String::new()),
     }
 }
