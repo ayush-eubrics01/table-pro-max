@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createRef } from "react";
+import { createRoot } from "react-dom/client";
 import { DataGrid, type GridHandle } from "./DataGrid";
 import type { Cell } from "../../types/backend";
 
@@ -142,4 +143,48 @@ describe("DataGrid", () => {
     const menu = await screen.findByRole("menu");
     expect(menu.querySelector("hr, [role='separator']")).toBeNull();
   });
+
+  it("keeps a click that lands the moment the grid appears, before React has run its effects", async () => {
+    // A click (or a test that found the cell) can reach a grid that has just appeared before
+    // React has run its effects. The grid used to clear its selection in such an effect, wiping
+    // that click (seen as flaky copy/export/Ctrl+Enter tests under CI load).
+    const g = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+    const actEnv = g.IS_REACT_ACT_ENVIRONMENT;
+    g.IS_REACT_ACT_ENVIRONMENT = false; // React schedules effects as in the app, not inside act()
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const draft = () => [...host.querySelectorAll(".grid-cell")].find((c) => c.textContent === "DRAFT");
+    try {
+      await new Promise<void>((resolve) => {
+        const seen = new MutationObserver(() => {
+          const cell = draft();
+          if (!cell) return;
+          seen.disconnect();
+          cell.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, buttons: 1 }));
+          resolve();
+        });
+        seen.observe(host, { childList: true, subtree: true });
+        root.render(<DataGrid ariaLabel="Rows" columns={columns} rowCount={rows.length} getRow={(i) => rows[i]} sort={[]} />);
+      });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(draft()).toHaveAttribute("aria-selected", "true");
+    } finally {
+      root.unmount();
+      host.remove();
+      g.IS_REACT_ACT_ENVIRONMENT = actEnv;
+    }
+  });
+
+  it("clears the selection and column layout when the columns change", () => {
+    const grid = (cols: typeof columns) => <DataGrid ariaLabel="Rows" columns={cols} rowCount={rows.length} getRow={(i) => rows[i]} sort={[]} />;
+    const { rerender } = render(grid(columns));
+    fireEvent.mouseDown(screen.getByText("DRAFT").closest(".grid-cell")!, { button: 0, buttons: 1 });
+    expect(screen.getByText("DRAFT").closest(".grid-cell")).toHaveAttribute("aria-selected", "true");
+    rerender(grid(columns)); // same columns: the selection stays
+    expect(screen.getByText("DRAFT").closest(".grid-cell")).toHaveAttribute("aria-selected", "true");
+    rerender(grid(columns.map((c) => ({ ...c, name: `${c.name}_2` })))); // a new result
+    expect(screen.getByText("DRAFT").closest(".grid-cell")).toHaveAttribute("aria-selected", "false");
+  });
 });
+

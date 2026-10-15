@@ -245,6 +245,8 @@ describe("large values in opened tables", () => {
     view();
     fireEvent.doubleClick((await screen.findAllByText("Not loaded"))[1]!.closest(".grid-cell")!); // row 1 doc (JSON)
     await screen.findByText("Valid JSON");
+    // The code editor mounts in an effect after the status text appears: wait for it.
+    await waitFor(() => expect(document.querySelector(".value-editor .cm-editor")).not.toBeNull());
     const v = EditorView.findFromDOM(document.querySelector(".value-editor .cm-editor") as HTMLElement)!;
     act(() => v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: '{"a":2}' } }));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
