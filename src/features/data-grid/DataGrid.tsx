@@ -131,16 +131,19 @@ export function DataGrid(props: DataGridProps) {
   const [dropAt, setDropAt] = useState<number | null>(null);
   const menu = useContextMenu();
 
-  // Reset layout when the column set changes (new table or new query result).
-  useEffect(() => {
+  // Reset layout and selection when the column set changes (new table or new query result).
+  // Done while rendering, not in an effect: an effect can run after a click that reached the
+  // freshly shown grid and wipe it. The first render already starts from these values.
+  const [layoutFor, setLayoutFor] = useState(columnKey);
+  if (layoutFor !== columnKey) {
+    setLayoutFor(columnKey);
     setWidths(columns.map(initialWidth));
     setOrder(columns.map((_, i) => i));
     setHidden(new Set());
     setAnchor(null);
     setFocus(null);
     setEditing(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [columnKey]);
+  }
 
   const visible = useMemo(() => order.filter((i) => !hidden.has(i) && i < columns.length), [order, hidden, columns.length]);
 
