@@ -103,10 +103,42 @@ impl SqlBuilder {
 /// Compiles `node` to a boolean SQL expression. Returns `None` when the tree contains
 /// no enabled conditions.
 pub fn compile(node: &FilterNode, columns: &[String], b: &mut SqlBuilder) -> Result<Option<String>> {
-    compile_node(node, columns, b, 0)
+    compile_with(node, columns, &[], b)
 }
 
-fn compile_node(node: &FilterNode, columns: &[String], b: &mut SqlBuilder, depth: usize) -> Result<Option<String>> {
+/// `compile`, with the columns whose equality must compare text (`needs_text_equality`): the
+/// value is the text the grid shows, and the stored value may not convert back to it exactly.
+pub fn compile_with(
+    node: &FilterNode,
+    columns: &[String],
+    text_eq: &[String],
+    b: &mut SqlBuilder,
+) -> Result<Option<String>> {
+    compile_node(node, columns, text_eq, b, 0)
+}
+
+/// Columns where `col = 'text'` can miss a row the grid shows as that text: SQLite columns with
+/// no declared type (a stored 42 never equals '42'), and MySQL floating point (FLOAT 0.1 is not
+/// the double 0.1). Their equality compares the column's text instead.
+pub fn needs_text_equality(dialect: Dialect, data_type: &str) -> bool {
+    let t = data_type.trim().to_ascii_lowercase();
+    match dialect {
+        Dialect::Sqlite => t.is_empty(),
+        Dialect::Mysql => {
+            let base = t.split(['(', ' ']).next().unwrap_or("");
+            matches!(base, "float" | "double" | "real")
+        }
+        Dialect::Postgres => false,
+    }
+}
+
+fn compile_node(
+    node: &FilterNode,
+    columns: &[String],
+    text_eq: &[String],
+    b: &mut SqlBuilder,
+    depth: usize,
+) -> Result<Option<String>> {
     if depth > MAX_DEPTH {
         return Err(AppError::invalid_config("Filter groups are nested too deeply"));
     }
@@ -114,7 +146,7 @@ fn compile_node(node: &FilterNode, columns: &[String], b: &mut SqlBuilder, depth
         FilterNode::Group { logic, negate, children } => {
             let mut parts = Vec::new();
             for c in children {
-                if let Some(sql) = compile_node(c, columns, b, depth + 1)? {
+                if let Some(sql) = compile_node(c, columns, text_eq, b, depth + 1)? {
                     parts.push(sql);
                 }
             }
@@ -145,7 +177,8 @@ fn compile_node(node: &FilterNode, columns: &[String], b: &mut SqlBuilder, depth
                 return Err(AppError::invalid_config(format!("Unknown column '{column}' in filter")));
             }
             let col = b.dialect.quote_ident(column)?;
-            compile_condition(&col, *op, value.as_deref(), value2.as_deref(), values, b).map(Some)
+            let as_text = text_eq.iter().any(|c| c == column);
+            compile_condition(&col, *op, value.as_deref(), value2.as_deref(), values, as_text, b).map(Some)
         }
     }
 }
@@ -174,9 +207,13 @@ fn compile_condition(
     value: Option<&str>,
     value2: Option<&str>,
     values: &[String],
+    as_text: bool,
     b: &mut SqlBuilder,
 ) -> Result<String> {
     let d = b.dialect;
+    // Equality on the column's text where the stored value may not convert back exactly.
+    let eq_col = if as_text { text_expr(d, col) } else { col.to_string() };
+    let col_for_eq = eq_col.as_str();
     let need = |v: Option<&str>| -> Result<String> {
         v.map(str::to_string).ok_or_else(|| AppError::invalid_config("Filter value is required"))
     };
@@ -188,10 +225,13 @@ fn compile_condition(
         Ok(format!("{col} {sym} {p}"))
     };
     Ok(match op {
-        FilterOp::Eq => cmp(b, "=", value)?,
+        FilterOp::Eq => {
+            let p = b.bind(Some(need(value)?));
+            format!("{col_for_eq} = {p}")
+        }
         FilterOp::Ne => {
             let p = b.bind(Some(need(value)?));
-            format!("({col} <> {p} OR {col} IS NULL)")
+            format!("({col_for_eq} <> {p} OR {col} IS NULL)")
         }
         FilterOp::Gt => cmp(b, ">", value)?,
         FilterOp::Gte => cmp(b, ">=", value)?,
@@ -220,7 +260,7 @@ fn compile_condition(
             }
             let ps: Vec<String> = values.iter().map(|v| b.bind(Some(v.clone()))).collect();
             let not = if op == FilterOp::NotIn { "NOT " } else { "" };
-            format!("{col} {not}IN ({})", ps.join(", "))
+            format!("{col_for_eq} {not}IN ({})", ps.join(", "))
         }
         FilterOp::Between | FilterOp::NotBetween => {
             let p1 = b.bind(Some(need(value)?));
@@ -252,6 +292,23 @@ mod tests {
             values: vec![],
             enabled: true,
         }
+    }
+
+    #[test]
+    fn equality_compares_as_text_where_values_are_not_text() {
+        let mut b = SqlBuilder::new(Dialect::Sqlite);
+        let text_eq = vec!["k".to_string()];
+        let cols = vec!["k".to_string(), "v".to_string()];
+        let sql = compile_with(&cond("k", FilterOp::Eq, Some("42")), &cols, &text_eq, &mut b).unwrap().unwrap();
+        assert_eq!(sql, r#"CAST("k" AS TEXT) = ?1"#);
+        let sql = compile_with(&cond("v", FilterOp::Eq, Some("a")), &cols, &text_eq, &mut b).unwrap().unwrap();
+        assert_eq!(sql, r#""v" = ?2"#, "other columns keep a plain comparison (indexes)");
+        assert!(needs_text_equality(Dialect::Sqlite, ""));
+        assert!(!needs_text_equality(Dialect::Sqlite, "INTEGER"));
+        assert!(needs_text_equality(Dialect::Mysql, "float"));
+        assert!(needs_text_equality(Dialect::Mysql, "double unsigned"));
+        assert!(!needs_text_equality(Dialect::Mysql, "decimal(10,2)"));
+        assert!(!needs_text_equality(Dialect::Postgres, ""));
     }
 
     #[test]

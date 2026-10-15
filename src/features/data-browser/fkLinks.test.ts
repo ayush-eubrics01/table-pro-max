@@ -43,9 +43,9 @@ describe("fkLinks", () => {
       logic: "and",
       children: [{ type: "condition", column: "id", op: "eq", value: "42", enabled: true }],
     });
-    expect(linkLabel(c!, row)).toBe("Open customers where id = 42");
+    expect(linkLabel(c!, row)).toBe("Open customers where id = '42'");
     const s = tableLinks(orders)[2]![0]!;
-    expect(linkLabel(s, row)).toBe("Open shops where region = eu and code = 7");
+    expect(linkLabel(s, row)).toBe("Open shops where region = 'eu' and code = '7'");
     expect(linkFilter(s, ["1", "42", "eu", null])).toBeNull();
     expect(linkFilter(c!, ["1", null, "eu", "7"])).toBeNull();
     expect(linkFilter(c!, ["1", { $notLoaded: true }, "eu", "7"])).toBeNull();
@@ -85,7 +85,7 @@ describe("fkLinks", () => {
     const twoKeys = { ...orders, foreignKeys: [orders.foreignKeys[1]!, { ...orders.foreignKeys[0]!, columns: ["shop"], refTable: "stores" }] };
     const got = firstLink(tableLinks(twoKeys), 3, row);
     expect(got?.link.fk.refTable).toBe("stores"); // the composite key is unusable, the second one works
-    expect(got?.label).toBe("Open stores where id = 7");
+    expect(got?.label).toBe("Open stores where id = '7'");
   });
 
   it("skips foreign keys whose referenced columns are unknown", () => {

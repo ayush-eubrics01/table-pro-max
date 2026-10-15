@@ -3,7 +3,7 @@
 
 import type { Cell, ColumnMeta, ForeignKeyInfo, TableStructure } from "../../types/backend";
 import { cellParam, isNotLoaded, isPartial } from "../../lib/cells";
-import type { GroupNode } from "../filters/filterModel";
+import { filterToText, type GroupNode } from "../filters/filterModel";
 
 export interface FkLink {
   fk: ForeignKeyInfo;
@@ -86,7 +86,8 @@ export function firstLink(links: FkLink[][], col: number, row: () => Cell[] | un
 }
 
 export function linkLabel(link: FkLink, row: Cell[]): string | null {
-  const values = linkValues(link, row);
-  if (!values) return null;
-  return `Open ${link.fk.refTable} where ${link.fk.refColumns.map((c, k) => `${c} = ${values[k]}`).join(" and ")}`;
+  const filter = linkFilter(link, row);
+  if (!filter) return null;
+  // Worded like the filter chips the opened tab shows (the same formatter).
+  return `Open ${link.fk.refTable} where ${filter.children.map(filterToText).join(" and ")}`;
 }

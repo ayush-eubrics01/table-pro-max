@@ -466,7 +466,7 @@ describe("following references", () => {
   it("opens the referenced row in a new tab from the arrow, the keyboard and the menu", async () => {
     const opened: unknown[] = [];
     render(<TableView session={session} schema="public" table="orders" onReconnect={async () => {}} onOpenTable={(...a) => opened.push(a)} />);
-    const arrow = await screen.findByRole("button", { name: "Open customers where id = 42" });
+    const arrow = await screen.findByRole("button", { name: "Open customers where id = '42'" });
     expect(screen.getAllByRole("button", { name: /^Open customers/ })).toHaveLength(1); // none for the NULL row
     fireEvent.click(arrow);
     const filter = { type: "group", logic: "and", children: [{ type: "condition", column: "id", op: "eq", value: "42", enabled: true }] };
@@ -487,7 +487,7 @@ describe("following references", () => {
     const editor = screen.getByLabelText("Edit customer_id");
     fireEvent.change(editor, { target: { value: "77" } });
     fireEvent.keyDown(editor, { key: "Enter" });
-    fireEvent.click(await screen.findByRole("button", { name: "Open customers where id = 77" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open customers where id = '77'" }));
     expect((opened[0]![2] as { children: { value: string }[] }).children[0]!.value).toBe("77");
   });
 

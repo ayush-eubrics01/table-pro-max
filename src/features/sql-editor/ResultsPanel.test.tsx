@@ -301,7 +301,7 @@ describe("following references in results", () => {
         onOpenTable={(...a) => opened.push(a)}
       />,
     );
-    fireEvent.click(await screen.findByRole("button", { name: "Open customers where id = 42" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open customers where id = '42'" }));
     expect(opened[0]![1]).toBe("customers");
   });
 });
