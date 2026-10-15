@@ -259,6 +259,38 @@ describe("large values in opened tables", () => {
     expect(await screen.findByRole("dialog", { name: /docs · body · id = 1/ })).toBeInTheDocument();
   });
 
+  it("Set to NULL loads Not loaded values first, so the change keeps its real original", async () => {
+    view();
+    const cells = await screen.findAllByText("Not loaded");
+    fireEvent.mouseDown(cells[2]!.closest(".grid-cell")!, { button: 0, buttons: 1 }); // row 2 body ("short")
+    fireEvent.contextMenu(cells[2]!.closest(".grid-cell")!);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Set to NULL" }));
+    expect(await screen.findByText("1 pending change")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Review and commit" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Commit/ }));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "apply_changes")).toBe(true));
+    const set = calls.find((c) => c.cmd === "apply_changes")!.args.changes as ChangeSet;
+    const change = set.changes[0] as Extract<ChangeSet["changes"][number], { type: "update" }>;
+    expect(change.edits[0]).toMatchObject({ column: "body", value: { kind: "value", value: null }, original: "short" });
+  });
+
+  it("a value whose row was deleted meanwhile says how to see the current rows", async () => {
+    useUi.setState({ toasts: [] });
+    page = [["9", "nine", NL, NL]];
+    view();
+    const cells = await screen.findAllByText("Not loaded");
+    fireEvent.click(cells[0]!.closest(".grid-cell")!);
+    await waitFor(() => expect(useUi.getState().toasts.map((t) => t.message).join()).toMatch(/This row no longer exists.*Refresh/));
+  });
+
+  it("Enter on a short Not loaded value loads it and edits it inline in the same gesture", async () => {
+    view();
+    const cells = await screen.findAllByText("Not loaded");
+    fireEvent.mouseDown(cells[2]!.closest(".grid-cell")!, { button: 0, buttons: 1 }); // row 2 body ("short")
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "Enter" });
+    expect(await screen.findByLabelText("Edit body")).toHaveValue("short");
+  });
+
   it("edits a loaded value in the editor and commits with the full original", async () => {
     view();
     fireEvent.doubleClick((await screen.findAllByText("Not loaded"))[1]!.closest(".grid-cell")!); // row 1 doc (JSON)

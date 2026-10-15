@@ -2,7 +2,7 @@
 // user reviews and commits them, which sends a ChangeSet to the backend.
 
 import type { Cell, ChangeSet, ColumnEdit, ColumnInfo, RowChange } from "../../types/backend";
-import { cellParam } from "../../lib/cells";
+import { cellParam, isNotLoaded, isPartial } from "../../lib/cells";
 
 export const DEFAULT = Symbol("default");
 export type PendingValue = string | null | typeof DEFAULT;
@@ -121,7 +121,12 @@ export function buildChangeSet(
     if (p.deleted.includes(r)) continue;
     const edits: ColumnEdit[] = Object.entries(cols).map(([colStr, value]) => {
       const col = Number(colStr);
-      const original = cellParam(rows[r]?.[col] ?? null);
+      const cell = rows[r]?.[col] ?? null;
+      const original = cellParam(cell);
+      // A placeholder is not the value: committing against it would skip the conflict check.
+      if (checkConflicts && (isNotLoaded(cell) || isPartial(cell))) {
+        throw new ChangeBuildError(`The value of ${columns[col]!.name} was not loaded before it was edited, so the change can't be checked. Reload and edit it again.`);
+      }
       const edit: ColumnEdit = { column: columns[col]!.name, value: { kind: "value", value } };
       if (original !== undefined) edit.original = original;
       return edit;

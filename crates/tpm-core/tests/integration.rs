@@ -569,6 +569,7 @@ async fn exercise(t: Target) {
     restore_point_edges(&engine, &sid, driver).await;
     restore_point_restores(&engine, &sid, &t.schema, driver).await;
     safety_fixes(&engine, &sid, driver).await;
+    result_types(&engine, &sid, driver, &profile, t.password.as_deref()).await;
 
     // --- cleanup ---
     run(&engine, &sid, "DROP TABLE tpm_it_items; DROP TABLE tpm_it_owners").await;
@@ -1175,6 +1176,34 @@ async fn safety_fixes(engine: &Arc<Engine>, sid: &str, driver: Driver) {
         run(engine, sid, "DROP TABLE tpm_it_child").await;
         run(engine, sid, "DROP TABLE tpm_it_parent").await;
     }
+}
+
+/// Query results know their column types (so JSON opens in the JSON editor) inside a transaction
+/// and on read-only connections too, without disturbing the transaction.
+async fn result_types(
+    engine: &Arc<Engine>,
+    sid: &str,
+    driver: Driver,
+    profile: &ConnectionProfile,
+    password: Option<&str>,
+) {
+    if driver != Driver::Postgres {
+        return;
+    }
+    let sql = "SELECT '{\"a\": 1}'::jsonb AS doc, 1 AS n";
+    run(engine, sid, "BEGIN").await;
+    let r = run(engine, sid, sql).await;
+    let cols = r.statements[0].columns.clone().unwrap();
+    assert_eq!(cols[0].type_name, "jsonb", "inside a transaction: {cols:?}");
+    run(engine, sid, "SELECT 1").await; // the transaction is still usable
+    run(engine, sid, "ROLLBACK").await;
+    let ro = ConnectionProfile { safety_mode: SafetyMode::ReadOnly, ..profile.clone() };
+    let info = engine.open_session(&ro, password, None, ConnectOptions::default()).await.expect("connect");
+    let r = run(engine, &info.session_id, sql).await;
+    let st = &r.statements[0];
+    assert_eq!(st.columns.as_ref().unwrap()[0].type_name, "jsonb", "read-only: {:?}", st.columns);
+    assert_eq!(st.editing.as_ref().unwrap().read_only[0].reason, "Read-only connection");
+    engine.close_session(&info.session_id).await;
 }
 
 /// Following a foreign key: the referenced columns are known (even when the DDL left them

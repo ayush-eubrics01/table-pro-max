@@ -22,11 +22,13 @@ export interface ValueEditorProps {
   nullable: boolean;
   onSave: (value: string | null) => void;
   onClose: () => void;
+  /** A way out of a load error that Retry can't fix (by error kind), shown instead of Retry. */
+  recover?: (kind: string) => { label: string; run: () => void } | null;
 }
 
-type Loaded = { state: "loading" } | { state: "error"; message: string } | { state: "ready"; original: string | null };
+type Loaded = { state: "loading" } | { state: "error"; message: string; kind: string } | { state: "ready"; original: string | null };
 
-export function ValueEditor({ title, typeName, mode, load, readOnlyReason, nullable, onSave, onClose }: ValueEditorProps) {
+export function ValueEditor({ title, typeName, mode, load, readOnlyReason, nullable, onSave, onClose, recover }: ValueEditorProps) {
   const [loaded, setLoaded] = useState<Loaded>({ state: "loading" });
   const [text, setText] = useState("");
   const [attempt, setAttempt] = useState(0);
@@ -43,7 +45,10 @@ export function ValueEditor({ title, typeName, mode, load, readOnlyReason, nulla
         setText(value ?? "");
         setLoaded({ state: "ready", original: value });
       })
-      .catch((e) => alive && setLoaded({ state: "error", message: toError(e).message }));
+      .catch((e) => {
+        const err = toError(e);
+        if (alive) setLoaded({ state: "error", message: err.message, kind: err.kind });
+      });
     return () => {
       alive = false;
     };
@@ -133,9 +138,19 @@ export function ValueEditor({ title, typeName, mode, load, readOnlyReason, nulla
       {loaded.state === "error" && (
         <div className="empty">
           <p>{loaded.message}</p>
-          <button className="btn" onClick={() => setAttempt((n) => n + 1)}>
-            Retry
-          </button>
+          {(() => {
+            // Some failures can't be retried (an evicted result): the caller offers the way out.
+            const way = recover?.(loaded.kind);
+            return way ? (
+              <button className="btn" onClick={way.run}>
+                {way.label}
+              </button>
+            ) : (
+              <button className="btn" onClick={() => setAttempt((n) => n + 1)}>
+                Retry
+              </button>
+            );
+          })()}
         </div>
       )}
       {readOnlyReason !== null && ready && <p className="hint">{readOnlyReason}</p>}

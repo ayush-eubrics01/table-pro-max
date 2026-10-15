@@ -654,12 +654,10 @@ impl Engine {
                     break;
                 }
                 let t0 = Instant::now();
-                // Origins let result cells be edited: only for reads, never on read-only sessions, and
-                // not inside the user's open transaction (commits are refused there, and a failed
-                // describe would abort that transaction).
-                let want_origins = stmt.class == crate::safety::StatementClass::Read
-                    && !handle.profile.read_only()
-                    && !handle.open_txn.load(Ordering::SeqCst);
+                // Origins and type names come from describing the statement (PostgreSQL): types tell
+                // the grid which values are JSON, origins let cells be edited and followed. Done for
+                // every read; inside the user's transaction it runs under a savepoint (see add_origins).
+                let want_origins = stmt.class == crate::safety::StatementClass::Read;
                 let state = if context_changed {
                     self.plan_one(&handle, stmt, limits, &mut structures).await
                 } else {
@@ -1335,7 +1333,11 @@ impl Engine {
             return true;
         }
         let sql = sql.to_string();
-        let fut = self.with_session(&handle.info.session_id, move |s| Box::pin(async move { s.describe(&sql).await }));
+        // A failed describe would abort the user's open PostgreSQL transaction: guard it.
+        let guard = handle.open_txn.load(Ordering::SeqCst) && handle.profile.driver == crate::config::Driver::Postgres;
+        let fut = self.with_session(&handle.info.session_id, move |s| {
+            Box::pin(async move { guarded(s, guard, move |s| Box::pin(async move { s.describe(&sql).await })).await })
+        });
         tokio::pin!(fut);
         let found = match tokio::time::timeout(DESCRIBE_TIMEOUT, &mut fut).await {
             Ok(Ok(found)) => Some(found),
