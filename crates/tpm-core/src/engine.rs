@@ -692,8 +692,9 @@ impl Engine {
                     }
                     Err(e) => Err(e),
                 };
+                let mut origins_reported = true;
                 if want_origins && let Ok(outcomes) = &mut res {
-                    self.add_origins(&handle, &stmt.sql, outcomes).await;
+                    origins_reported = self.add_origins(&handle, &stmt.sql, outcomes).await;
                 }
                 self.track_transaction(&handle, stmt, res.is_ok());
                 if stmt.class == crate::safety::StatementClass::Session
@@ -746,7 +747,11 @@ impl Engine {
                 if stmt.class == crate::safety::StatementClass::Read {
                     for r in produced.iter_mut() {
                         if let Some(cols) = r.columns.clone() {
-                            r.editing = Some(self.editing_for(&handle, session_id, &stmt.sql, &cols).await);
+                            r.editing = Some(if origins_reported {
+                                self.editing_for(&handle, session_id, &stmt.sql, &cols).await
+                            } else {
+                                crate::result_edit::not_editable(&cols, crate::result_edit::ORIGINS_NOT_REPORTED)
+                            });
                         }
                     }
                 }
@@ -1322,38 +1327,28 @@ impl Engine {
     /// the statement without running it). Runs after the statement, outside its timeout, so a
     /// slow describe can never turn a finished statement into a "timeout". Origins are a bonus:
     /// any failure leaves the result read-only.
-    async fn add_origins(&self, handle: &Arc<SessionHandle>, sql: &str, outcomes: &mut [StatementOutcome]) {
+    /// Returns false when the server could not report where the columns come from (the describe
+    /// failed or timed out, as behind a connection pooler), so callers can say so.
+    async fn add_origins(&self, handle: &Arc<SessionHandle>, sql: &str, outcomes: &mut [StatementOutcome]) -> bool {
         let unknown = |o: &StatementOutcome| matches!(o, StatementOutcome::Rows { rows } if rows.columns.iter().all(|c| c.origin.is_none()));
         if !outcomes.iter().any(unknown) {
-            return;
+            return true;
         }
         let sql = sql.to_string();
         let fut = self.with_session(&handle.info.session_id, move |s| Box::pin(async move { s.describe(&sql).await }));
         tokio::pin!(fut);
         let found = match tokio::time::timeout(DESCRIBE_TIMEOUT, &mut fut).await {
-            Ok(Ok(found)) => found,
-            Ok(Err(_)) => return,
+            Ok(Ok(found)) => Some(found),
+            Ok(Err(_)) => None,
             Err(_) => {
                 // Waiting on a lock, say: interrupt it rather than hold the session.
                 let canceller = lock(&handle.canceller).clone();
                 let _ = canceller.cancel().await;
                 let _ = tokio::time::timeout(CANCEL_GRACE, &mut fut).await;
-                return;
+                None
             }
         };
-        for o in outcomes.iter_mut() {
-            if let StatementOutcome::Rows { rows } = o
-                && rows.columns.iter().all(|c| c.origin.is_none())
-                && found.len() == rows.columns.len()
-            {
-                for (c, f) in rows.columns.iter_mut().zip(found.iter()) {
-                    c.origin = f.origin.clone();
-                    if c.type_name.is_empty() {
-                        c.type_name = f.type_name.clone();
-                    }
-                }
-            }
-        }
+        apply_described(outcomes, found)
     }
 
     /// One column of an opened table for the given rows, by primary key (large values on demand).
@@ -1432,7 +1427,7 @@ impl Engine {
         }
         let origins = origin_tables(cols);
         if origins.is_empty() {
-            return result_editing_with(cols, &[], &[]);
+            return result_editing_with(cols, &[], &[], &[]);
         }
         // Origins name the table, not the alias or the UNION branch; the statement's shape
         // rules out results where that is ambiguous (see result_sql.rs).
@@ -1441,13 +1436,17 @@ impl Engine {
             Shape::Tables(t) => t,
         };
         let mut pre_blocked = Vec::new();
+        let mut appears_once = Vec::new();
         for (schema, table) in &origins {
             if driver.is_system_table(schema, table) {
                 pre_blocked.push(((schema.clone(), table.clone()), format!("{table} is a system table")));
                 continue;
             }
             let reason = match occurrences(&relations, schema, table) {
-                1 => continue,
+                1 => {
+                    appears_once.push((schema.clone(), table.clone()));
+                    continue;
+                }
                 0 => format!("{table} is not named in the query, so its rows cannot be traced"),
                 _ => format!("{table} appears more than once, so rows cannot be told apart"),
             };
@@ -1493,7 +1492,7 @@ impl Engine {
                 structures.push(s);
             }
         }
-        result_editing_with(cols, &structures, &pre_blocked)
+        result_editing_with(cols, &structures, &pre_blocked, &appears_once)
     }
 
     pub async fn preview_changes(&self, session_id: &str, set: &ChangeSet) -> Result<ChangePreview> {
@@ -2330,6 +2329,36 @@ struct Captured {
     dropped: Option<String>,
 }
 
+/// Puts a describe's column origins (and missing type names) into the results that lack them.
+/// False when there was no describe, or it doesn't match a result's columns: the origins were
+/// not reported, which is not the same as every column being computed.
+fn apply_described(outcomes: &mut [StatementOutcome], found: Option<Vec<adapters::DescribedColumn>>) -> bool {
+    let Some(found) = found else { return false };
+    // An engine that can't describe at all (DuckDB) answers with nothing: not a failure, and the
+    // caller's own reason for that engine stands.
+    if found.is_empty() {
+        return true;
+    }
+    let mut reported = true;
+    for o in outcomes.iter_mut() {
+        if let StatementOutcome::Rows { rows } = o
+            && rows.columns.iter().all(|c| c.origin.is_none())
+        {
+            if found.len() != rows.columns.len() {
+                reported = false;
+                continue;
+            }
+            for (c, f) in rows.columns.iter_mut().zip(found.iter()) {
+                c.origin = f.origin.clone();
+                if c.type_name.is_empty() {
+                    c.type_name = f.type_name.clone();
+                }
+            }
+        }
+    }
+    reported
+}
+
 /// The size of a restore point's values (its `bytes`, counted against the size limits).
 fn values_bytes<'a>(rows: impl IntoIterator<Item = &'a Vec<Param>>) -> u64 {
     rows.into_iter().flatten().map(|v| v.as_ref().map_or(0, |t| t.len() as u64)).sum()
@@ -2821,6 +2850,40 @@ mod schema_tests {
         assert_eq!(super::txn_effect("ROLLBACK"), Some(false));
         assert_eq!(super::txn_effect("rollback to savepoint a"), None);
         assert_eq!(super::txn_effect("SAVEPOINT a"), None);
+    }
+
+    #[test]
+    fn a_failed_describe_is_reported_not_taken_for_computed_columns() {
+        use crate::adapters::DescribedColumn;
+        let result = || {
+            vec![StatementOutcome::Rows {
+                rows: RowSet {
+                    columns: vec![ColumnMeta::new("id", ""), ColumnMeta::new("n", "")],
+                    rows: vec![],
+                    truncated: false,
+                },
+            }]
+        };
+        // The server could not describe the statement (a pooler, a timeout): not reported.
+        let mut o = result();
+        assert!(!super::apply_described(&mut o, None));
+        // Described: origins filled in, reported, even where a column has none (computed).
+        let mut o = result();
+        let origin = ColumnOrigin { schema: "public".into(), table: "t".into(), column: "id".into() };
+        let found = vec![
+            DescribedColumn { origin: Some(origin.clone()), type_name: "int4".into() },
+            DescribedColumn::default(),
+        ];
+        assert!(super::apply_described(&mut o, Some(found)));
+        let StatementOutcome::Rows { rows } = &o[0] else { panic!() };
+        assert_eq!(rows.columns[0].origin, Some(origin));
+        assert_eq!(rows.columns[0].type_name, "int4");
+        // A describe that doesn't match the result's shape tells nothing.
+        let mut o = result();
+        assert!(!super::apply_described(&mut o, Some(vec![DescribedColumn::default()])));
+        // An engine that doesn't describe (DuckDB) answers with nothing: not a failure.
+        let mut o = result();
+        assert!(super::apply_described(&mut o, Some(vec![])));
     }
 
     #[test]

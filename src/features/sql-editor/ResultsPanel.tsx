@@ -278,6 +278,9 @@ export function ResultsPanel({
   const curApplied = applied[ti] ?? {};
   const editable = !!session && !session.readOnly && !running;
   const nCur = Object.keys(curEdits).length;
+  // Edits waiting in other results count toward Run/close prompts too, so the bar says so.
+  const nOther = nPending - nCur;
+  const otherTab = Object.entries(edits).find(([i, e]) => Number(i) !== ti && Object.keys(e).length > 0)?.[0];
   // When nothing in the result can be edited, say why (unless it is only computed columns).
   const hint =
     current?.editing && current.editing.tables.length === 0 ? current.editing.readOnly.find((r) => r.reason !== "Computed column")?.reason : undefined;
@@ -329,6 +332,12 @@ export function ResultsPanel({
             <button key={i} role="tab" aria-selected={tab === i} onClick={() => setTab(i)}>
               Result {withRows.length > 1 ? withRows.indexOf(s) + 1 : ""} ({formatCount(s.totalRows ?? 0)}
               {s.truncated ? "+" : ""})
+              {Object.keys(edits[i] ?? {}).length > 0 && (
+                <>
+                  <span className="dot tab-pending" aria-hidden />
+                  <span className="sr-only">, {pluralize(Object.keys(edits[i]!).length, "pending change")}</span>
+                </>
+              )}
             </button>
           ) : null,
         )}
@@ -371,10 +380,20 @@ export function ResultsPanel({
                 links={fkByColumn}
                 onOpenTable={onOpenTable}
               />
+              {nCur === 0 && nOther > 0 && otherTab !== undefined && (
+                <div className="commit-bar" role="region" aria-label="Pending changes">
+                  <span className="dot" />
+                  <span role="status">{`${pluralize(nOther, "pending change")} in another result`}</span>
+                  <button className="btn btn-primary" onClick={() => setTab(Number(otherTab))}>
+                    Show
+                  </button>
+                </div>
+              )}
               {nCur > 0 && (
                 <div className="commit-bar" role="region" aria-label="Pending changes">
                   <span className="dot" />
                   <span role="status">{pluralize(nCur, "pending change")}</span>
+                  {nOther > 0 && <span className="hint">{`+${nOther} in other results`}</span>}
                   <button className="btn btn-ghost" onClick={() => setEdits((all) => ({ ...all, [ti]: {} }))}>
                     <Icon name="undo" size={14} /> Discard
                   </button>

@@ -39,6 +39,7 @@ export function readOnlyReason(st: StatementResult, row: Cell[] | undefined, col
   if (!row) return "Row not loaded";
   // A previewed long value is edited in the value editor, which loads it in full first.
   if (isBinary(row[col] ?? null)) return "Binary values cannot be edited here";
+  if (ed.tables[table]!.keyColumns.some((k) => isBinary(row[k] ?? null))) return "Rows keyed by a binary value can't be edited here";
   if (!keyOf(st, row, table)) return `This row has no ${ed.tables[table]!.table} row`;
   // The row is keyed by its key as loaded; once a new key is committed, that key no longer finds it.
   if (ed.tables[table]!.keyColumns.some((k) => (cellId(st, row, k) ?? "") in applied)) {

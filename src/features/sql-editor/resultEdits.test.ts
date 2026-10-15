@@ -89,6 +89,13 @@ describe("result edits", () => {
     expect(Object.keys(e)).toHaveLength(0);
   });
 
+  it("says plainly when a row's key is a binary value", () => {
+    const rBinaryKey = [{ $bytes: "00ff", size: 2 }, "paid", "7", "a@x", "3"];
+    expect(readOnlyReason(st, rBinaryKey, 1)).toBe("Rows keyed by a binary value can't be edited here");
+    // A missing key (an outer join) still reads as before.
+    expect(readOnlyReason(st, rNullKey, 3)).toBe("This row has no customers row");
+  });
+
   it("a previewed value is editable (through the editor), not mistaken for binary", () => {
     const rPartial = ["1", { $partial: "p".repeat(80), length: 900 }, "7", "a@x", "3"];
     expect(readOnlyReason(st, rPartial, 1)).toBeNull();

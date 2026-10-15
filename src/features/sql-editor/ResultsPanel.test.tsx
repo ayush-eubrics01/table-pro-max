@@ -98,6 +98,25 @@ describe("editable results", () => {
     expect(screen.getByText("new@example.com")).toBeInTheDocument();    expect(useRestore.getState().version).toBeGreaterThan(before);
   });
 
+  it("says when edits are waiting in another result, and shows them", async () => {
+    const second: StatementResult = { ...editable, index: 1, resultId: "r2", sql: "select 2" };
+    const script: ScriptResult = { taskId: "t", statements: [editable, second], cancelled: false, durationMs: 1 };
+    render(<ResultsPanel result={script} running={false} dialect="postgres" session={session} />);
+    fireEvent.doubleClick(screen.getAllByText("ada@example.com")[0]!.closest(".grid-cell")!);
+    const editor = screen.getByLabelText("Edit email");
+    fireEvent.change(editor, { target: { value: "new@example.com" } });
+    fireEvent.keyDown(editor, { key: "Enter" });
+    expect(await screen.findByText("1 pending change")).toBeInTheDocument();
+    // The panel opens on the last result, so the edit is in Result 2, and its tab says so.
+    expect(screen.getByRole("tab", { name: /Result 2.*1 pending change/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: /Result 1/ }));
+    const bar = await screen.findByRole("region", { name: "Pending changes" });
+    expect(bar).toHaveTextContent("1 pending change in another result");
+    fireEvent.click(within(bar).getByRole("button", { name: "Show" }));
+    expect(screen.getByRole("tab", { name: /Result 2/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "Review and commit" })).toBeInTheDocument();
+  });
+
   it("explains read-only cells and never edits them", () => {
     render(<ResultsPanel result={scriptOf(editable)} running={false} dialect="postgres" session={session} />);
     const cell = screen.getAllByText("2").find((el) => el.closest(".grid-cell")?.getAttribute("aria-colindex") === "4")!.closest(".grid-cell")!;

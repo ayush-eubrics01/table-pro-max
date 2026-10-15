@@ -44,6 +44,10 @@ pub fn origin_tables(columns: &[ColumnMeta]) -> Vec<(String, String)> {
     out
 }
 
+/// Why a result can't be edited when the server didn't say where its columns come from (the
+/// describe failed, as behind a connection pooler): not every column is computed.
+pub const ORIGINS_NOT_REPORTED: &str = "The server didn't report which table these columns come from";
+
 pub fn not_editable(columns: &[ColumnMeta], reason: &str) -> ResultEditing {
     ResultEditing {
         tables: vec![],
@@ -53,14 +57,17 @@ pub fn not_editable(columns: &[ColumnMeta], reason: &str) -> ResultEditing {
 }
 
 pub fn result_editing(columns: &[ColumnMeta], structures: &[TableStructure]) -> ResultEditing {
-    result_editing_with(columns, structures, &[])
+    result_editing_with(columns, structures, &[], &[])
 }
 
-/// As `result_editing`, with origin tables already ruled out (by `result_sql`) and the reason why.
+/// As `result_editing`, with origin tables already ruled out (by `result_sql`) and the reason why,
+/// and the tables the statement names exactly once: for those, a key column shown twice
+/// (`SELECT *, id AS x`) is the same value twice, not a second row.
 pub fn result_editing_with(
     columns: &[ColumnMeta],
     structures: &[TableStructure],
     pre_blocked: &[((String, String), String)],
+    appears_once: &[(String, String)],
 ) -> ResultEditing {
     let mut e = ResultEditing { tables: vec![], columns: vec![None; columns.len()], read_only: vec![] };
     // Reason per origin table that cannot be edited.
@@ -75,7 +82,12 @@ pub fn result_editing_with(
             continue;
         };
         if s.kind != ObjectKind::Table {
-            blocked.push(((schema, table.clone()), format!("{table} is a view")));
+            let what = match s.kind {
+                ObjectKind::MaterializedView => "a materialized view",
+                ObjectKind::ForeignTable => "a foreign table",
+                _ => "a view",
+            };
+            blocked.push(((schema, table.clone()), format!("{table} is {what}")));
             continue;
         }
         let mut pk: Vec<&crate::model::ColumnInfo> = s.columns.iter().filter(|c| c.primary_key.is_some()).collect();
@@ -90,11 +102,13 @@ pub fn result_editing_with(
         let mut key_columns = Vec::new();
         let mut missing = Vec::new();
         let mut repeated = false;
+        let once = appears_once.iter().any(|(s, t)| *s == schema && *t == table);
         for k in &pk {
             let hits: Vec<usize> = (0..columns.len()).filter(|&i| from_this(i, &k.name)).collect();
             match hits.as_slice() {
                 [] => missing.push(k.name.clone()),
                 [i] => key_columns.push(*i),
+                [first, ..] if once => key_columns.push(*first),
                 _ => repeated = true,
             }
         }
@@ -174,6 +188,32 @@ mod tests {
     }
     fn users() -> TableStructure {
         table("public", "users", ObjectKind::Table, &[("id", Some(1)), ("email", None), ("name", None)])
+    }
+
+    #[test]
+    fn a_key_column_selected_twice_stays_editable() {
+        // SELECT *, id AS x FROM users: the table appears once; its key is just shown twice.
+        let cols = [
+            col("id", Some(("public", "users", "id"))),
+            col("email", Some(("public", "users", "email"))),
+            col("x", Some(("public", "users", "id"))),
+        ];
+        let once = [("public".to_string(), "users".to_string())];
+        let e = result_editing_with(&cols, &[users()], &[], &once);
+        assert_eq!(e.tables.len(), 1, "{e:?}");
+        assert_eq!(e.tables[0].key_columns, vec![0]);
+        assert_eq!(e.columns, vec![Some(0), Some(0), Some(0)]);
+        assert!(e.read_only.is_empty(), "{:?}", e.read_only);
+    }
+
+    #[test]
+    fn materialized_views_and_foreign_tables_are_named_as_such() {
+        let mv = table("public", "daily", ObjectKind::MaterializedView, &[("id", None)]);
+        let ft = table("public", "remote", ObjectKind::ForeignTable, &[("id", None)]);
+        let cols = [col("id", Some(("public", "daily", "id"))), col("rid", Some(("public", "remote", "id")))];
+        let e = result_editing(&cols, &[mv, ft]);
+        assert_eq!(e.read_only[0].reason, "daily is a materialized view");
+        assert_eq!(e.read_only[1].reason, "remote is a foreign table");
     }
 
     #[test]

@@ -3012,3 +3012,10 @@ pre,
   gap: 4px;
   font-size: var(--text-xs);
 }
+
+/* A result tab with pending edits. */
+.results-tabs .tab-pending {
+  display: inline-block;
+  margin-left: 6px;
+  vertical-align: middle;
+}
