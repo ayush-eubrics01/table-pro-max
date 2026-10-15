@@ -84,6 +84,17 @@ fn comparable(dialect: Dialect, data_type: &str) -> bool {
 }
 
 pub fn build_statements(dialect: Dialect, s: &TableStructure, set: &ChangeSet) -> Result<Vec<ParamStatement>> {
+    build_statements_with(dialect, s, set, false)
+}
+
+/// `build_statements`; with `override_identity` (PostgreSQL restores), inserts keep the given
+/// values of `GENERATED ALWAYS AS IDENTITY` columns (`OVERRIDING SYSTEM VALUE`).
+pub fn build_statements_with(
+    dialect: Dialect,
+    s: &TableStructure,
+    set: &ChangeSet,
+    override_identity: bool,
+) -> Result<Vec<ParamStatement>> {
     if s.kind != ObjectKind::Table {
         return Err(AppError::unsupported("Only tables can be edited"));
     }
@@ -92,7 +103,7 @@ pub fn build_statements(dialect: Dialect, s: &TableStructure, set: &ChangeSet) -
     let mut out = Vec::with_capacity(set.changes.len());
     for change in &set.changes {
         out.push(match change {
-            RowChange::Insert { values } => build_insert(dialect, s, &table, values)?,
+            RowChange::Insert { values } => build_insert(dialect, s, &table, values, override_identity)?,
             RowChange::Update { key, edits } => build_update(dialect, s, &table, &pk, key, edits, set.check_conflicts)?,
             RowChange::Delete { key } => build_delete(dialect, &table, &pk, key)?,
         });
@@ -109,7 +120,13 @@ fn placeholder(dialect: Dialect, params: &mut Vec<Param>, v: Param) -> String {
     dialect.placeholder(params.len())
 }
 
-fn build_insert(dialect: Dialect, s: &TableStructure, table: &str, values: &[ColumnEdit]) -> Result<ParamStatement> {
+fn build_insert(
+    dialect: Dialect,
+    s: &TableStructure,
+    table: &str,
+    values: &[ColumnEdit],
+    override_identity: bool,
+) -> Result<ParamStatement> {
     let mut cols = Vec::new();
     let mut vals = Vec::new();
     let mut params = Vec::new();
@@ -126,7 +143,7 @@ fn build_insert(dialect: Dialect, s: &TableStructure, table: &str, values: &[Col
     }
     for c in &s.columns {
         let provided = values.iter().any(|v| v.column == c.name && matches!(v.value, EditValue::Value { .. }));
-        if !provided && !c.nullable && c.default.is_none() && !c.auto_increment {
+        if !provided && !c.nullable && c.default.is_none() && !c.auto_increment && !c.generated {
             return Err(AppError::invalid_config(format!("Column '{}' requires a value", c.name)));
         }
     }
@@ -136,7 +153,8 @@ fn build_insert(dialect: Dialect, s: &TableStructure, table: &str, values: &[Col
             _ => format!("INSERT INTO {table} DEFAULT VALUES"),
         }
     } else {
-        format!("INSERT INTO {table} ({}) VALUES ({})", cols.join(", "), vals.join(", "))
+        let overriding = if override_identity { " OVERRIDING SYSTEM VALUE" } else { "" };
+        format!("INSERT INTO {table} ({}){overriding} VALUES ({})", cols.join(", "), vals.join(", "))
     };
     Ok(ParamStatement { sql, params, expect_rows: Some(1) })
 }

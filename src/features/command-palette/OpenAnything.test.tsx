@@ -5,6 +5,7 @@ import { OpenAnything } from "./OpenAnything";
 import { useConnections } from "../../stores/connections";
 import { useWorkspaces } from "../../stores/workspaces";
 import { useUi } from "../../stores/ui";
+import { useRestore } from "../../stores/restore";
 import { profile, session } from "../../test/fixtures";
 
 beforeEach(() => {
@@ -60,4 +61,26 @@ describe("OpenAnything", () => {
     const actions = await screen.findByRole("group", { name: "Actions" });
     expect(within(actions).getByRole("option", { name: /^Settings/ })).toBeInTheDocument();
   });
+
+  it("opens the restore points of the active connection", async () => {
+    useRestore.setState({ open: false });
+    useWorkspaces.setState({
+      workspaces: [{ id: "w", kind: "sql", profile, session, schema: "public", schemas: ["public"], objects: {}, columns: {}, tabs: [], activeTabId: null, closed: [], health: "ok" }],
+      activeId: "w",
+    } as never);
+    render(<OpenAnything onConnect={() => undefined} />);
+    fireEvent.click(await screen.findByRole("option", { name: /^Restore points/ }));
+    expect(useRestore.getState().open).toBe(true);
+  });
+
+  it("offers restore points only where they are kept", async () => {
+    useWorkspaces.setState({
+      workspaces: [{ id: "w", kind: "sql", profile, session: { ...session, readOnly: true }, schema: "public", schemas: ["public"], objects: {}, columns: {}, tabs: [], activeTabId: null, closed: [], health: "ok" }],
+      activeId: "w",
+    } as never);
+    render(<OpenAnything onConnect={() => undefined} />);
+    expect(await screen.findByRole("option", { name: /^Settings/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /^Restore points/ })).not.toBeInTheDocument();
+  });
 });
+

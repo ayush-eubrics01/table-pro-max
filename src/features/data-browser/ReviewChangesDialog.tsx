@@ -11,6 +11,8 @@ interface Props {
   session: SessionInfo;
   title: string;
   sql: string;
+  /** Why the statements don't run in one transaction, when that is not the database's doing. */
+  splitHint?: string;
   summary: string;
   atomic: boolean;
   /** Number of statements in `sql`, when known. */
@@ -23,7 +25,7 @@ interface Props {
 }
 
 /** Shows generated SQL and the exact target before anything is written. */
-export function ReviewChangesDialog({ session, title, sql, summary, atomic, statements, commitLabel, cancelLabel = "Cancel", onCommit, onClose }: Props) {
+export function ReviewChangesDialog({ session, title, sql, summary, atomic, statements, commitLabel, cancelLabel = "Cancel", splitHint, onCommit, onClose }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<BackendError | null>(null);
 
@@ -51,7 +53,7 @@ export function ReviewChangesDialog({ session, title, sql, summary, atomic, stat
             <Icon name="content_copy" size={14} /> Copy SQL
           </button>
           <span className="spacer" />
-          <span className="hint">{atomic ? "All changes apply or none do." : "This database cannot run these statements in one transaction."}</span>
+          <span className="hint">{atomic ? "All changes apply or none do." : (splitHint ?? "This database cannot run these statements in one transaction.")}</span>
           <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
             {cancelLabel}
           </button>

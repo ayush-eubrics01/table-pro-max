@@ -175,6 +175,9 @@ pub struct ColumnInfo {
     pub primary_key: Option<u32>,
     pub auto_increment: bool,
     pub comment: Option<String>,
+    /// Computed by the database (`GENERATED ALWAYS AS …`); it can't be written.
+    #[serde(default)]
+    pub generated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

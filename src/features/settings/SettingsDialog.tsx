@@ -207,7 +207,19 @@ export function SettingsDialog({ appInfo, onClose }: { appInfo: AppInfo | null; 
             </>
           )}
           {section === "safety" && (
-            <NumberField label="Default query timeout (seconds)" k="query.timeoutSecs" min={0} max={86400} hint="0 uses each connection's own timeout." />
+            <>
+              <NumberField label="Default query timeout (seconds)" k="query.timeoutSecs" min={0} max={86400} hint="0 uses each connection's own timeout." />
+              <NumberField
+                label="Keep restore points for (days)"
+                k="restore.keepDays"
+                min={1}
+                max={365}
+                hint="Before an UPDATE, DELETE, TRUNCATE or DROP changes rows, a copy of them is kept on this computer (not encrypted). Turn it off per connection under Safety & timeouts."
+              />
+              <NumberField label="Most rows in one restore point" k="restore.maxRows" min={1} max={10000000} hint="A statement that changes more rows asks before running without one." />
+              <NumberField label="Largest restore point (MB)" k="restore.maxMb" min={1} max={10000} />
+              <NumberField label="Space for all restore points (MB)" k="restore.maxTotalMb" min={10} max={100000} hint="When full, the oldest restore points are removed first." />
+            </>
           )}
           {section === "history" && (
             <>

@@ -565,10 +565,500 @@ async fn exercise(t: Target) {
     edit_results(&engine, &sid, &profile, t.password.as_deref(), driver).await;
     lazy_values(&engine, &sid, &t.schema, driver).await;
     fk_round_trip(&engine, &sid, &t.schema, driver).await;
+    restore_points(&engine, &sid, &t.schema, driver, &profile, t.password.as_deref()).await;
+    restore_point_edges(&engine, &sid, driver).await;
+    restore_point_restores(&engine, &sid, driver).await;
 
     // --- cleanup ---
     run(&engine, &sid, "DROP TABLE tpm_it_items; DROP TABLE tpm_it_owners").await;
     engine.close_all().await;
+}
+
+/// Restore points: planned before anything runs, captured around the statement, restored by review.
+async fn restore_points(
+    engine: &Arc<Engine>,
+    sid: &str,
+    schema: &str,
+    driver: Driver,
+    profile: &ConnectionProfile,
+    password: Option<&str>,
+) {
+    use tpm_core::restore::{RestoreStatus, RestoreStore};
+    let store = Arc::new(tpm_core::storage::Storage::open_in_memory().unwrap());
+    engine.set_restore_store(store.clone());
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rp").await;
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rp_nokey").await;
+    run(engine, sid, "CREATE TABLE tpm_it_rp (id integer PRIMARY KEY, status varchar(20), qty integer)").await;
+    run(engine, sid, "INSERT INTO tpm_it_rp VALUES (1, 'paid', 5), (2, 'paid', 7), (3, 'new', 1)").await;
+    run(engine, sid, "CREATE TABLE tpm_it_rp_nokey (a integer)").await;
+
+    // Planning: one confirmation names every statement that can't keep a restore point.
+    let opts = |confirmed| RunOptions { confirmed, ..Default::default() };
+    let err = engine
+        .run_script(
+            sid,
+            "UPDATE tpm_it_rp_nokey SET a = 1; DELETE FROM tpm_it_rp ORDER BY id LIMIT 1",
+            opts(false),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::ConfirmationRequired, "{driver:?}");
+    let detail = err.detail.clone().unwrap_or_default();
+    // Statement 1 is destructive (no WHERE) *and* can't keep a restore point; one confirmation names both.
+    assert!(detail.contains("UPDATE without a WHERE clause changes every row"), "{driver:?}: {detail}");
+    assert!(
+        detail.contains("Statement 1: can't keep a restore point (the table has no primary key)"),
+        "{driver:?}: {detail}"
+    );
+    assert!(detail.contains("Statement 2: can't keep a restore point ("), "{driver:?}: {detail}");
+    if matches!(driver, Driver::Mysql | Driver::Mariadb) {
+        assert!(
+            detail.contains("Statement 2: can't keep a restore point (uses ORDER BY or LIMIT)"),
+            "{driver:?}: {detail}"
+        );
+    }
+    // Over the row limit.
+    let small = RunOptions { confirmed: false, restore_max_rows: Some(2), ..Default::default() };
+    let err = engine.run_script(sid, "UPDATE tpm_it_rp SET qty = 0 WHERE qty > 0", small, None).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::ConfirmationRequired, "{driver:?}");
+    assert!(err.detail.unwrap_or_default().contains("affects more than 2 rows"), "{driver:?}");
+    // A capturable statement within the limits needs no confirmation.
+    engine.run_script(sid, "UPDATE tpm_it_rp SET qty = qty WHERE id = 3", opts(false), None).await.unwrap();
+    // Confirming runs it anyway.
+    let r = engine.run_script(sid, "UPDATE tpm_it_rp_nokey SET a = 1", opts(true), None).await.unwrap();
+    assert!(r.statements[0].error.is_none(), "{driver:?}");
+    // A connection with restore points turned off keeps none, and says nothing about them.
+    if driver != Driver::Sqlite && driver != Driver::Duckdb {
+        let off = ConnectionProfile { restore_points: false, ..profile.clone() };
+        let other = engine.open_session(&off, password, None, ConnectOptions::default()).await.expect("connect");
+        let r = engine
+            .run_script(&other.session_id, "UPDATE tpm_it_rp SET qty = qty WHERE id = 3", opts(true), None)
+            .await
+            .unwrap();
+        assert!(r.statements[0].restore.is_none(), "{driver:?}");
+        let r = engine
+            .run_script(&other.session_id, "UPDATE tpm_it_rp_nokey SET a = 1", opts(false), None)
+            .await
+            .unwrap_err();
+        assert!(!r.detail.unwrap_or_default().contains("restore point"), "{driver:?}");
+        engine.close_session(&other.session_id).await;
+    }
+    // ... and its message says why there is no restore point.
+    let note = r.statements[0].restore.clone().expect("note");
+    assert_eq!((note.point_id, note.reason.as_deref()), (None, Some("the table has no primary key")), "{driver:?}");
+
+    // UPDATE: captured before → after, kept, and the note says so.
+    let r = engine
+        .run_script(sid, "UPDATE tpm_it_rp SET status = 'cancelled' WHERE status = 'paid'", opts(true), None)
+        .await
+        .unwrap();
+    assert!(r.statements[0].error.is_none(), "{driver:?}: {:?}", r.statements[0].error);
+    let id = r.statements[0].restore.clone().and_then(|n| n.point_id).expect("saved");
+    let p = store.get(&id).unwrap();
+    assert_eq!((p.row_count, p.data.before.len()), (2, 2), "{driver:?}");
+    assert_eq!((p.schema.as_str(), p.table.as_str()), (schema, "tpm_it_rp"), "{driver:?}");
+    assert_eq!(p.data.columns, vec!["id".to_string(), "status".to_string(), "qty".to_string()]);
+    assert_eq!(p.data.key_columns, vec!["id".to_string()]);
+    assert!(p.data.before.iter().all(|r| r[1].as_deref() == Some("paid")), "{driver:?}: {:?}", p.data.before);
+    assert!(p.data.after.iter().all(|r| r.as_ref().unwrap()[1].as_deref() == Some("cancelled")), "{driver:?}");
+    assert_eq!(p.status, RestoreStatus::Kept);
+    assert_eq!(p.statement, "UPDATE tpm_it_rp SET status = 'cancelled' WHERE status = 'paid'");
+    // The size counts every value kept: the rows before and after.
+    let len = |r: &Vec<Option<String>>| r.iter().map(|v| v.as_ref().map_or(0, |t| t.len() as u64)).sum::<u64>();
+    let expected = p.data.before.iter().map(len).sum::<u64>() + p.data.after.iter().flatten().map(len).sum::<u64>();
+    assert_eq!(p.bytes, expected, "{driver:?}");
+    // DELETE: before rows only.
+    let r = engine.run_script(sid, "DELETE FROM tpm_it_rp WHERE id = 3", opts(true), None).await.unwrap();
+    let p = store.get(r.statements[0].restore.as_ref().unwrap().point_id.as_ref().unwrap()).unwrap();
+    assert_eq!((p.data.before.len(), p.data.after.len()), (1, 0), "{driver:?}");
+    assert_eq!(p.data.before[0][0].as_deref(), Some("3"));
+    // Over the size limit: the statement runs, and its message says why there is no restore point.
+    let tiny = RunOptions { confirmed: true, restore_max_mb: Some(0), ..Default::default() };
+    let r = engine.run_script(sid, "UPDATE tpm_it_rp SET qty = qty WHERE id = 1", tiny, None).await.unwrap();
+    let note = r.statements[0].restore.clone().expect("note");
+    assert!(note.point_id.is_none() && note.reason.unwrap_or_default().starts_with("more than"), "{driver:?}");
+    // Inside the user's transaction: pending; ROLLBACK deletes it, COMMIT keeps it.
+    run(engine, sid, "BEGIN").await;
+    let r = engine.run_script(sid, "UPDATE tpm_it_rp SET qty = 99 WHERE id = 1", opts(true), None).await.unwrap();
+    if driver == Driver::Duckdb {
+        // No savepoints on DuckDB: nothing is read inside a transaction, and the message says so.
+        let reason = r.statements[0].restore.as_ref().and_then(|n| n.reason.clone());
+        assert_eq!(reason.as_deref(), Some("inside a transaction on DuckDB"));
+        run(engine, sid, "ROLLBACK").await;
+    } else {
+        let pend = r.statements[0].restore.as_ref().unwrap().point_id.clone().unwrap();
+        assert_eq!(store.get(&pend).unwrap().status, RestoreStatus::Pending, "{driver:?}");
+        run(engine, sid, "ROLLBACK").await;
+        assert!(store.get(&pend).is_err(), "rolled back: no restore point ({driver:?})");
+        run(engine, sid, "BEGIN").await;
+        let r = engine.run_script(sid, "UPDATE tpm_it_rp SET qty = 98 WHERE id = 1", opts(true), None).await.unwrap();
+        let kept = r.statements[0].restore.as_ref().unwrap().point_id.clone().unwrap();
+        run(engine, sid, "COMMIT").await;
+        assert_eq!(store.get(&kept).unwrap().status, RestoreStatus::Kept, "{driver:?}");
+    }
+    // PostgreSQL: after an error the transaction is aborted, and its COMMIT rolls back.
+    if driver == Driver::Postgres {
+        run(engine, sid, "BEGIN").await;
+        let r = engine.run_script(sid, "UPDATE tpm_it_rp SET qty = 97 WHERE id = 1", opts(true), None).await.unwrap();
+        let doomed = r.statements[0].restore.as_ref().unwrap().point_id.clone().unwrap();
+        let r = engine.run_script(sid, "SELECT 1/0", opts(true), None).await.unwrap();
+        assert!(r.statements[0].error.is_some());
+        run(engine, sid, "COMMIT").await;
+        assert!(store.get(&doomed).is_err(), "the COMMIT rolled back: no restore point");
+    }
+    // A capture SELECT that fails at run time: a role that may count rows (SELECT on `id`) and
+    // update, but not read every column. Planning succeeds; the capture SELECT is refused; the
+    // UPDATE still runs, the note says why, and the user's transaction survives.
+    if driver == Driver::Postgres {
+        // Left behind by an earlier failed run?
+        run(engine, sid, "DO $$ BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'tpm_it_limited') THEN EXECUTE 'DROP OWNED BY tpm_it_limited'; END IF; END $$").await;
+        run(engine, sid, "DROP ROLE IF EXISTS tpm_it_limited").await;
+        run(engine, sid, "CREATE ROLE tpm_it_limited").await;
+        run(engine, sid, &format!("GRANT USAGE ON SCHEMA \"{schema}\" TO tpm_it_limited")).await;
+        run(engine, sid, "GRANT SELECT (id), UPDATE ON tpm_it_rp TO tpm_it_limited").await;
+        run(engine, sid, "BEGIN").await;
+        run(engine, sid, "SET LOCAL ROLE tpm_it_limited").await;
+        let r = engine.run_script(sid, "UPDATE tpm_it_rp SET qty = 1 WHERE id = 1", opts(true), None).await.unwrap();
+        assert!(r.statements[0].error.is_none(), "the statement still runs: {:?}", r.statements[0].error);
+        let note = r.statements[0].restore.clone().expect("note");
+        assert!(note.point_id.is_none());
+        assert!(note.reason.clone().unwrap_or_default().starts_with("could not read the rows"), "{note:?}");
+        run(engine, sid, "SELECT 1").await; // the transaction is still usable
+        run(engine, sid, "ROLLBACK").await;
+        run(engine, sid, "DROP OWNED BY tpm_it_limited").await;
+        run(engine, sid, "DROP ROLE tpm_it_limited").await;
+    }
+    // DROP COLUMN, TRUNCATE and DROP TABLE capture rows (and the definition).
+    let r = engine.run_script(sid, "ALTER TABLE tpm_it_rp DROP COLUMN qty", opts(true), None).await.unwrap();
+    assert!(r.statements[0].error.is_none(), "{driver:?}: {:?}", r.statements[0].error);
+    let dc = store.get(r.statements[0].restore.as_ref().unwrap().point_id.as_ref().unwrap()).unwrap();
+    assert_eq!(dc.data.columns, vec!["id".to_string(), "qty".to_string()], "{driver:?}");
+    assert_eq!(dc.data.before.len(), 2);
+    assert!(dc.data.column_type.is_some());
+    let r = engine.run_script(sid, "TRUNCATE TABLE tpm_it_rp", opts(true), None).await.unwrap();
+    if r.statements[0].error.is_none() {
+        let tp = store.get(r.statements[0].restore.as_ref().unwrap().point_id.as_ref().unwrap()).unwrap();
+        assert_eq!(tp.row_count, 2, "{driver:?}");
+    } else {
+        // SQLite has no TRUNCATE: the statement fails and no restore point is kept.
+        assert_eq!(driver, Driver::Sqlite);
+        assert!(r.statements[0].restore.as_ref().and_then(|n| n.point_id.clone()).is_none());
+    }
+    let r = engine.run_script(sid, "DROP TABLE tpm_it_rp", opts(true), None).await.unwrap();
+    let dt = store.get(r.statements[0].restore.as_ref().unwrap().point_id.as_ref().unwrap()).unwrap();
+    assert!(dt.data.ddl.as_deref().unwrap_or("").to_ascii_uppercase().contains("CREATE"), "{driver:?}");
+    run(engine, sid, "CREATE TABLE tpm_it_rp (id integer PRIMARY KEY, status varchar(20), qty integer)").await;
+    run(engine, sid, "DROP TABLE tpm_it_rp_nokey").await;
+
+    // Restoring chosen rows: only those change.
+    run(engine, sid, "INSERT INTO tpm_it_rp VALUES (1, 'paid', 5), (2, 'paid', 7)").await;
+    let r = engine.run_script(sid, "UPDATE tpm_it_rp SET status = 'x', qty = 0", opts(true), None).await.unwrap();
+    let pid = r.statements[0].restore.as_ref().unwrap().point_id.clone().unwrap();
+    let p = store.get(&pid).unwrap();
+    let idx = |id: &str| p.data.before.iter().position(|r| r[0].as_deref() == Some(id)).unwrap();
+    let preview = engine.preview_restore(sid, &pid, Some(vec![idx("2")])).await.unwrap();
+    assert_eq!(preview.statement_count, 1, "{driver:?}: {}", preview.sql);
+    assert!(engine.apply_restore(sid, &pid, Some(vec![idx("2")]), false).await.is_err(), "needs the review");
+    engine.apply_restore(sid, &pid, Some(vec![idx("2")]), true).await.unwrap();
+    let rows =
+        run(engine, sid, "SELECT id, status, qty FROM tpm_it_rp ORDER BY id").await.statements[0].rows.clone().unwrap();
+    assert_eq!(text(&rows[0][1]), "x", "row 1 untouched ({driver:?})");
+    assert_eq!((text(&rows[1][1]), text(&rows[1][2])), ("paid", "7"), "{driver:?}");
+    assert_eq!(store.get(&pid).unwrap().status, RestoreStatus::Restored);
+    // Someone changed row 1 since: nothing is written.
+    run(engine, sid, "UPDATE tpm_it_rp SET qty = 42 WHERE id = 1").await;
+    let err = engine.apply_restore(sid, &pid, Some(vec![idx("1")]), true).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Conflict, "{driver:?}");
+    let said = format!("{} {}", err.message, err.detail.clone().unwrap_or_default()).to_lowercase();
+    assert!(said.contains("nothing was restored"), "{driver:?}: {err:?}");
+    let rows =
+        run(engine, sid, "SELECT status, qty FROM tpm_it_rp WHERE id = 1").await.statements[0].rows.clone().unwrap();
+    assert_eq!((text(&rows[0][0]), text(&rows[0][1])), ("x", "42"), "{driver:?}");
+    // Rows already back as they were are skipped, so the rest can still be restored (here row 2,
+    // restored above, and row 1, now changed back by hand).
+    run(engine, sid, "UPDATE tpm_it_rp SET qty = 0 WHERE id = 1").await;
+    let preview = engine.preview_restore(sid, &pid, None).await.unwrap();
+    assert_eq!(preview.statement_count, 1, "only row 1 ({driver:?}): {}", preview.sql);
+    engine.apply_restore(sid, &pid, None, true).await.unwrap();
+    let rows =
+        run(engine, sid, "SELECT status, qty FROM tpm_it_rp ORDER BY id").await.statements[0].rows.clone().unwrap();
+    assert_eq!((text(&rows[0][0]), text(&rows[0][1])), ("paid", "5"), "{driver:?}");
+    assert_eq!((text(&rows[1][0]), text(&rows[1][1])), ("paid", "7"), "{driver:?}");
+    let err = engine.apply_restore(sid, &pid, None, true).await.unwrap_err();
+    assert!(err.message.contains("already"), "{driver:?}: {}", err.message);
+    run(engine, sid, "UPDATE tpm_it_rp SET status = 'x', qty = 42 WHERE id = 1").await;
+    // A DELETE comes back by re-inserting.
+    let r = engine.run_script(sid, "DELETE FROM tpm_it_rp WHERE id = 2", opts(true), None).await.unwrap();
+    let did = r.statements[0].restore.as_ref().unwrap().point_id.clone().unwrap();
+    engine.apply_restore(sid, &did, None, true).await.unwrap();
+    let back = run(engine, sid, "SELECT status FROM tpm_it_rp WHERE id = 2").await;
+    assert_eq!(text(&back.statements[0].rows.as_ref().unwrap()[0][0]), "paid", "{driver:?}");
+    // A grid commit keeps a restore point; restoring keeps one of its own (an undo of the restore).
+    let set = ChangeSet {
+        schema: schema.into(),
+        table: "tpm_it_rp".into(),
+        changes: vec![
+            RowChange::Update {
+                key: vec![ColumnValue { column: "id".into(), value: Some("2".into()) }],
+                edits: vec![ColumnEdit {
+                    column: "status".into(),
+                    value: EditValue::Value { value: Some("grid".into()) },
+                    original: Some(Some("paid".into())),
+                }],
+            },
+            RowChange::Delete { key: vec![ColumnValue { column: "id".into(), value: Some("1".into()) }] },
+        ],
+        check_conflicts: true,
+    };
+    engine.apply_changes(sid, &set, true).await.unwrap();
+    let conn = engine.session_info(sid).unwrap().connection_id;
+    let list = store.list_restore_points(&conn).unwrap();
+    let grid = list.iter().find(|g| g.kind == tpm_core::restore::RestoreKind::GridEdit).expect("grid edit point");
+    assert_eq!(grid.row_count, 2, "{driver:?}");
+    assert!(list.iter().any(|g| g.kind == tpm_core::restore::RestoreKind::Restore), "{driver:?}");
+    engine.apply_restore(sid, &grid.id, None, true).await.unwrap();
+    let rows =
+        run(engine, sid, "SELECT id, status, qty FROM tpm_it_rp ORDER BY id").await.statements[0].rows.clone().unwrap();
+    assert_eq!(rows.len(), 2, "{driver:?}");
+    assert_eq!((text(&rows[0][1]), text(&rows[0][2])), ("x", "42"), "row 1 re-inserted ({driver:?})");
+    assert_eq!(text(&rows[1][1]), "paid", "row 2 put back ({driver:?})");
+    // A dropped column comes back with its values, and a dropped table with its rows.
+    let r = engine.run_script(sid, "ALTER TABLE tpm_it_rp DROP COLUMN qty", opts(true), None).await.unwrap();
+    let cid = r.statements[0].restore.as_ref().unwrap().point_id.clone().unwrap();
+    let preview = engine.preview_restore(sid, &cid, None).await.unwrap();
+    assert!(preview.sql.contains("ADD COLUMN"), "{driver:?}: {}", preview.sql);
+    engine.apply_restore(sid, &cid, None, true).await.unwrap();
+    let rows = run(engine, sid, "SELECT qty FROM tpm_it_rp ORDER BY id").await.statements[0].rows.clone().unwrap();
+    assert_eq!((text(&rows[0][0]), text(&rows[1][0])), ("42", "7"), "{driver:?}");
+    let r = engine.run_script(sid, "DROP TABLE tpm_it_rp", opts(true), None).await.unwrap();
+    let tid = r.statements[0].restore.as_ref().unwrap().point_id.clone().unwrap();
+    let preview = engine.preview_restore(sid, &tid, None).await.unwrap();
+    assert!(preview.sql.to_ascii_uppercase().contains("CREATE"), "{driver:?}: {}", preview.sql);
+    engine.apply_restore(sid, &tid, None, true).await.unwrap();
+    let rows =
+        run(engine, sid, "SELECT id, status, qty FROM tpm_it_rp ORDER BY id").await.statements[0].rows.clone().unwrap();
+    assert_eq!(rows.len(), 2, "{driver:?}");
+    assert_eq!((text(&rows[1][1]), text(&rows[1][2])), ("paid", "7"), "{driver:?}");
+    run(engine, sid, "DROP TABLE tpm_it_rp").await;
+}
+
+/// Restore points: transactions the engine did not see begin, names resolved at run time, and
+/// planning that can be cancelled.
+async fn restore_point_edges(engine: &Arc<Engine>, sid: &str, driver: Driver) {
+    use tpm_core::restore::{RestoreStatus, RestoreStore};
+    let store = Arc::new(tpm_core::storage::Storage::open_in_memory().unwrap());
+    engine.set_restore_store(store.clone());
+    let opts = |confirmed| RunOptions { confirmed, ..Default::default() };
+    let point = |r: &tpm_core::engine::ScriptResult| {
+        r.statements.last().and_then(|s| s.restore.clone()).and_then(|n| n.point_id)
+    };
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rpe").await;
+    run(engine, sid, "CREATE TABLE tpm_it_rpe (id integer PRIMARY KEY, qty integer)").await;
+    run(engine, sid, "INSERT INTO tpm_it_rpe VALUES (1, 1), (2, 2), (3, 3)").await;
+    let qty = |id: i32| async move {
+        let r = run(engine, sid, &format!("SELECT qty FROM tpm_it_rpe WHERE id = {id}")).await;
+        text(&r.statements[0].rows.as_ref().unwrap()[0][0]).to_string()
+    };
+
+    // A transaction the engine did not see begin: the capture must not commit it.
+    let started = match driver {
+        Driver::Mysql | Driver::Mariadb => Some("SET autocommit = 0"),
+        Driver::Sqlite => Some("SAVEPOINT tpm_it_sp"),
+        _ => None,
+    };
+    if let Some(start) = started {
+        run(engine, sid, start).await;
+        let r = engine.run_script(sid, "UPDATE tpm_it_rpe SET qty = 9 WHERE id = 1", opts(true), None).await.unwrap();
+        assert!(r.statements[0].error.is_none(), "{driver:?}: {:?}", r.statements[0].error);
+        let id = point(&r).expect("saved");
+        assert_eq!(store.get(&id).unwrap().status, RestoreStatus::Pending, "{driver:?}");
+        run(engine, sid, "ROLLBACK").await;
+        assert_eq!(qty(1).await, "1", "the user's ROLLBACK undid the change ({driver:?})");
+        assert!(store.get(&id).is_err(), "{driver:?}");
+        if matches!(driver, Driver::Mysql | Driver::Mariadb) {
+            run(engine, sid, "SET autocommit = 1").await;
+        }
+    }
+
+    // MySQL commits the open transaction at DDL: points made after it are no longer pending.
+    if matches!(driver, Driver::Mysql | Driver::Mariadb) {
+        run(engine, sid, "BEGIN").await;
+        run(engine, sid, "CREATE TABLE tpm_it_rpe_tmp (a integer)").await;
+        let r = engine.run_script(sid, "UPDATE tpm_it_rpe SET qty = 8 WHERE id = 2", opts(true), None).await.unwrap();
+        let id = point(&r).expect("saved");
+        run(engine, sid, "ROLLBACK").await;
+        assert_eq!(qty(2).await, "8", "autocommitted after the DDL ({driver:?})");
+        assert_eq!(store.get(&id).unwrap().status, RestoreStatus::Kept, "{driver:?}");
+        run(engine, sid, "DROP TABLE tpm_it_rpe_tmp").await;
+    }
+
+    // Names are matched the way the database matches them.
+    if matches!(driver, Driver::Sqlite | Driver::Duckdb) {
+        let r = engine.run_script(sid, "UPDATE TPM_IT_RPE SET qty = 7 WHERE id = 3", opts(true), None).await.unwrap();
+        let id = point(&r).unwrap_or_else(|| panic!("{driver:?}: {:?}", r.statements[0].restore));
+        assert_eq!(store.get(&id).unwrap().table, "tpm_it_rpe");
+    }
+
+    // A schema switched earlier in the same script: the point names the table actually changed.
+    if driver == Driver::Postgres {
+        run(engine, sid, "DROP SCHEMA IF EXISTS tpm_it_s2 CASCADE").await;
+        run(engine, sid, "CREATE SCHEMA tpm_it_s2").await;
+        run(engine, sid, "CREATE TABLE tpm_it_s2.tpm_it_rpe (id integer PRIMARY KEY, qty integer)").await;
+        run(engine, sid, "INSERT INTO tpm_it_s2.tpm_it_rpe VALUES (1, 100)").await;
+        let r = engine
+            .run_script(
+                sid,
+                "SET search_path TO tpm_it_s2; DELETE FROM tpm_it_rpe WHERE id = 1; SET search_path TO public",
+                opts(true),
+                None,
+            )
+            .await
+            .unwrap();
+        let id = r.statements[1].restore.as_ref().and_then(|n| n.point_id.clone()).expect("saved");
+        let p = store.get(&id).unwrap();
+        assert_eq!((p.schema.as_str(), p.data.before[0][1].as_deref()), ("tpm_it_s2", Some("100")));
+        run(engine, sid, "DROP SCHEMA tpm_it_s2 CASCADE").await;
+
+        // Planning can be cancelled (a slow count): nothing runs.
+        let task = "tpm-it-cancel-plan".to_string();
+        let e2 = engine.clone();
+        let sid2 = sid.to_string();
+        let t2 = task.clone();
+        let h = tokio::spawn(async move {
+            let o = RunOptions { confirmed: true, task_id: Some(t2), ..Default::default() };
+            e2.run_script(&sid2, "UPDATE tpm_it_rpe SET qty = 0 WHERE pg_sleep(1) IS NOT NULL", o, None).await
+        });
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let t0 = Instant::now();
+        assert!(engine.cancel_task(&task).await.unwrap(), "the task is known while planning");
+        let r = h.await.unwrap().unwrap();
+        assert!(r.cancelled && r.statements.is_empty(), "{r:?}");
+        assert!(t0.elapsed() < Duration::from_secs(2));
+        assert_ne!(qty(1).await, "0");
+    }
+
+    // Runs that ask for no restore points (SQL files) keep none.
+    let o = RunOptions { confirmed: true, keep_restore_points: Some(false), ..Default::default() };
+    let r = engine.run_script(sid, "DELETE FROM tpm_it_rpe WHERE id = 3", o, None).await.unwrap();
+    assert!(r.statements[0].restore.is_none(), "{driver:?}");
+    run(engine, sid, "DROP TABLE tpm_it_rpe").await;
+}
+
+/// Restoring real-world tables: dropped tables with indexes and sequences, tables without a key,
+/// generated and identity columns, columns SQL can't compare, and points still pending.
+async fn restore_point_restores(engine: &Arc<Engine>, sid: &str, driver: Driver) {
+    use tpm_core::restore::RestoreStore;
+    let store = Arc::new(tpm_core::storage::Storage::open_in_memory().unwrap());
+    engine.set_restore_store(store.clone());
+    let opts = RunOptions { confirmed: true, ..Default::default() };
+    let point = |r: &tpm_core::engine::ScriptResult| {
+        r.statements.last().and_then(|s| s.restore.clone()).and_then(|n| n.point_id).expect("saved")
+    };
+    let rows = |sql: &'static str| async move { run(engine, sid, sql).await.statements[0].rows.clone().unwrap() };
+
+    // A dropped table with an index (and on PostgreSQL a serial key and a comment) comes back.
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rpd").await;
+    let key = if driver == Driver::Postgres { "id serial PRIMARY KEY" } else { "id integer PRIMARY KEY" };
+    run(engine, sid, &format!("CREATE TABLE tpm_it_rpd ({key}, note varchar(20))")).await;
+    run(engine, sid, "CREATE INDEX tpm_it_rpd_note ON tpm_it_rpd (note)").await;
+    if driver == Driver::Postgres {
+        run(engine, sid, "COMMENT ON COLUMN tpm_it_rpd.note IS 'a note; with a semicolon'").await;
+        run(engine, sid, "INSERT INTO tpm_it_rpd (note) VALUES ('a'), ('b')").await;
+    } else {
+        run(engine, sid, "INSERT INTO tpm_it_rpd VALUES (1, 'a'), (2, 'b')").await;
+    }
+    let r = engine.run_script(sid, "DROP TABLE tpm_it_rpd", opts.clone(), None).await.unwrap();
+    let id = point(&r);
+    engine.apply_restore(sid, &id, None, true).await.unwrap_or_else(|e| panic!("{driver:?}: {e:?}"));
+    assert_eq!(rows("SELECT id, note FROM tpm_it_rpd ORDER BY id").await.len(), 2, "{driver:?}");
+    if driver == Driver::Postgres {
+        run(engine, sid, "INSERT INTO tpm_it_rpd (note) VALUES ('c')").await;
+        let r = rows("SELECT max(id) FROM tpm_it_rpd").await;
+        assert_eq!(text(&r[0][0]), "3", "the sequence continues after the restored rows");
+    }
+    run(engine, sid, "DROP TABLE tpm_it_rpd").await;
+
+    // A table without a key: rows come back all at once, and only once.
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rpn").await;
+    run(engine, sid, "CREATE TABLE tpm_it_rpn (a integer)").await;
+    run(engine, sid, "INSERT INTO tpm_it_rpn VALUES (1), (1), (2)").await;
+    let r = engine.run_script(sid, "DELETE FROM tpm_it_rpn WHERE a = 1", opts.clone(), None).await.unwrap();
+    let id = point(&r);
+    assert!(
+        engine.apply_restore(sid, &id, Some(vec![0]), true).await.is_err(),
+        "{driver:?}: no chosen rows without a key"
+    );
+    engine.apply_restore(sid, &id, None, true).await.unwrap();
+    let err = engine.apply_restore(sid, &id, None, true).await.unwrap_err();
+    assert!(err.message.contains("already"), "{driver:?}: {}", err.message);
+    assert_eq!(text(&rows("SELECT count(*) FROM tpm_it_rpn").await[0][0]), "3", "{driver:?}");
+    run(engine, sid, "DROP TABLE tpm_it_rpn").await;
+
+    // Generated columns (and PostgreSQL identity columns) are left to the database.
+    if driver != Driver::Duckdb {
+        run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rpg").await;
+        let ddl = match driver {
+            Driver::Postgres => {
+                "CREATE TABLE tpm_it_rpg (id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY, qty integer, total integer GENERATED ALWAYS AS (qty * 2) STORED)"
+            }
+            Driver::Sqlite => {
+                "CREATE TABLE tpm_it_rpg (id integer PRIMARY KEY, qty integer, total integer GENERATED ALWAYS AS (qty * 2) STORED)"
+            }
+            _ => {
+                "CREATE TABLE tpm_it_rpg (id integer PRIMARY KEY, qty integer, total integer GENERATED ALWAYS AS (qty * 2) STORED)"
+            }
+        };
+        run(engine, sid, ddl).await;
+        if driver == Driver::Postgres {
+            run(engine, sid, "INSERT INTO tpm_it_rpg (qty) VALUES (1), (2)").await;
+        } else {
+            run(engine, sid, "INSERT INTO tpm_it_rpg (id, qty) VALUES (1, 1), (2, 2)").await;
+        }
+        let r = engine.run_script(sid, "UPDATE tpm_it_rpg SET qty = 5 WHERE id = 1", opts.clone(), None).await.unwrap();
+        engine.apply_restore(sid, &point(&r), None, true).await.unwrap_or_else(|e| panic!("{driver:?}: {e:?}"));
+        let r = engine.run_script(sid, "DELETE FROM tpm_it_rpg WHERE id = 2", opts.clone(), None).await.unwrap();
+        engine.apply_restore(sid, &point(&r), None, true).await.unwrap_or_else(|e| panic!("{driver:?}: {e:?}"));
+        let back = rows("SELECT id, qty, total FROM tpm_it_rpg ORDER BY id").await;
+        assert_eq!(
+            back.iter().map(|r| (text(&r[1]).to_string(), text(&r[2]).to_string())).collect::<Vec<_>>(),
+            vec![("1".into(), "2".into()), ("2".into(), "4".into())],
+            "{driver:?}"
+        );
+        run(engine, sid, "DROP TABLE tpm_it_rpg").await;
+    }
+
+    // A column SQL can't compare (MySQL JSON): a later change still stops the restore.
+    if matches!(driver, Driver::Mysql | Driver::Mariadb) {
+        run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rpj").await;
+        run(engine, sid, "CREATE TABLE tpm_it_rpj (id integer PRIMARY KEY, doc json)").await;
+        run(engine, sid, "INSERT INTO tpm_it_rpj VALUES (1, '{\"a\": 1}')").await;
+        let r = engine
+            .run_script(sid, "UPDATE tpm_it_rpj SET doc = '{\"a\": 2}' WHERE id = 1", opts.clone(), None)
+            .await
+            .unwrap();
+        let id = point(&r);
+        run(engine, sid, "UPDATE tpm_it_rpj SET doc = '{\"a\": 3}' WHERE id = 1").await;
+        let err = engine.apply_restore(sid, &id, None, true).await.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Conflict, "{driver:?}");
+        assert!(text(&rows("SELECT doc FROM tpm_it_rpj").await[0][0]).contains('3'), "{driver:?}");
+        run(engine, sid, "DROP TABLE tpm_it_rpj").await;
+    }
+
+    // A point whose transaction is still open can't be restored.
+    if driver == Driver::Postgres {
+        run(engine, sid, "CREATE TABLE tpm_it_rpp (id integer PRIMARY KEY, qty integer)").await;
+        run(engine, sid, "INSERT INTO tpm_it_rpp VALUES (1, 1)").await;
+        run(engine, sid, "BEGIN").await;
+        let r = engine.run_script(sid, "UPDATE tpm_it_rpp SET qty = 2", opts.clone(), None).await.unwrap();
+        let id = point(&r);
+        run(engine, sid, "COMMIT").await;
+        // Pending in the store (as after a crash mid-transaction), whatever the session says.
+        store.set_status(std::slice::from_ref(&id), tpm_core::restore::RestoreStatus::Pending).unwrap();
+        let err = engine.apply_restore(sid, &id, None, true).await.unwrap_err();
+        assert!(err.message.contains("transaction"), "{}", err.message);
+        run(engine, sid, "DROP TABLE tpm_it_rpp").await;
+    }
 }
 
 /// Following a foreign key: the referenced columns are known (even when the DDL left them

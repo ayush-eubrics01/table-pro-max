@@ -166,6 +166,7 @@ mod tests {
                     primary_key: *pk,
                     auto_increment: false,
                     comment: None,
+                    generated: false,
                 })
                 .collect(),
             ..Default::default()

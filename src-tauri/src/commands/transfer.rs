@@ -243,6 +243,9 @@ pub async fn run_sql_file(
                 task_id: Some(request.task_id.clone()),
                 confirmed: request.confirmed,
                 max_rows: Some(1000),
+                // A whole SQL file (often a dump) would copy every table it touches and push
+                // older restore points out of the size limit.
+                keep_restore_points: Some(false),
                 ..Default::default()
             },
             Some(progress),

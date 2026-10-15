@@ -7,6 +7,7 @@ import type { SQLNamespace } from "@codemirror/lang-sql";
 import type { AiTask, Environment, ExplainResult, ScriptResult, SessionInfo, StatementResult } from "../../types/backend";
 import { api, toError } from "../../lib/ipc";
 import { byteToUtf16, formatDuration, uid, utf16ToByte } from "../../lib/text";
+import { useRestore } from "../../stores/restore";
 import { confirmAction, notify, notifyError, promptText } from "../../stores/ui";
 import { useSettings } from "../../stores/settings";
 import { useWorkspaces, type QueryTab as QueryTabModel, type Workspace } from "../../stores/workspaces";
@@ -227,11 +228,14 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
         timeoutSecs: settings["query.timeoutSecs"] > 0 ? settings["query.timeoutSecs"] : undefined,
         baseOffset: target.base,
         largeValueChars: settings["grid.largeValueChars"],
+        restoreMaxRows: settings["restore.maxRows"],
+        restoreMaxMb: settings["restore.maxMb"],
       });
       if (resultIds.current.length) void api.releaseResults(resultIds.current);
       resultIds.current = r.statements.flatMap((x) => (x.resultId ? [x.resultId] : []));
       lastRun.current = { mode, target };
       setResult(r);
+      if (r.statements.some((x) => x.restore?.pointId)) useRestore.getState().bump();
       const failed = r.statements.find((x) => x.error && x.error.kind !== "cancelled");
       if (failed) markError(text, failed);
     } catch (e) {

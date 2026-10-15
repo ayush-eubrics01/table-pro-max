@@ -1,7 +1,8 @@
 //! Local application metadata database (SQLite) with versioned migrations.
 //!
 //! Holds connection profiles (never passwords), query history, saved queries, filter
-//! presets, dashboards, settings and workspace state. Everything stays on this machine.
+//! presets, dashboards, settings, workspace state and restore points (copies of changed rows,
+//! unencrypted, kept for a limited time). Everything stays on this machine.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -12,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::ConnectionProfile;
 use crate::error::{AppError, Result};
+use crate::restore::{RestoreKind, RestorePoint, RestorePointSummary, RestoreStatus, RestoreStore};
 
 /// Ordered migrations; index + 1 is the schema version (`PRAGMA user_version`).
 const MIGRATIONS: &[&str] = &[
@@ -76,6 +78,24 @@ const MIGRATIONS: &[&str] = &[
         mode TEXT NOT NULL CHECK (mode IN ('load', 'defer')),
         PRIMARY KEY (connection_id, schema_name, table_name, column_name)
     );
+    "#,
+    // v3: restore points (copies of changed rows, kept locally; see restore.rs)
+    r#"
+    CREATE TABLE restore_points (
+        id TEXT PRIMARY KEY,
+        connection_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'kept', 'restored')),
+        restored_at TEXT,
+        kind TEXT NOT NULL,
+        schema_name TEXT NOT NULL,
+        table_name TEXT NOT NULL,
+        statement TEXT NOT NULL,
+        data TEXT NOT NULL,
+        row_count INTEGER NOT NULL,
+        bytes INTEGER NOT NULL
+    );
+    CREATE INDEX restore_points_conn ON restore_points (connection_id, created_at);
     "#,
 ];
 
@@ -264,6 +284,7 @@ impl Storage {
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM connections WHERE id = ?1", [id])?;
         tx.execute("DELETE FROM column_fetch WHERE connection_id = ?1", [id])?;
+        tx.execute("DELETE FROM restore_points WHERE connection_id = ?1", [id])?;
         tx.commit()?;
         Ok(())
     }
@@ -529,6 +550,79 @@ impl Storage {
         Ok(())
     }
 
+    // ---- restore points (copies of changed rows; see restore.rs) --------------------
+
+    /// A positive whole-number setting, or `default`.
+    fn restore_setting(&self, key: &str, default: i64) -> i64 {
+        self.get_setting(key)
+            .ok()
+            .flatten()
+            .and_then(|v| v.as_f64())
+            .map(|n| n as i64)
+            .filter(|n| *n > 0)
+            .unwrap_or(default)
+    }
+
+    /// The connection's restore points, newest first (without their row data).
+    pub fn list_restore_points(&self, connection_id: &str) -> Result<Vec<RestorePointSummary>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, connection_id, created_at, status, restored_at, kind, schema_name, table_name, statement,
+                    row_count, bytes
+             FROM restore_points WHERE connection_id = ?1 ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map([connection_id], |r| {
+            Ok(RestorePointSummary {
+                id: r.get(0)?,
+                connection_id: r.get(1)?,
+                created_at: r.get(2)?,
+                status: enum_from_text(r.get(3)?).unwrap_or(RestoreStatus::Kept),
+                restored_at: r.get(4)?,
+                kind: enum_from_text(r.get(5)?).unwrap_or(RestoreKind::Update),
+                schema: r.get(6)?,
+                table: r.get(7)?,
+                statement: r.get(8)?,
+                row_count: r.get::<_, i64>(9)? as u64,
+                bytes: r.get::<_, i64>(10)? as u64,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Deletes pending restore points: their transaction ended with the app (a crash or a kill),
+    /// so the changes they cover were never committed. Run at startup.
+    pub fn discard_pending_restore_points(&self) -> Result<usize> {
+        Ok(self.lock()?.execute("DELETE FROM restore_points WHERE status = 'pending'", [])?)
+    }
+
+    /// Removes restore points older than `restore.keepDays` (default 7), then the oldest until
+    /// the total size is within `restore.maxTotalMb` (default 1024). Pending points (their
+    /// transaction is still open) are left alone. Returns how many were removed.
+    pub fn purge_restore_points(&self) -> Result<usize> {
+        let days = self.restore_setting("restore.keepDays", 7);
+        let max_bytes = self.restore_setting("restore.maxTotalMb", 1024) * 1024 * 1024;
+        let cutoff = (Utc::now() - chrono::Duration::days(days)).to_rfc3339();
+        let conn = self.lock()?;
+        let mut removed =
+            conn.execute("DELETE FROM restore_points WHERE created_at < ?1 AND status <> 'pending'", [cutoff])?;
+        loop {
+            let total: i64 = conn.query_row("SELECT COALESCE(SUM(bytes), 0) FROM restore_points", [], |r| r.get(0))?;
+            if total <= max_bytes {
+                break;
+            }
+            let n = conn.execute(
+                "DELETE FROM restore_points WHERE id =
+                   (SELECT id FROM restore_points WHERE status <> 'pending' ORDER BY created_at LIMIT 1)",
+                [],
+            )?;
+            if n == 0 {
+                break;
+            }
+            removed += n;
+        }
+        Ok(removed)
+    }
+
     // ---- settings & workspace ----------------------------------------------------
 
     pub fn get_setting(&self, key: &str) -> Result<Option<serde_json::Value>> {
@@ -584,10 +678,183 @@ impl Storage {
     }
 }
 
+fn enum_text<T: Serialize>(v: T) -> String {
+    serde_json::to_value(v).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
+}
+
+fn enum_from_text<T: serde::de::DeserializeOwned>(s: String) -> Option<T> {
+    serde_json::from_value(serde_json::Value::String(s)).ok()
+}
+
+impl RestoreStore for Storage {
+    fn save(&self, p: &RestorePoint) -> Result<()> {
+        self.lock()?.execute(
+            "INSERT INTO restore_points (id, connection_id, created_at, status, restored_at, kind, schema_name,
+                                         table_name, statement, data, row_count, bytes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                p.id,
+                p.connection_id,
+                p.created_at,
+                enum_text(p.status),
+                p.restored_at,
+                enum_text(p.kind),
+                p.schema,
+                p.table,
+                p.statement,
+                serde_json::to_string(&p.data)?,
+                p.row_count as i64,
+                p.bytes as i64
+            ],
+        )?;
+        self.purge_restore_points()?;
+        Ok(())
+    }
+
+    fn get(&self, id: &str) -> Result<RestorePoint> {
+        let conn = self.lock()?;
+        let row = conn
+            .query_row(
+                "SELECT id, connection_id, created_at, status, restored_at, kind, schema_name, table_name, statement,
+                        data, row_count, bytes
+                 FROM restore_points WHERE id = ?1",
+                [id],
+                |r| {
+                    Ok((
+                        RestorePoint {
+                            id: r.get(0)?,
+                            connection_id: r.get(1)?,
+                            created_at: r.get(2)?,
+                            status: enum_from_text(r.get(3)?).unwrap_or(RestoreStatus::Kept),
+                            restored_at: r.get(4)?,
+                            kind: enum_from_text(r.get(5)?).unwrap_or(RestoreKind::Update),
+                            schema: r.get(6)?,
+                            table: r.get(7)?,
+                            statement: r.get(8)?,
+                            data: Default::default(),
+                            row_count: r.get::<_, i64>(10)? as u64,
+                            bytes: r.get::<_, i64>(11)? as u64,
+                        },
+                        r.get::<_, String>(9)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let (mut point, data) = row.ok_or_else(|| AppError::not_found("This restore point no longer exists"))?;
+        point.data = serde_json::from_str(&data)?;
+        Ok(point)
+    }
+
+    fn set_status(&self, ids: &[String], status: RestoreStatus) -> Result<()> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let restored_at = (status == RestoreStatus::Restored).then(now);
+        for id in ids {
+            tx.execute(
+                "UPDATE restore_points SET status = ?2, restored_at = COALESCE(?3, restored_at) WHERE id = ?1",
+                params![id, enum_text(status), restored_at],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn delete(&self, ids: &[String]) -> Result<()> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        for id in ids {
+            tx.execute("DELETE FROM restore_points WHERE id = ?1", [id])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{Driver, parse_connection_url};
+
+    #[test]
+    fn restore_points_are_saved_listed_purged_and_removed_with_the_connection() {
+        use crate::restore::{RestoreData, RestoreKind, RestorePoint, RestoreStatus, RestoreStore};
+        let s = Storage::open_in_memory().unwrap();
+        let p = |id: &str, created: &str, bytes: u64| RestorePoint {
+            id: id.into(),
+            connection_id: "c1".into(),
+            created_at: created.into(),
+            status: RestoreStatus::Kept,
+            restored_at: None,
+            kind: RestoreKind::Update,
+            schema: "public".into(),
+            table: "orders".into(),
+            statement: "UPDATE orders SET a = 1".into(),
+            data: RestoreData {
+                columns: vec!["id".into()],
+                before: vec![vec![Some("1".into())]],
+                ..Default::default()
+            },
+            row_count: 1,
+            bytes,
+        };
+        let now = Utc::now();
+        let recent = (now - chrono::Duration::hours(1)).to_rfc3339();
+        let old = (now - chrono::Duration::days(8)).to_rfc3339();
+        s.save(&p("a", &recent, 10)).unwrap();
+        s.save(&p("old", &old, 10)).unwrap(); // older than 7 days: purged on save
+        let list = s.list_restore_points("c1").unwrap();
+        assert_eq!(list.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(), vec!["a"]);
+        assert_eq!(s.get("a").unwrap().data.before, vec![vec![Some("1".to_string())]]);
+        assert!(s.get("missing").is_err());
+        s.set_status(&["a".into()], RestoreStatus::Restored).unwrap();
+        let a = s.get("a").unwrap();
+        assert_eq!(a.status, RestoreStatus::Restored);
+        assert!(a.restored_at.is_some());
+        // A pending point is never purged by age (its transaction is still open).
+        let mut pending = p("pend", &old, 10);
+        pending.status = RestoreStatus::Pending;
+        s.save(&pending).unwrap();
+        assert!(s.get("pend").is_ok());
+        s.delete(&["pend".into()]).unwrap();
+        assert!(s.get("pend").is_err());
+        // Total size cap: the oldest go first.
+        s.set_setting("restore.maxTotalMb", &serde_json::json!(1)).unwrap();
+        s.save(&p("big1", &(now - chrono::Duration::minutes(30)).to_rfc3339(), 700_000)).unwrap();
+        s.save(&p("big2", &now.to_rfc3339(), 700_000)).unwrap();
+        let ids: Vec<String> = s.list_restore_points("c1").unwrap().into_iter().map(|x| x.id).collect();
+        assert_eq!(ids, vec!["big2".to_string()]);
+        // A shorter keep period applies at the next purge.
+        s.set_setting("restore.keepDays", &serde_json::json!(1)).unwrap();
+        s.save(&p("two_days", &(now - chrono::Duration::days(2)).to_rfc3339(), 1)).unwrap();
+        assert!(s.get("two_days").is_err());
+        s.delete_connection("c1").unwrap();
+        assert!(s.list_restore_points("c1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn pending_restore_points_left_by_a_crash_are_discarded() {
+        use crate::restore::{RestoreData, RestoreKind, RestorePoint, RestoreStatus, RestoreStore};
+        let s = Storage::open_in_memory().unwrap();
+        let p = |id: &str, status| RestorePoint {
+            id: id.into(),
+            connection_id: "c1".into(),
+            created_at: Utc::now().to_rfc3339(),
+            status,
+            restored_at: None,
+            kind: RestoreKind::Update,
+            schema: "public".into(),
+            table: "t".into(),
+            statement: "UPDATE t SET a = 1".into(),
+            data: RestoreData::default(),
+            row_count: 1,
+            bytes: 1,
+        };
+        s.save(&p("kept", RestoreStatus::Kept)).unwrap();
+        s.save(&p("pending", RestoreStatus::Pending)).unwrap();
+        assert_eq!(s.discard_pending_restore_points().unwrap(), 1);
+        assert!(s.get("pending").is_err());
+        assert!(s.get("kept").is_ok());
+    }
 
     #[test]
     fn column_fetch_overrides_are_per_table_and_removed_with_the_connection() {

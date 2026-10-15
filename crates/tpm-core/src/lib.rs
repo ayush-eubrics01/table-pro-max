@@ -17,6 +17,8 @@ pub mod large_values;
 pub mod model;
 pub mod redact;
 pub mod redis_kv;
+pub mod restore;
+pub mod restore_plan;
 pub mod result_edit;
 pub mod result_sql;
 pub mod safety;

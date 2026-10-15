@@ -159,8 +159,14 @@ pub struct ConnectionProfile {
     /// Optional SSH tunnel to reach the database host.
     #[serde(default)]
     pub ssh: Option<crate::ssh::SshConfig>,
+    /// Keep restore points (copies of rows before a change, on this computer). On by default.
+    #[serde(default = "default_true")]
+    pub restore_points: bool,
 }
 
+fn default_true() -> bool {
+    true
+}
 fn default_connect_timeout() -> u64 {
     10
 }
@@ -190,6 +196,7 @@ impl ConnectionProfile {
             query_timeout_secs: 0,
             keepalive_secs: default_keepalive(),
             ssh: None,
+            restore_points: true,
         }
     }
 
@@ -389,6 +396,17 @@ fn file_name(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restore_points_are_on_unless_turned_off() {
+        assert!(ConnectionProfile::new("a", Driver::Postgres).restore_points);
+        let old = r#"{"id":"x","name":"n","driver":"postgres"}"#;
+        let p: ConnectionProfile = serde_json::from_str(old).unwrap();
+        assert!(p.restore_points, "profiles saved before restore points keep them");
+        let off: ConnectionProfile =
+            serde_json::from_str(r#"{"id":"x","name":"n","driver":"postgres","restorePoints":false}"#).unwrap();
+        assert!(!off.restore_points);
+    }
 
     #[test]
     fn parses_postgres_url_with_encoded_credentials() {

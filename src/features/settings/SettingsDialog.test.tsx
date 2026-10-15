@@ -115,4 +115,19 @@ describe("SettingsDialog", () => {
     unmount();
     expect(useSettings.getState().settings["history.maxEntries"]).toBe(DEFAULT_SETTINGS["history.maxEntries"]);
   });
+
+  it("sets how long and how much restore points keep, under Safety", () => {
+    render(<SettingsDialog appInfo={appInfo} onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "Safety" }));
+    expect(screen.getByLabelText("Keep restore points for (days)")).toHaveValue("7");
+    expect(screen.getByLabelText("Most rows in one restore point")).toHaveValue("100000");
+    expect(screen.getByLabelText("Largest restore point (MB)")).toHaveValue("50");
+    const total = screen.getByLabelText("Space for all restore points (MB)");
+    expect(total).toHaveValue("1024");
+    fireEvent.change(total, { target: { value: "5" } });
+    fireEvent.blur(total);
+    expect(useSettings.getState().settings["restore.maxTotalMb"]).toBe(10);
+    expect(saved["restore.maxTotalMb"]).toBe(10);
+  });
 });
+

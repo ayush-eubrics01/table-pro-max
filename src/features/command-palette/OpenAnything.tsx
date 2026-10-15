@@ -3,6 +3,7 @@ import { Icon } from "../../components/Icon";
 import type { ConnectionProfile, DbObject, SavedQuery } from "../../types/backend";
 import { api } from "../../lib/ipc";
 import { useConnections } from "../../stores/connections";
+import { useRestore } from "../../stores/restore";
 import { useWorkspaces } from "../../stores/workspaces";
 import { useUi } from "../../stores/ui";
 import { rank } from "./fuzzy";
@@ -52,6 +53,9 @@ export function OpenAnything({ onConnect }: { onConnect: (p: ConnectionProfile) 
     if (active) {
       out.push({ kind: "action", label: "New query", where: "", run: () => useWorkspaces.getState().openQuery(active.id) });
       out.push({ kind: "action", label: "Reopen closed tab", where: "", run: () => useWorkspaces.getState().reopenClosed(active.id) });
+      // Only where restore points are kept (the panel shows nothing elsewhere).
+      if (active.kind !== "redis" && !active.session.readOnly && active.profile.restorePoints !== false)
+        out.push({ kind: "action", label: "Restore points", where: "", run: () => useRestore.getState().setOpen(true) });
     }
     out.push({ kind: "action", label: "Settings", where: "", run: () => useUi.getState().setSettingsOpen(true) });
     return out;
