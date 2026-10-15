@@ -24,6 +24,20 @@ pub enum Driver {
 }
 
 impl Driver {
+    /// The database's own catalog tables: never edited from the app (results or grid commits).
+    pub fn is_system_table(self, schema: &str, table: &str) -> bool {
+        let schema = schema.to_ascii_lowercase();
+        match self {
+            Driver::Postgres => matches!(schema.as_str(), "pg_catalog" | "information_schema" | "pg_toast"),
+            Driver::Mysql | Driver::Mariadb => {
+                matches!(schema.as_str(), "mysql" | "information_schema" | "performance_schema" | "sys")
+            }
+            Driver::Sqlite => table.to_ascii_lowercase().starts_with("sqlite_"),
+            Driver::Duckdb => matches!(schema.as_str(), "information_schema" | "pg_catalog"),
+            Driver::Redis => false,
+        }
+    }
+
     pub fn dialect(self) -> Dialect {
         match self {
             Driver::Postgres => Dialect::Postgres,
@@ -396,6 +410,25 @@ fn file_name(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_tables_are_recognised_per_engine() {
+        assert!(Driver::Postgres.is_system_table("pg_catalog", "pg_class"));
+        assert!(Driver::Postgres.is_system_table("information_schema", "tables"));
+        assert!(Driver::Postgres.is_system_table("pg_toast", "pg_toast_1234"));
+        assert!(!Driver::Postgres.is_system_table("public", "pg_notes"), "a user table may start with pg_");
+        assert!(!Driver::Postgres.is_system_table("sys", "users"), "sys is an ordinary schema on PostgreSQL");
+        assert!(Driver::Mysql.is_system_table("mysql", "user"));
+        assert!(Driver::Mariadb.is_system_table("performance_schema", "threads"));
+        assert!(Driver::Mysql.is_system_table("sys", "host_summary"));
+        assert!(Driver::Mysql.is_system_table("INFORMATION_SCHEMA", "TABLES"), "MySQL names are case-insensitive");
+        assert!(!Driver::Mysql.is_system_table("shop", "mysql_users"));
+        assert!(Driver::Sqlite.is_system_table("main", "sqlite_sequence"));
+        assert!(Driver::Sqlite.is_system_table("main", "SQLITE_MASTER"));
+        assert!(!Driver::Sqlite.is_system_table("main", "orders"));
+        assert!(Driver::Duckdb.is_system_table("information_schema", "columns"));
+        assert!(!Driver::Duckdb.is_system_table("main", "orders"));
+    }
 
     #[test]
     fn restore_points_are_on_unless_turned_off() {

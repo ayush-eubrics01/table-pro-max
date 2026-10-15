@@ -1006,9 +1006,17 @@ impl Engine {
         use crate::config::Driver;
         let driver = handle.profile.driver;
         if !ok {
-            // PostgreSQL and DuckDB abort the whole transaction on an error: its COMMIT rolls back.
-            if handle.open_txn.load(Ordering::SeqCst) && matches!(driver, Driver::Postgres | Driver::Duckdb) {
-                handle.txn_failed.store(true, Ordering::SeqCst);
+            if matches!(driver, Driver::Postgres | Driver::Duckdb) {
+                if stmt.class == crate::safety::StatementClass::Transaction && txn_end(&stmt.sql) == Some(true) {
+                    // A COMMIT that fails (a deferred constraint, say) ends the transaction and
+                    // rolls it back: its restore points cover changes that never happened.
+                    self.settle_pending(handle, false);
+                    handle.open_txn.store(false, Ordering::SeqCst);
+                    handle.txn_failed.store(false, Ordering::SeqCst);
+                } else if handle.open_txn.load(Ordering::SeqCst) {
+                    // Any other error aborts the whole transaction: its COMMIT will roll back.
+                    handle.txn_failed.store(true, Ordering::SeqCst);
+                }
             }
             return;
         }
@@ -1434,6 +1442,10 @@ impl Engine {
         };
         let mut pre_blocked = Vec::new();
         for (schema, table) in &origins {
+            if driver.is_system_table(schema, table) {
+                pre_blocked.push(((schema.clone(), table.clone()), format!("{table} is a system table")));
+                continue;
+            }
             let reason = match occurrences(&relations, schema, table) {
                 1 => continue,
                 0 => format!("{table} is not named in the query, so its rows cannot be traced"),
@@ -1551,6 +1563,13 @@ impl Engine {
         };
         if handle.open_txn.load(Ordering::SeqCst) {
             return Err(open_txn());
+        }
+        // The database's own catalog: never written from the app, whatever the UI allowed.
+        if let Some(set) = sets.iter().find(|s| handle.profile.driver.is_system_table(&s.schema, &s.table)) {
+            return Err(AppError::new(
+                ErrorKind::PolicyViolation,
+                format!("{}.{} is a system table and can't be edited here", set.schema, set.table),
+            ));
         }
         let dialect = handle.info.dialect;
         let mut statements = Vec::new();
@@ -2417,11 +2436,7 @@ async fn run_captured(
             types: cols.iter().map(|c| c.data_type.clone()).collect(),
             key_columns: st.primary_key().iter().map(|c| c.name.clone()).collect(),
             generated: st.columns.iter().filter(|c| c.generated).map(|c| c.name.clone()).collect(),
-            column_type: plan
-                .column
-                .as_ref()
-                .and_then(|c| st.columns.iter().find(|x| x.name.eq_ignore_ascii_case(c)))
-                .map(|c| c.data_type.clone()),
+            column_type: crate::restore_plan::dropped_column(plan, st).map(|c| c.data_type.clone()),
             ..Default::default()
         },
         bytes: 0,

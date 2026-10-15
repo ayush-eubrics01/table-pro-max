@@ -23,6 +23,8 @@ pub const MULTI: &str = "names more than one table";
 pub const COMBINED: &str = "combines several changes";
 pub const BINARY: &str = "the table has binary columns";
 pub const MERGE: &str = "uses MERGE";
+pub const DROPS_KEY: &str = "drops a primary-key column";
+pub const DROPPED_UNCLEAR: &str = "the dropped column could not be identified";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureKind {
@@ -148,7 +150,13 @@ pub fn plan_statement(sql: &str, dialect: Dialect) -> PlanOutcome {
             match a.operations.as_slice() {
                 [AlterTableOperation::DropColumn { column_names, .. }] if column_names.len() == 1 => {
                     let mut p = new_plan(CaptureKind::DropColumn, table_ref(&a.name));
-                    p.column = Some(column_names[0].value.clone());
+                    let name = &column_names[0];
+                    // PostgreSQL folds unquoted names to lower case; quoted names are exact.
+                    p.column = Some(if name.quote_style.is_none() && dialect == Dialect::Postgres {
+                        name.value.to_lowercase()
+                    } else {
+                        name.value.clone()
+                    });
                     PlanOutcome::Capture(p)
                 }
                 _ => unsupported(COMBINED),
@@ -171,6 +179,13 @@ pub fn structure_reason(plan: &CapturePlan, s: &TableStructure, driver: Driver) 
     let pk: Vec<&str> = s.primary_key().iter().map(|c| c.name.as_str()).collect();
     if matches!(plan.kind, CaptureKind::Update | CaptureKind::DropColumn) && pk.is_empty() {
         return Some(NO_KEY.into());
+    }
+    if plan.kind == CaptureKind::DropColumn {
+        match dropped_column(plan, s) {
+            None => return Some(DROPPED_UNCLEAR.into()),
+            Some(c) if c.primary_key.is_some() => return Some(DROPS_KEY.into()),
+            Some(_) => {}
+        }
     }
     if plan.kind == CaptureKind::Update && plan.set_columns.iter().any(|c| pk.iter().any(|k| k.eq_ignore_ascii_case(c)))
     {
@@ -197,11 +212,27 @@ fn from_sql(plan: &CapturePlan) -> String {
 /// The columns a capture reads, in order: all of them, or for DROP COLUMN the key and the
 /// dropped column.
 pub fn capture_columns<'a>(plan: &CapturePlan, s: &'a TableStructure) -> Vec<&'a ColumnInfo> {
-    match (plan.kind, &plan.column) {
-        (CaptureKind::DropColumn, Some(c)) => {
-            s.columns.iter().filter(|x| x.primary_key.is_some() || x.name.eq_ignore_ascii_case(c)).collect()
+    match plan.kind {
+        CaptureKind::DropColumn => {
+            let dropped = dropped_column(plan, s).map(|c| c.name.as_str());
+            s.columns.iter().filter(|x| x.primary_key.is_some() || Some(x.name.as_str()) == dropped).collect()
         }
         _ => s.columns.iter().collect(),
+    }
+}
+
+/// The column a DROP COLUMN removes: the exact name, or else the one column matching it
+/// case-insensitively (MySQL, SQLite and DuckDB compare names that way). `None` when there is no
+/// such column, or more than one candidate.
+pub fn dropped_column<'a>(plan: &CapturePlan, s: &'a TableStructure) -> Option<&'a ColumnInfo> {
+    let name = plan.column.as_deref()?;
+    if let Some(c) = s.columns.iter().find(|c| c.name == name) {
+        return Some(c);
+    }
+    let mut similar = s.columns.iter().filter(|c| c.name.eq_ignore_ascii_case(name));
+    match (similar.next(), similar.next()) {
+        (Some(c), None) => Some(c),
+        _ => None,
     }
 }
 
@@ -352,6 +383,33 @@ mod tests {
             capture_select(&p, &orders(), Dialect::Postgres, false)
                 .unwrap()
                 .contains("FROM orders AS \"O\" WHERE \"O\".id = 1")
+        );
+    }
+
+    #[test]
+    fn drop_column_matches_the_column_as_the_database_does() {
+        let mut s = orders();
+        s.columns.push(col("Status", "text", None)); // differs from "status" only by case
+        // Quoted: exactly that column.
+        let p = cap("ALTER TABLE orders DROP COLUMN \"Status\"");
+        let cols: Vec<&str> = capture_columns(&p, &s).iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(cols, vec!["id", "Status"]);
+        // Unquoted on PostgreSQL: folded to lower case.
+        let p = cap("ALTER TABLE orders DROP COLUMN Status");
+        let cols: Vec<&str> = capture_columns(&p, &s).iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(cols, vec!["id", "status"]);
+        assert_eq!(dropped_column(&p, &s).map(|c| c.name.as_str()), Some("status"));
+        // Elsewhere names match case-insensitively: with two candidates, the column is unclear.
+        let PlanOutcome::Capture(p) = plan_statement("ALTER TABLE orders DROP COLUMN STATUS", Dialect::Sqlite) else {
+            panic!()
+        };
+        assert_eq!(structure_reason(&p, &s, Driver::Sqlite), Some(DROPPED_UNCLEAR.into()));
+        // One candidate: found whatever the case.
+        assert_eq!(dropped_column(&p, &orders()).map(|c| c.name.as_str()), Some("status"));
+        // Dropping a key column: rows could no longer be found by key.
+        assert_eq!(
+            structure_reason(&cap("ALTER TABLE orders DROP COLUMN id"), &orders(), Driver::Postgres),
+            Some(DROPS_KEY.into())
         );
     }
 
