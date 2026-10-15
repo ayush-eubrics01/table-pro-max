@@ -72,7 +72,7 @@ describe("editable results", () => {
     mockIPC((cmd, args) => {
       calls.push({ cmd, args });
       if (cmd === "preview_change_sets") return { sql: "UPDATE …", statementCount: 1, atomic: true };
-      if (cmd === "apply_change_sets") return [1];
+      if (cmd === "apply_change_sets") return { counts: [1], restore: [{ pointId: "p1" }] };
       return null;
     });
   });
@@ -80,6 +80,7 @@ describe("editable results", () => {
   const scriptOf = (st: StatementResult): ScriptResult => ({ taskId: "t", statements: [st], cancelled: false, durationMs: 1 });
 
   it("edits a cell, reviews and commits through apply_change_sets", async () => {
+    const before = useRestore.getState().version;
     const onDirty = vi.fn();
     render(<ResultsPanel result={scriptOf(editable)} running={false} dialect="postgres" session={session} onDirtyChange={onDirty} />);
     fireEvent.doubleClick(screen.getByText("ada@example.com").closest(".grid-cell")!);
@@ -94,7 +95,7 @@ describe("editable results", () => {
     const sets = (calls.find((c) => c.cmd === "apply_change_sets")!.args as { sets: unknown[] }).sets;
     expect(sets).toHaveLength(1);
     expect(await screen.findByText(/Shows values from when the query ran, plus your edits/)).toBeInTheDocument();
-    expect(screen.getByText("new@example.com")).toBeInTheDocument();
+    expect(screen.getByText("new@example.com")).toBeInTheDocument();    expect(useRestore.getState().version).toBeGreaterThan(before);
   });
 
   it("explains read-only cells and never edits them", () => {

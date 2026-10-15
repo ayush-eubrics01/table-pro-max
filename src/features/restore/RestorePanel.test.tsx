@@ -193,5 +193,14 @@ describe("RestorePanel", () => {
     await screen.findByRole("region", { name: "Restore point" });
     expect(screen.getByRole("button", { name: "Restore all" })).toBeDisabled();
   });
+
+  it("loads a point once while it stays open, whatever the parent re-renders", async () => {
+    const { rerender } = render(<RestorePanel session={session} onClose={() => {}} />);
+    await openPoint();
+    rerender(<RestorePanel session={session} onClose={() => {}} />);
+    rerender(<RestorePanel session={session} onClose={() => {}} />);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(calls.filter(([c]) => c === "get_restore_point")).toHaveLength(1);
+  });
 });
 

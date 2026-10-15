@@ -18,6 +18,7 @@ import type {
   BrowseRequest,
   BrowseResult,
   ChangePreview,
+  ApplyResult,
   RestorePoint,
   RestorePointSummary,
   ChangeSet,
@@ -169,9 +170,9 @@ export const api = {
   previewChanges: (sessionId: string, changes: ChangeSet) =>
     call<ChangePreview>("preview_changes", { sessionId, changes }),
   applyChanges: (sessionId: string, changes: ChangeSet) =>
-    call<number[]>("apply_changes", { sessionId, changes, confirmed: true }),
+    call<ApplyResult>("apply_changes", { sessionId, changes, confirmed: true }),
   previewChangeSets: (sessionId: string, sets: ChangeSet[]) => call<ChangePreview>("preview_change_sets", { sessionId, sets }),
-  applyChangeSets: (sessionId: string, sets: ChangeSet[]) => call<number[]>("apply_change_sets", { sessionId, sets, confirmed: true }),
+  applyChangeSets: (sessionId: string, sets: ChangeSet[]) => call<ApplyResult>("apply_change_sets", { sessionId, sets, confirmed: true }),
   // Restore points: `rows` are indexes into the point's rows, null for all of them.
   listRestorePoints: (connectionId: string) => call<RestorePointSummary[]>("list_restore_points", { connectionId }),
   getRestorePoint: (id: string) => call<RestorePoint>("get_restore_point", { id }),

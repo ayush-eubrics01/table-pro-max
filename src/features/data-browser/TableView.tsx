@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
 import type { BrowseResult, Cell, ColumnFetch, FetchMode, SessionInfo, SortSpec, TableStructure } from "../../types/backend";
 import { api, toError, type BackendError } from "../../lib/ipc";
+import { committedMessage, useRestore } from "../../stores/restore";
 import { cellCopy, cellParam, isBinary, isJsonType, isLargeText, isNotLoaded, toTsv } from "../../lib/cells";
 import { formatCount, formatDuration, pluralize, uid } from "../../lib/text";
 import { confirmAction, notify, notifyError } from "../../stores/ui";
@@ -416,9 +417,11 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
   const commit = async () => {
     if (!structure) return;
     const set = buildChangeSet(pending, rows, structure.columns, schema, table, checkConflicts);
-    const counts = await api.applyChanges(session.sessionId, set);
+    const r = await api.applyChanges(session.sessionId, set);
     setReview(null);
-    notify(`Committed ${pluralize(counts.length, "change")}`, "success");
+    useRestore.getState().bump();
+    const missed = r.restore.some((n) => n.reason);
+    notify(committedMessage(`Committed ${pluralize(r.counts.length, "change")}`, r.restore), missed ? "info" : "success");
     setTotal(null);
     await load();
   };

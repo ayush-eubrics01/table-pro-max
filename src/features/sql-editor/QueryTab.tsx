@@ -235,7 +235,8 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
       resultIds.current = r.statements.flatMap((x) => (x.resultId ? [x.resultId] : []));
       lastRun.current = { mode, target };
       setResult(r);
-      if (r.statements.some((x) => x.restore?.pointId)) useRestore.getState().bump();
+      // Any run can add restore points, or settle pending ones (COMMIT, ROLLBACK, MySQL DDL).
+      useRestore.getState().bump();
       const failed = r.statements.find((x) => x.error && x.error.kind !== "cancelled");
       if (failed) markError(text, failed);
     } catch (e) {
