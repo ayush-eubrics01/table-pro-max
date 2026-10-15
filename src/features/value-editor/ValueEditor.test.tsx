@@ -10,8 +10,18 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-function setText(text: string) {
-  const view = EditorView.findFromDOM(document.querySelector(".value-editor .cm-editor") as HTMLElement)!;
+/** The code editor, once mounted: it is created in an effect after the value loads, so it can
+ * appear a moment after "Valid JSON" does (under load, CI caught the gap). */
+function editor(): Promise<EditorView> {
+  return waitFor(() => {
+    const el = document.querySelector(".value-editor .cm-editor");
+    expect(el).not.toBeNull();
+    return EditorView.findFromDOM(el as HTMLElement)!;
+  });
+}
+
+async function setText(text: string) {
+  const view = await editor();
   act(() => view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } }));
 }
 
@@ -20,10 +30,10 @@ describe("ValueEditor", () => {
     const onSave = vi.fn();
     render(<ValueEditor title="orders · payload · id = 1" typeName="jsonb" mode="json" load={async () => '{"a":1}'} readOnlyReason={null} nullable onSave={onSave} onClose={() => {}} />);
     expect(await screen.findByText("Valid JSON")).toBeInTheDocument();
-    setText('{"a": }');
+    await setText('{"a": }');
     expect(await screen.findByText(/^Invalid JSON: line 1, column 7/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-    setText('{"a": 2}');
+    await setText('{"a": 2}');
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(onSave).toHaveBeenCalledWith('{"a": 2}');
   });
@@ -32,6 +42,7 @@ describe("ValueEditor", () => {
     const onSave = vi.fn();
     render(<ValueEditor title="t" typeName="json" mode="json" load={async () => '{"n":1.0}'} readOnlyReason={null} nullable onSave={onSave} onClose={() => {}} />);
     await screen.findByText("Valid JSON");
+    await editor();
     fireEvent.click(screen.getByRole("button", { name: "Format" }));
     expect(document.querySelector(".value-editor .cm-content")!.textContent).toContain('"n": 1.0');
     fireEvent.click(screen.getByRole("button", { name: "Set NULL" }));
@@ -71,7 +82,7 @@ describe("ValueEditor", () => {
       </>,
     );
     await waitFor(() => expect(document.querySelector(".value-editor .cm-content")).not.toBeNull());
-    setText("b");
+    await setText("b");
     fireEvent.keyDown(window, { key: "Escape" });
     expect(await screen.findByText("Discard your changes to this value?")).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
