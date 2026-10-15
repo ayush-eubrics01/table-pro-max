@@ -164,6 +164,26 @@ describe("editable results", () => {
     expect(screen.getByText("1 pending change")).toBeInTheDocument();
   });
 
+  it("offers Run again when the result is no longer in memory", async () => {
+    const st: StatementResult = { ...editable, rows: [["1", { $partial: "y".repeat(80), length: 1000 }, "2"]], totalRows: 1 };
+    mockIPC((cmd) => {
+      if (cmd === "result_value") throw { kind: "not_found", message: "This result is no longer in memory; run the query again" };
+      return null;
+    });
+    const onRunAgain = vi.fn();
+    render(
+      <>
+        <ResultsPanel result={scriptOf(st)} running={false} dialect="postgres" session={session} onRunAgain={onRunAgain} />
+        <Overlays />
+      </>,
+    );
+    fireEvent.doubleClick(screen.getByText("1,000 chars").closest(".grid-cell")!);
+    expect(await screen.findByText(/no longer in memory/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Run again" }));
+    expect(onRunAgain).toHaveBeenCalled();
+  });
+
   it("opens a previewed value from memory and edits it with the full original", async () => {
     const big = "y".repeat(1000);
     const st: StatementResult = {

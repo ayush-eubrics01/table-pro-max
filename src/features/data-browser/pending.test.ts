@@ -80,6 +80,12 @@ describe("pending changes", () => {
     expect(set.changes[0]!.type).toBe("delete");
   });
 
+  it("refuses to build a change whose original was never loaded (its conflict check would be skipped)", () => {
+    const placeholder: Cell[][] = [["1", "ada", { $notLoaded: true }]];
+    const p = { ...EMPTY_PENDING, edits: { 0: { 2: "new" } } };
+    expect(() => buildChangeSet(p, placeholder, columns, "public", "people", true)).toThrow(/not loaded/);
+  });
+
   it("refuses to change rows without a primary key", () => {
     const noPk = columns.map((c) => ({ ...c, primaryKey: null }));
     const p = editCell(EMPTY_PENDING, rows, 0, 1, "x");

@@ -186,5 +186,20 @@ describe("DataGrid", () => {
     rerender(grid(columns.map((c) => ({ ...c, name: `${c.name}_2` })))); // a new result
     expect(screen.getByText("DRAFT").closest(".grid-cell")).toHaveAttribute("aria-selected", "false");
   });
+
+  it("typing on a cell that opens in an editor (JSON, long text) opens it instead of editing inline", () => {
+    const onOpenCell = vi.fn((_r: number, c: number) => c === 1); // column 1 needs the editor
+    render(
+      <DataGrid ariaLabel="Rows" columns={columns} rowCount={rows.length} getRow={(i) => rows[i]} sort={[]} onEdit={() => {}} canEdit={() => true} onOpenCell={onOpenCell} />,
+    );
+    fireEvent.mouseDown(screen.getByText("DRAFT").closest(".grid-cell")!, { button: 0, buttons: 1 });
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "x" });
+    expect(onOpenCell).toHaveBeenCalledWith(0, 1, "open");
+    expect(screen.queryByLabelText("Edit status")).not.toBeInTheDocument();
+    // Other cells still start an inline edit with the typed character.
+    fireEvent.mouseDown(screen.getByText("7").closest(".grid-cell")!, { button: 0, buttons: 1 });
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "9" });
+    expect(screen.getByLabelText("Edit owner_id")).toHaveValue("9");
+  });
 });
 

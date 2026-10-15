@@ -265,7 +265,9 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
         return value as Cell | undefined;
       })
       .catch((e) => {
-        notifyError(e, "Could not load the value");
+        const err = toError(e);
+        if (err.kind === "not_found") notify(`${err.message}. Refresh to see the current rows.`, "error");
+        else notifyError(e, "Could not load the value");
         return undefined;
       })
       .finally(() => {
@@ -282,6 +284,15 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
 
   const needsEditor = (col: number, cell: Cell | undefined) => isJsonType(columns[col]?.dataType ?? "") || isLargeText(cell, largeValueChars);
 
+  const [editAfterLoad, setEditAfterLoad] = useState<{ row: number; col: number } | null>(null);
+  useEffect(() => {
+    if (!editAfterLoad) return;
+    const v = rows[editAfterLoad.row]?.[editAfterLoad.col];
+    if (v === undefined || isNotLoaded(v)) return;
+    gridRef.current?.startEdit(editAfterLoad);
+    setEditAfterLoad(null);
+  }, [editAfterLoad, rows]);
+
   const onOpenCell = (row: number, col: number, how: "click" | "open") => {
     if (row >= rows.length) return false; // new rows edit inline
     const cell = getRow(row)?.[col];
@@ -289,7 +300,8 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
       void loadCell(row, col).then((v) => {
         if (v === undefined) return;
         if (needsEditor(col, v)) setEditorAt({ row, col });
-        else if (how === "open") gridRef.current?.startEdit({ row, col });
+        // Edit once the loaded value is on screen (the grid and canEdit see it after a render).
+        else if (how === "open") setEditAfterLoad({ row, col });
       });
       return true;
     }
@@ -397,10 +409,32 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
     setPending((p) => toggleDelete(p, rows, sel.rows));
   };
 
-  const setNull = (sel: GridSelection) => {
-    let p = pending;
-    for (const r of sel.rows) for (const c of sel.cols) if (canEdit(r, c)) p = editCell(p, rows, r, c, null);
-    setPending(p);
+  /** Cells "Set to NULL" applies to: editable ones, and Not loaded ones (loaded first). */
+  const nullable = (sel: GridSelection) => {
+    const out: CellPos[] = [];
+    for (const r of sel.rows)
+      for (const c of sel.cols) {
+        const v = rows[r]?.[c];
+        if (canEdit(r, c) || (r < rows.length && v !== undefined && isNotLoaded(v) && canEditRow(r))) out.push({ row: r, col: c });
+      }
+    return out;
+  };
+  const setNull = async (sel: GridSelection) => {
+    const cells = nullable(sel);
+    // Not loaded values are fetched first, so each change keeps its real original (the conflict check).
+    const unloaded = cells.filter((p) => isNotLoaded(rows[p.row]?.[p.col] ?? null));
+    let current = rows;
+    if (unloaded.length) {
+      try {
+        const values = await fetchCells(unloaded, true);
+        current = rows.map((r) => [...r]);
+        unloaded.forEach((p, i) => (current[p.row]![p.col] = values[i]!));
+      } catch (e) {
+        notifyError(e, "Could not set NULL");
+        return;
+      }
+    }
+    setPending((p0) => cells.reduce((p, pos) => editCell(p, current, pos.row, pos.col, null), p0));
   };
 
   const openReview = async () => {
@@ -492,7 +526,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
             .catch((e) => notifyError(e, "Could not copy")),
       },
       "separator" as const,
-      { label: "Set to NULL", onSelect: () => setNull(sel), disabled: !sel.rows.some((r) => sel.cols.some((c) => canEdit(r, c))) },
+      { label: "Set to NULL", onSelect: () => void setNull(sel), disabled: nullable(sel).length === 0 },
       {
         label: "Duplicate row",
         onSelect: () => first !== undefined && duplicateRow(first),

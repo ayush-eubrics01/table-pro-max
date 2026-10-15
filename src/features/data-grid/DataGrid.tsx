@@ -282,9 +282,9 @@ export function DataGrid(props: DataGridProps) {
       selectCell: (pos) => select(pos),
       copySelection,
       getSelection: () => selection,
-      startEdit: (pos) => startEdit(pos),
+      // Through a ref: the handle outlives renders, and must see the cells as they are now.
+      startEdit: (pos) => startEditRef.current(pos),
     }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- startEdit reads current state when called
     [select, copySelection, selection],
   );
 
@@ -295,6 +295,9 @@ export function DataGrid(props: DataGridProps) {
     if (isLargeText(cell, largeValueChars)) return; // long text opens in the value editor
     setEditing({ pos, value: initial ?? cell ?? "" });
   };
+
+  const startEditRef = useRef(startEdit);
+  startEditRef.current = startEdit;
 
   const commitEdit = (move?: "down" | "right" | "left") => {
     if (!editing) return;
@@ -381,6 +384,9 @@ export function DataGrid(props: DataGridProps) {
       default:
         if (e.key.length === 1 && !mod && !e.altKey && cur.col >= 0 && canEdit?.(cur.row, cur.col)) {
           e.preventDefault();
+          // Cells that open in an editor (JSON, long text, Not loaded) never edit inline: typing
+          // would skip the editor's checks (JSON is validated there).
+          if (onOpenCell?.(cur.row, cur.col, "open")) return;
           startEdit(cur, e.key);
         }
         return;

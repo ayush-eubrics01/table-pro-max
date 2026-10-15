@@ -31,7 +31,10 @@ function ResultGrid({
   onValueAt,
   links,
   onOpenTable,
+  onRunAgain,
 }: {
+  /** Repeats the run (an evicted result can only be read again that way). */
+  onRunAgain?: () => void;
   st: StatementResult;
   editable: boolean;
   edits: ResultEdits;
@@ -169,6 +172,17 @@ function ResultGrid({
           return displayCell(edits, applied, st, fullRow.current, valueAt.col);
         }}
         readOnlyReason={valueReason}
+        recover={(kind) =>
+          kind === "not_found" && onRunAgain
+            ? {
+                label: "Run again",
+                run: () => {
+                  onValueAt(null);
+                  onRunAgain();
+                },
+              }
+            : null
+        }
         nullable
         onSave={(v) => {
           if (fullRow.current) onEdit(fullRow.current, valueAt.col, v);
@@ -379,6 +393,7 @@ export function ResultsPanel({
                 onValueAt={setValueAt}
                 links={fkByColumn}
                 onOpenTable={onOpenTable}
+                onRunAgain={onRunAgain}
               />
               {nCur === 0 && nOther > 0 && otherTab !== undefined && (
                 <div className="commit-bar" role="region" aria-label="Pending changes">
