@@ -661,6 +661,12 @@ export interface RestorePoint extends RestorePointSummary {
   data: RestoreData;
 }
 
+/** A commit of grid edits: rows affected per statement, and per table whether a restore point was kept. */
+export interface ApplyResult {
+  counts: number[];
+  restore: RestoreNote[];
+}
+
 /** Whether a statement kept a restore point, or why not. */
 export interface RestoreNote {
   pointId?: string;

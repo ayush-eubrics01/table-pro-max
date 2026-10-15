@@ -567,7 +567,7 @@ async fn exercise(t: Target) {
     fk_round_trip(&engine, &sid, &t.schema, driver).await;
     restore_points(&engine, &sid, &t.schema, driver, &profile, t.password.as_deref()).await;
     restore_point_edges(&engine, &sid, driver).await;
-    restore_point_restores(&engine, &sid, driver).await;
+    restore_point_restores(&engine, &sid, &t.schema, driver).await;
 
     // --- cleanup ---
     run(&engine, &sid, "DROP TABLE tpm_it_items; DROP TABLE tpm_it_owners").await;
@@ -947,7 +947,7 @@ async fn restore_point_edges(engine: &Arc<Engine>, sid: &str, driver: Driver) {
 
 /// Restoring real-world tables: dropped tables with indexes and sequences, tables without a key,
 /// generated and identity columns, columns SQL can't compare, and points still pending.
-async fn restore_point_restores(engine: &Arc<Engine>, sid: &str, driver: Driver) {
+async fn restore_point_restores(engine: &Arc<Engine>, sid: &str, schema: &str, driver: Driver) {
     use tpm_core::restore::RestoreStore;
     let store = Arc::new(tpm_core::storage::Storage::open_in_memory().unwrap());
     engine.set_restore_store(store.clone());
@@ -978,6 +978,31 @@ async fn restore_point_restores(engine: &Arc<Engine>, sid: &str, driver: Driver)
         assert_eq!(text(&r[0][0]), "3", "the sequence continues after the restored rows");
     }
     run(engine, sid, "DROP TABLE tpm_it_rpd").await;
+
+    // A grid commit says, per table, whether it kept a restore point and why not.
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rpk").await;
+    run(engine, sid, "CREATE TABLE tpm_it_rpk (id integer PRIMARY KEY, qty integer)").await;
+    run(engine, sid, "INSERT INTO tpm_it_rpk VALUES (1, 1), (2, 2)").await;
+    let edit = |id: &str, column: &str, value: &str, original: &str| ChangeSet {
+        schema: schema.into(),
+        table: "tpm_it_rpk".into(),
+        changes: vec![RowChange::Update {
+            key: vec![ColumnValue { column: "id".into(), value: Some(id.into()) }],
+            edits: vec![ColumnEdit {
+                column: column.into(),
+                value: EditValue::Value { value: Some(value.into()) },
+                original: Some(Some(original.into())),
+            }],
+        }],
+        check_conflicts: true,
+    };
+    let r = engine.apply_change_sets_noted(sid, &[edit("1", "qty", "5", "1")], true).await.unwrap();
+    assert_eq!(r.counts, vec![1]);
+    assert!(r.restore.len() == 1 && r.restore[0].point_id.is_some(), "{driver:?}: {:?}", r.restore);
+    let r = engine.apply_change_sets_noted(sid, &[edit("2", "id", "20", "2")], true).await.unwrap();
+    assert_eq!(r.restore.len(), 1, "{driver:?}");
+    assert_eq!(r.restore[0].reason.as_deref(), Some("changes the primary key"), "{driver:?}");
+    run(engine, sid, "DROP TABLE tpm_it_rpk").await;
 
     // A table without a key: rows come back all at once, and only once.
     run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rpn").await;

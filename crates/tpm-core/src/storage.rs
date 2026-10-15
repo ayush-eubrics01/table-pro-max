@@ -688,6 +688,14 @@ fn enum_from_text<T: serde::de::DeserializeOwned>(s: String) -> Option<T> {
 
 impl RestoreStore for Storage {
     fn save(&self, p: &RestorePoint) -> Result<()> {
+        // A point bigger than the space for all of them would be purged at once: don't keep it.
+        let total_mb = self.restore_setting("restore.maxTotalMb", 1024);
+        if p.bytes as i64 > total_mb * 1024 * 1024 {
+            return Err(AppError::invalid_config(format!(
+                "it is larger than the space for all restore points ({total_mb} MB)"
+            ))
+            .with_code("restore_too_large"));
+        }
         self.lock()?.execute(
             "INSERT INTO restore_points (id, connection_id, created_at, status, restored_at, kind, schema_name,
                                          table_name, statement, data, row_count, bytes)
@@ -829,6 +837,33 @@ mod tests {
         assert!(s.get("two_days").is_err());
         s.delete_connection("c1").unwrap();
         assert!(s.list_restore_points("c1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_restore_point_larger_than_all_the_space_is_not_kept() {
+        use crate::restore::{RestoreData, RestoreKind, RestorePoint, RestoreStatus, RestoreStore};
+        let s = Storage::open_in_memory().unwrap();
+        s.set_setting("restore.maxTotalMb", &serde_json::json!(1)).unwrap();
+        let p = |id: &str, bytes: u64| RestorePoint {
+            id: id.into(),
+            connection_id: "c1".into(),
+            created_at: Utc::now().to_rfc3339(),
+            status: RestoreStatus::Kept,
+            restored_at: None,
+            kind: RestoreKind::Update,
+            schema: "public".into(),
+            table: "t".into(),
+            statement: "UPDATE t SET a = 1".into(),
+            data: RestoreData::default(),
+            row_count: 1,
+            bytes,
+        };
+        s.save(&p("small", 10)).unwrap();
+        let err = s.save(&p("huge", 2 * 1024 * 1024)).unwrap_err();
+        assert_eq!(err.code.as_deref(), Some("restore_too_large"));
+        assert!(err.message.contains("1 MB"), "{}", err.message);
+        assert!(s.get("huge").is_err());
+        assert!(s.get("small").is_ok(), "the others stay");
     }
 
     #[test]

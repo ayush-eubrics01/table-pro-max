@@ -167,7 +167,9 @@ describe("followed references", () => {
 });
 
 describe("restore points", () => {
+  let withPoint = true;
   it("a run that keeps a restore point refreshes the panel, which opens beside the tabs", async () => {
+    withPoint = true;
     const runArgs: Record<string, unknown>[] = [];
     mockIPC((cmd, args) => {
       if (cmd === "connect") return session;
@@ -178,7 +180,7 @@ describe("restore points", () => {
           taskId: "t",
           cancelled: false,
           durationMs: 1,
-          statements: [{ index: 0, sql: "delete from users where id = 1", start: 0, end: 30, durationMs: 1, truncated: false, rowsAffected: 1, restore: { pointId: "p1" } }],
+          statements: [{ index: 0, sql: "delete from users where id = 1", start: 0, end: 30, durationMs: 1, truncated: false, rowsAffected: 1, ...(withPoint ? { restore: { pointId: "p1" } } : {}) }],
         };
       }
       return cmd.startsWith("list_") || cmd.startsWith("search_") ? [] : null;
@@ -193,4 +195,20 @@ describe("restore points", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open restore points" }));
     expect(await screen.findByRole("complementary", { name: "Restore points" })).toBeInTheDocument();
   });
+
+  it("any run refreshes restore points (a COMMIT or ROLLBACK may settle pending ones)", async () => {
+    withPoint = false;
+    mockIPC((cmd) => {
+      if (cmd === "connect") return session;
+      if (cmd === "statement_at_cursor") return { sql: "commit", start: 0, end: 6 };
+      if (cmd === "run_query")
+        return { taskId: "t", cancelled: false, durationMs: 1, statements: [{ index: 0, sql: "commit", start: 0, end: 6, durationMs: 1, truncated: false, rowsAffected: 0 }] };
+      return cmd.startsWith("list_") || cmd.startsWith("search_") ? [] : null;
+    });
+    useRestore.setState({ open: false, version: 0 });
+    renderWs(ws({ kind: "query", id: "q10", title: "Query 10", sql: "commit", savedQueryId: null, dirty: false }));
+    fireEvent.click(screen.getByRole("button", { name: /Run all/ }));
+    await waitFor(() => expect(useRestore.getState().version).toBeGreaterThan(0));
+  });
 });
+

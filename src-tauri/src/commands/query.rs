@@ -9,7 +9,7 @@ use tpm_core::changes::{ChangeSet, ColumnValue};
 use tpm_core::ddl::{AlterOp, CreateTableRequest, build_alter, build_create_table};
 use tpm_core::dialect::Dialect;
 use tpm_core::engine::{
-    BrowseResult, ChangePreview, ExplainResult, FetchedCell, RunOptions, ScriptResult, StatementResult,
+    ApplyResult, BrowseResult, ChangePreview, ExplainResult, FetchedCell, RunOptions, ScriptResult, StatementResult,
 };
 use tpm_core::error::Result;
 use tpm_core::filter::FilterNode;
@@ -191,8 +191,8 @@ pub async fn apply_changes(
     session_id: String,
     changes: ChangeSet,
     confirmed: bool,
-) -> Result<Vec<u64>> {
-    let r = state.engine.apply_changes(&session_id, &changes, confirmed).await;
+) -> Result<ApplyResult> {
+    let r = state.engine.apply_change_sets_noted(&session_id, std::slice::from_ref(&changes), confirmed).await;
     tracing::info!(session = %session_id, ok = r.is_ok(), count = changes.changes.len(), "applied grid changes");
     r
 }
@@ -212,8 +212,8 @@ pub async fn apply_change_sets(
     session_id: String,
     sets: Vec<ChangeSet>,
     confirmed: bool,
-) -> Result<Vec<u64>> {
-    let r = state.engine.apply_change_sets(&session_id, &sets, confirmed).await;
+) -> Result<ApplyResult> {
+    let r = state.engine.apply_change_sets_noted(&session_id, &sets, confirmed).await;
     tracing::info!(session = %session_id, ok = r.is_ok(), tables = sets.len(), "applied result changes");
     r
 }

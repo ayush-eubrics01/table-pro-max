@@ -217,7 +217,7 @@ export function SettingsDialog({ appInfo, onClose }: { appInfo: AppInfo | null; 
                 hint="Before an UPDATE, DELETE, TRUNCATE or DROP changes rows, a copy of them is kept on this computer (not encrypted). Turn it off per connection under Safety & timeouts."
               />
               <NumberField label="Most rows in one restore point" k="restore.maxRows" min={1} max={10000000} hint="A statement that changes more rows asks before running without one." />
-              <NumberField label="Largest restore point (MB)" k="restore.maxMb" min={1} max={10000} />
+              <NumberField label="Largest restore point (MB)" k="restore.maxMb" min={1} max={Math.min(10000, settings["restore.maxTotalMb"])} hint="At most the space for all restore points." />
               <NumberField label="Space for all restore points (MB)" k="restore.maxTotalMb" min={10} max={100000} hint="When full, the oldest restore points are removed first." />
             </>
           )}

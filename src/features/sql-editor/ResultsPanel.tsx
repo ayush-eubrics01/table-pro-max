@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
-import { useRestore } from "../../stores/restore";
+import { committedMessage, useRestore } from "../../stores/restore";
 import type { Cell, ColumnInfo, Dialect, ScriptResult, SessionInfo, StatementResult, TableStructure } from "../../types/backend";
 import { api } from "../../lib/ipc";
 import { formatCount, formatDuration, pluralize } from "../../lib/text";
@@ -299,13 +299,15 @@ export function ResultsPanel({
 
   const commit = async () => {
     if (!current || !session) return;
-    await api.applyChangeSets(session.sessionId, buildResultChangeSets(current, curEdits));
+    const r = await api.applyChangeSets(session.sessionId, buildResultChangeSets(current, curEdits));
+    useRestore.getState().bump();
     const now: Record<string, string | null> = { ...curApplied };
     for (const [id, e] of Object.entries(curEdits)) now[id] = e.value;
     setApplied((all) => ({ ...all, [ti]: now }));
     setEdits((all) => ({ ...all, [ti]: {} }));
     setReview(null);
-    notify(`Committed ${pluralize(nCur, "change")}`, "success");
+    const missed = r.restore.some((n) => n.reason);
+    notify(committedMessage(`Committed ${pluralize(nCur, "change")}`, r.restore), missed ? "info" : "success");
   };
 
   const detailColumns: ColumnInfo[] = (current?.columns ?? []).map((c) => ({

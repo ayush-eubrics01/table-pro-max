@@ -93,11 +93,14 @@ export const useSettings = create<SettingsState>((set, get) => ({
     }
   },
   set: async (key, value) => {
-    const settings = { ...get().settings, [key]: value };
+    // One restore point can't be larger than the space for all of them.
+    const lowerMax = key === "restore.maxTotalMb" && get().settings["restore.maxMb"] > (value as number);
+    const settings = { ...get().settings, [key]: value, ...(lowerMax ? { "restore.maxMb": value as number } : {}) };
     set({ settings });
     if (key === "theme") applyTheme(value as Settings["theme"]);
     try {
       await api.setSetting(key, value);
+      if (lowerMax) await api.setSetting("restore.maxMb", value);
     } catch (e) {
       notifyError(e, "Setting was not saved");
     }

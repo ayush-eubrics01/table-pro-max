@@ -129,5 +129,19 @@ describe("SettingsDialog", () => {
     expect(useSettings.getState().settings["restore.maxTotalMb"]).toBe(10);
     expect(saved["restore.maxTotalMb"]).toBe(10);
   });
+
+  it("keeps one restore point within the space for all of them", () => {
+    render(<SettingsDialog appInfo={appInfo} onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "Safety" }));
+    const one = screen.getByLabelText("Largest restore point (MB)");
+    fireEvent.change(one, { target: { value: "5000" } });
+    fireEvent.blur(one);
+    expect(useSettings.getState().settings["restore.maxMb"]).toBe(1024);
+    const all = screen.getByLabelText("Space for all restore points (MB)");
+    fireEvent.change(all, { target: { value: "30" } });
+    fireEvent.blur(all);
+    expect(useSettings.getState().settings["restore.maxTotalMb"]).toBe(30);
+    expect(useSettings.getState().settings["restore.maxMb"]).toBe(30);
+  });
 });
 

@@ -6,9 +6,12 @@ import type { ChangeSet, TableStructure } from "../../types/backend";
 import { session, usersStructure } from "../../test/fixtures";
 import { TableView } from "./TableView";
 import { Overlays } from "../../components/Overlays";
+import { useRestore } from "../../stores/restore";
+import { useUi } from "../../stores/ui";
 
 let calls: { cmd: string; args: Record<string, unknown> }[] = [];
 let structure: TableStructure = usersStructure;
+let applyRestore: { pointId?: string; reason?: string }[] = [];
 let rows = [
   ["1", "ada@example.com", "36"],
   ["2", "grace@example.com", null],
@@ -16,6 +19,8 @@ let rows = [
 
 beforeEach(() => {
   calls = [];
+  applyRestore = [];
+  useUi.setState({ toasts: [] });
   structure = usersStructure;
   rows = [
     ["1", "ada@example.com", "36"],
@@ -31,7 +36,7 @@ beforeEach(() => {
       case "preview_changes":
         return { sql: "UPDATE \"public\".\"users\" SET \"email\" = 'new@example.com' …;", statementCount: 1, atomic: true };
       case "apply_changes":
-        return [1];
+        return { counts: [1], restore: applyRestore };
       case "list_filter_presets":
         return [];
       default:
@@ -122,6 +127,19 @@ describe("TableView", () => {
     expect(screen.getByTitle("This connection is read-only")).toHaveTextContent("Read-only");
   });
 
+  it("says when a commit kept no restore point, and refreshes the restore points", async () => {
+    applyRestore = [{ reason: "changes the primary key" }];
+    const before = useRestore.getState().version;
+    renderView();
+    const editor = await openEditor("ada@example.com");
+    fireEvent.change(editor, { target: { value: "new@example.com" } });
+    fireEvent.keyDown(editor, { key: "Enter" });
+    fireEvent.click(await screen.findByRole("button", { name: "Review and commit" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Commit changes" }));
+    await waitFor(() => expect(useUi.getState().toasts.map((t) => t.message)).toContain("Committed 1 change. No restore point: changes the primary key"));
+    expect(useRestore.getState().version).toBeGreaterThan(before);
+  });
+
   it("shows the access pill, and pending changes in a floating bar", async () => {
     renderView();
     expect(await screen.findByText("Writable")).toBeInTheDocument();
@@ -209,7 +227,7 @@ describe("large values in opened tables", () => {
         case "preview_changes":
           return { sql: "UPDATE …", statementCount: 1, atomic: true };
         case "apply_changes":
-          return [1];
+          return { counts: [1], restore: [] };
         default:
           return null;
       }

@@ -216,6 +216,15 @@ pub struct StatementResult {
     pub restore: Option<RestoreNote>,
 }
 
+/// A commit of grid edits: rows affected per statement, and per table whether a restore point
+/// was kept (or why not). `restore` is empty when restore points are off.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyResult {
+    pub counts: Vec<u64>,
+    pub restore: Vec<RestoreNote>,
+}
+
 /// What a statement's run says about its restore point (shown in Messages).
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1066,7 +1075,14 @@ impl Engine {
                 }
                 Some(RestoreNote { point_id: Some(point.id), reason: None })
             }
-            Err(e) => Some(RestoreNote { point_id: None, reason: Some(format!("could not be saved: {}", e.message)) }),
+            Err(e) => {
+                let reason = if e.code.as_deref() == Some("restore_too_large") {
+                    e.message
+                } else {
+                    format!("could not be saved: {}", e.message)
+                };
+                Some(RestoreNote { point_id: None, reason: Some(reason) })
+            }
         }
     }
 
@@ -1494,6 +1510,16 @@ impl Engine {
 
     /// Commits edits to one or more tables (e.g. from a joined query result) in one transaction.
     pub async fn apply_change_sets(&self, session_id: &str, sets: &[ChangeSet], confirmed: bool) -> Result<Vec<u64>> {
+        Ok(self.apply_change_sets_noted(session_id, sets, confirmed).await?.counts)
+    }
+
+    /// `apply_change_sets`, also saying per table whether a restore point was kept, or why not.
+    pub async fn apply_change_sets_noted(
+        &self,
+        session_id: &str,
+        sets: &[ChangeSet],
+        confirmed: bool,
+    ) -> Result<ApplyResult> {
         self.apply_change_sets_as(session_id, sets, confirmed, crate::restore::RestoreKind::GridEdit, None, false).await
     }
 
@@ -1508,7 +1534,7 @@ impl Engine {
         kind: crate::restore::RestoreKind,
         statement: Option<String>,
         override_identity: bool,
-    ) -> Result<Vec<u64>> {
+    ) -> Result<ApplyResult> {
         let handle = self.handle(session_id)?;
         if handle.profile.read_only() {
             return Err(AppError::new(ErrorKind::PolicyViolation, "This connection is read-only"));
@@ -1529,13 +1555,21 @@ impl Engine {
         let dialect = handle.info.dialect;
         let mut statements = Vec::new();
         let mut grid_captures = Vec::new();
+        let mut notes = Vec::new();
         let capture = self.restore_enabled(&handle) && handle.info.capabilities.transactions;
         for set in sets {
             let structure = self.table_structure(session_id, &set.schema, &set.table, true).await?;
             let set_statements = crate::changes::build_statements_with(dialect, &structure, set, override_identity)?;
-            if capture && let Some(gc) = grid_capture(dialect, handle.profile.driver, &structure, set, &set_statements)?
-            {
-                grid_captures.push(GridCapture { statement: statement.clone().unwrap_or(gc.statement.clone()), ..gc });
+            if capture {
+                match grid_capture(dialect, handle.profile.driver, &structure, set, &set_statements)? {
+                    GridPlan::Capture(gc) => {
+                        let gc = *gc;
+                        grid_captures
+                            .push(GridCapture { statement: statement.clone().unwrap_or(gc.statement.clone()), ..gc });
+                    }
+                    GridPlan::Skip(reason) => notes.push(RestoreNote { point_id: None, reason: Some(reason) }),
+                    GridPlan::Nothing => {}
+                }
             }
             statements.extend(set_statements);
         }
@@ -1555,9 +1589,9 @@ impl Engine {
             .await?;
         for c in captured {
             let statement = c.statement.clone();
-            let _ = self.keep_restore_point(&handle, &statement, Captured { kind, ..c.captured });
+            notes.extend(self.keep_restore_point(&handle, &statement, Captured { kind, ..c.captured }));
         }
-        Ok(counts)
+        Ok(ApplyResult { counts, restore: notes })
     }
 
     /// The point, and the DDL and change sets that restore it (`rows`: indexes into its rows).
@@ -1793,6 +1827,7 @@ impl Engine {
                     e
                 }
             })?
+            .counts
         };
         if !actions.after.is_empty() {
             self.apply_ddl(session_id, &actions.after, true).await?;
@@ -2544,26 +2579,39 @@ struct GridCapture {
     captured: Captured,
 }
 
-/// Plans the restore point of a grid commit to one table: `None` when there is nothing to keep
-/// (inserts only) or it can't be kept (a key edited, or binary columns off PostgreSQL).
+/// A grid commit's restore point for one table, planned before it runs.
+enum GridPlan {
+    Capture(Box<GridCapture>),
+    /// It can't be kept; the commit says why.
+    Skip(String),
+    /// Nothing to keep (inserts only).
+    Nothing,
+}
+
+/// Plans the restore point of a grid commit to one table: nothing for inserts only, a reason when
+/// it can't be kept (no key, a key edited, binary columns off PostgreSQL).
 fn grid_capture(
     dialect: Dialect,
     driver: crate::config::Driver,
     s: &TableStructure,
     set: &ChangeSet,
     statements: &[ParamStatement],
-) -> Result<Option<GridCapture>> {
+) -> Result<GridPlan> {
     use crate::changes::RowChange;
+    use crate::restore_plan::{BINARY, CHANGES_KEY, NO_KEY, has_binary_columns};
     let pk: Vec<String> = s.primary_key().iter().map(|c| c.name.clone()).collect();
-    if pk.is_empty() || crate::restore_plan::has_binary_columns(s, driver) {
-        return Ok(None);
+    if pk.is_empty() {
+        return Ok(GridPlan::Skip(NO_KEY.into()));
+    }
+    if has_binary_columns(s, driver) {
+        return Ok(GridPlan::Skip(BINARY.into()));
     }
     let (mut updated, mut deleted) = (Vec::new(), Vec::new());
     for c in &set.changes {
         match c {
             RowChange::Update { key, edits } => {
                 if edits.iter().any(|e| pk.contains(&e.column)) {
-                    return Ok(None);
+                    return Ok(GridPlan::Skip(CHANGES_KEY.into()));
                 }
                 updated.push(key.clone());
             }
@@ -2572,9 +2620,9 @@ fn grid_capture(
         }
     }
     if updated.is_empty() && deleted.is_empty() {
-        return Ok(None);
+        return Ok(GridPlan::Nothing);
     }
-    Ok(Some(GridCapture {
+    Ok(GridPlan::Capture(Box::new(GridCapture {
         statement: preview(dialect, statements),
         structure: s.clone(),
         dialect,
@@ -2595,7 +2643,7 @@ fn grid_capture(
             pending: false,
             dropped: None,
         },
-    }))
+    })))
 }
 
 /// Reads every column of the rows with these keys, keyed by their key values.
@@ -2640,9 +2688,13 @@ async fn apply_captured(
                 let _ = s.rollback().await;
                 return Err(e);
             }
-            Err(_) => {
+            Err(e) => {
                 s.rollback().await?;
-                return Ok((s.apply(statements, true).await?, vec![]));
+                let counts = s.apply(statements, true).await?;
+                for c in caps.iter_mut() {
+                    c.captured.dropped = Some(format!("could not read the rows: {}", e.message));
+                }
+                return Ok((counts, caps));
             }
         }
     }
@@ -2679,7 +2731,6 @@ async fn apply_captured(
         let _ = s.rollback().await;
         return Err(e);
     }
-    caps.retain(|c| c.captured.dropped.is_none() && !c.captured.data.before.is_empty());
     Ok((counts, caps))
 }
 

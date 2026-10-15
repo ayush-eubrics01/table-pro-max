@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
 import { ReviewChangesDialog } from "../data-browser/ReviewChangesDialog";
 import { api } from "../../lib/ipc";
@@ -122,15 +122,18 @@ function PointDetail({
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [review, setReview] = useState<Review | null>(null);
 
+  // The parent passes a new onBack each render; loading must depend on the point only.
+  const onBackRef = useRef(onBack);
+  onBackRef.current = onBack;
   const load = useCallback(() => {
     api
       .getRestorePoint(id)
       .then(setPoint)
       .catch((e) => {
         notifyError(e, "Could not open the restore point");
-        onBack();
+        onBackRef.current();
       });
-  }, [id, onBack]);
+  }, [id]);
   useEffect(load, [load]);
 
   if (!point) return <p className="detail-empty">Loading…</p>;
