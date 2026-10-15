@@ -390,6 +390,13 @@ impl Session for SqliteSession {
         .await
     }
 
+    /// The engine's transactions read and then write (restore-point captures, grid commits), so
+    /// take the write lock up front: a deferred BEGIN can fail on its first write with
+    /// SQLITE_BUSY_SNAPSHOT when another connection wrote after our read.
+    async fn begin(&mut self) -> Result<()> {
+        self.execute("BEGIN IMMEDIATE", 1).await.map(|_| ())
+    }
+
     async fn execute(&mut self, sql: &str, max_rows: usize) -> Result<Vec<StatementOutcome>> {
         let sql = sql.to_string();
         self.with_conn(move |c| {

@@ -1024,9 +1024,12 @@ async fn restore_point_restores(engine: &Arc<Engine>, sid: &str, schema: &str, d
     run(engine, sid, "DROP TABLE tpm_it_rpn").await;
 
     // Generated columns (and PostgreSQL identity columns) are left to the database.
-    if driver != Driver::Duckdb {
+    {
         run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rpg").await;
         let ddl = match driver {
+            Driver::Duckdb => {
+                "CREATE TABLE tpm_it_rpg (id integer PRIMARY KEY, qty integer, total integer GENERATED ALWAYS AS (qty * 2) VIRTUAL)"
+            }
             Driver::Postgres => {
                 "CREATE TABLE tpm_it_rpg (id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY, qty integer, total integer GENERATED ALWAYS AS (qty * 2) STORED)"
             }
@@ -1038,6 +1041,10 @@ async fn restore_point_restores(engine: &Arc<Engine>, sid: &str, schema: &str, d
             }
         };
         run(engine, sid, ddl).await;
+        let st = engine.table_structure(sid, schema, "tpm_it_rpg", true).await.unwrap();
+        let total = st.columns.iter().find(|c| c.name == "total").unwrap();
+        assert!(total.generated, "{driver:?}: {total:?}");
+        assert!(!st.columns.iter().find(|c| c.name == "qty").unwrap().generated, "{driver:?}");
         if driver == Driver::Postgres {
             run(engine, sid, "INSERT INTO tpm_it_rpg (qty) VALUES (1), (2)").await;
         } else {
@@ -1800,6 +1807,27 @@ async fn sqlite_open_rules() {
     let mut s = adapters::connect(&p, None, &ConnectOptions::default()).await.unwrap();
     let out = s.execute("CREATE TABLE t (x)", 10).await.unwrap();
     assert!(matches!(out[0], StatementOutcome::Affected { .. }));
+}
+
+/// The engine's own SQLite transactions (restore-point captures, grid commits, imports) read and
+/// then write, so they take the write lock up front: a deferred BEGIN can fail on its first write
+/// with SQLITE_BUSY_SNAPSHOT when another connection wrote in between (WAL mode).
+#[tokio::test(flavor = "multi_thread")]
+async fn sqlite_begin_takes_the_write_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("lock.db");
+    adapters::sqlite::create_database_file(path.to_str().unwrap()).unwrap();
+    let other = rusqlite::Connection::open(&path).unwrap();
+    other.busy_timeout(Duration::ZERO).unwrap();
+    other.execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE t (x)").unwrap();
+    let mut p = ConnectionProfile::new("x", Driver::Sqlite);
+    p.file_path = Some(path.to_string_lossy().into_owned());
+    let mut s = adapters::connect(&p, None, &ConnectOptions::default()).await.unwrap();
+    s.begin().await.unwrap();
+    let err = other.execute("INSERT INTO t VALUES (1)", []).expect_err("another writer must wait for us");
+    assert_eq!(err.sqlite_error_code(), Some(rusqlite::ErrorCode::DatabaseBusy), "{err}");
+    s.rollback().await.unwrap();
+    other.execute("INSERT INTO t VALUES (1)", []).unwrap();
 }
 
 /// SSH tunnel to PostgreSQL through the disposable bastion from `scripts/test-db.sh`.
