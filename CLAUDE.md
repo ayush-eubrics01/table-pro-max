@@ -29,6 +29,17 @@ Rust core. Read `docs/ARCHITECTURE.md` and `docs/FEATURE_MATRIX.md` before chang
 - PR titles become the commit on `main`: `type: what changed`. Never use `[skip ci]`.
 - Versions are set only with `node scripts/bump-version.mjs X.Y.Z`.
 
+## Planning files (`.scratchpad/`, git-ignored, never committed)
+- `.scratchpad/roadmap.md`: the current roadmap, the work in progress, in order. Work top to
+  bottom. A bug found in something on the roadmap is fixed as part of the roadmap.
+- `.scratchpad/tasks.md`: everything else to pick from, with stable IDs. Feedback from any source
+  (the maintainer, users, reviews, CI) goes under **Feedback** with its source, the date and a
+  simple example of what is needed.
+- When every roadmap item is done: release the next minor version (`0.x.0`), delete
+  `roadmap.md`, write the next roadmap with the items the maintainer picks from `tasks.md`, and
+  update `tasks.md` (picked items move out, done items go under Done).
+- Tick items as they finish, naming the PR. Keep both files current; they are the plan of record.
+
 ## Releasing a version (when asked to "release X.Y.Z")
 Full detail: `CONTRIBUTING.md` (Releasing) and `docs/RELEASING.md` (checklist, signing key).
 1. Branch `chore/release-X.Y.Z` from `main`, run `node scripts/bump-version.mjs X.Y.Z`, write

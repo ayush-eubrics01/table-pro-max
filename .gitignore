@@ -11,3 +11,6 @@
 # Python bytecode (scripts/dev)
 __pycache__/
 *.pyc
+
+# Local planning files (roadmap and task list; see CLAUDE.md)
+/.scratchpad/
