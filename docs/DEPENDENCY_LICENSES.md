@@ -31,6 +31,7 @@ check the npm packages' `license` fields before each release.
 | russh (ring backend) | 0.64 | Apache-2.0 | github.com/warp-tech/russh | SSH tunnels |
 | reqwest (rustls, no default provider) | 0.13 | MIT OR Apache-2.0 | github.com/seanmonstar/reqwest | HTTPS client for optional AI |
 | redis | 1.7 | BSD-3-Clause | github.com/redis-rs/redis-rs | Redis client |
+| tiberius (rustls, tds73, chrono) | 0.13 | MIT OR Apache-2.0 | github.com/prisma/tiberius | SQL Server driver |
 | duckdb (bundled engine) | 1.10506 | MIT (DuckDB: MIT) | github.com/duckdb/duckdb-rs | DuckDB driver |
 | hex, bytes, futures-util | — | MIT / MIT OR Apache-2.0 | — | Utilities |
 
@@ -41,6 +42,9 @@ check the npm packages' `license` fields before each release.
 * **CDLA-Permissive-2.0**: `webpki-roots` (Mozilla root certificates, used by mysql_async).
 * **Unicode-3.0**: ICU data crates (`idna`).
 * `r-efi` offers MIT OR Apache-2.0 OR LGPL; we use it under MIT/Apache.
+* `aws-lc-rs` / `aws-lc-sys` (ISC, Apache-2.0, MIT, BSD-3-Clause): built because tiberius's
+  rustls support enables tokio-rustls's default provider. The app installs ring as the process's
+  rustls provider, so AWS-LC is compiled in but not used for connections.
 
 ## JavaScript (runtime dependencies)
 

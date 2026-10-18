@@ -36,8 +36,17 @@ For PostgreSQL 16, MySQL 8.4, MariaDB 11.4 and SQLite, the same `exercise` funct
 
 A driver whose URL variable is unset prints `BLOCKED: …` and is skipped. It is never
 reported as passing. Tests use only the `tpm_test` database in disposable containers
-(`tpm-test-*`, tmpfs storage, ports 55432/53306/53307). **Never point these variables at a
+(`tpm-test-*`, tmpfs storage, ports 55432/53306/53307/51433). **Never point these variables at a
 real database.**
+
+SQL Server has a flow of its own (`sql_server`, `TPM_TEST_MSSQL_URL`), because its batches,
+types and paging differ: discovery, batches with variables and `GO`, error positions, browse
+and filters, grid edits with conflicts and rollback, both row-cap paths, cancel and timeout,
+user transactions, read-only (a raw session keeps no write), connection loss, query parameters,
+column origins, every common type rendered and bound back equal, restore points with identity
+values and a dropped table, and the shared export/import round trip. Its container,
+`tpm-test-mssql`, runs SQL Server 2022 Developer edition (free for development and testing;
+starting it accepts Microsoft's licence for that use).
 
 ## Driving the real app (Linux, manual)
 WebKitGTK has no packaged WebDriver on the development machine, so the desktop app is checked

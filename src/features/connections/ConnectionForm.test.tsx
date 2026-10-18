@@ -95,6 +95,16 @@ describe("ConnectionForm", () => {
     expect(screen.getByText("Database number (0–15)")).toBeInTheDocument();
   });
 
+  it("SQL Server takes port 1433 and explains its sign-in and TLS", () => {
+    render(<ConnectionForm appInfo={appInfo(true)} onClose={() => undefined} onSaved={() => undefined} />);
+    fireEvent.click(screen.getByRole("radio", { name: /SQL Server/ }));
+    expect(screen.getByDisplayValue("1433")).toBeInTheDocument();
+    expect(screen.getByText(/Sign in with a SQL Server login/)).toBeInTheDocument();
+    expect(screen.getByText(/SQL Server always encrypts the sign-in/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: /PostgreSQL/ }));
+    expect(screen.queryByText(/Sign in with a SQL Server login/)).not.toBeInTheDocument();
+  });
+
   it("sets the environment with the colour chips and warns for an unguarded production connection", () => {
     render(<ConnectionForm appInfo={appInfo(true)} onClose={() => undefined} onSaved={() => undefined} />);
     fireEvent.click(screen.getByRole("radio", { name: "Production" }));

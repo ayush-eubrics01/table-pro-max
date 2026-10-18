@@ -159,7 +159,7 @@ export function Home({ appInfo, onConnect, connecting }: Props) {
 
         {connections.length === 0 && (
           <div className="empty" style={{ height: "auto", padding: 48 }}>
-            <p>Add a PostgreSQL, MySQL, MariaDB, SQLite, DuckDB or Redis connection to get started.</p>
+            <p>Add a PostgreSQL, MySQL, MariaDB, SQL Server, SQLite, DuckDB or Redis connection to get started.</p>
             <p className="hint">
               Connections, history and saved queries stay on this computer.{" "}
               {appInfo && !appInfo.credentialStoreAvailable ? "Passwords are asked for each time you connect." : "Passwords go to your system keychain."}

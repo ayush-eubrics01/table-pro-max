@@ -1,6 +1,6 @@
 import { memo, useMemo } from "react";
 import { highlightCode, tagHighlighter, tags as t } from "@lezer/highlight";
-import { MySQL, PostgreSQL, SQLite } from "@codemirror/lang-sql";
+import { MSSQL, MySQL, PostgreSQL, SQLite } from "@codemirror/lang-sql";
 import type { Dialect } from "../types/backend";
 
 const highlighter = tagHighlighter([
@@ -12,7 +12,7 @@ const highlighter = tagHighlighter([
 ]);
 
 function language(d: Dialect) {
-  return (d === "postgres" ? PostgreSQL : d === "sqlite" ? SQLite : MySQL).language;
+  return (d === "postgres" ? PostgreSQL : d === "sqlite" ? SQLite : d === "mssql" ? MSSQL : MySQL).language;
 }
 
 type Segment = { text: string; cls: string };

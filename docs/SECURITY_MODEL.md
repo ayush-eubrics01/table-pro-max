@@ -38,6 +38,14 @@ databases themselves.
   read-only connection, use a role that only has `SELECT`.
 * **MySQL read-only** uses `SET SESSION TRANSACTION READ ONLY`, which does not cover temporary
   tables or some administrative statements.
+* **SQL Server read-only** has no session setting to rely on: each batch runs inside a
+  transaction that is always rolled back, behind the analyzer, which allows only reads (no
+  procedure calls or dynamic SQL). Effects outside the transaction log are not undone (a
+  sequence's `NEXT VALUE FOR`, for instance). For a guaranteed read-only connection, use a login
+  whose only rights are `db_datareader`.
+* **SQL Server sign-in is always encrypted**, but with TLS set to Disable the server's
+  certificate is not checked and the rest of the traffic is plaintext. Prefer and Require
+  verify the certificate.
 * **Restore points hold table data on disk.** They are copies of changed rows in the app
   database, unencrypted, readable by anyone who can read the user's files, for up to 7 days by
   default (Settings › Safety). Turn them off per connection where that is not acceptable.

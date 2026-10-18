@@ -2,7 +2,7 @@ import { useEffect, useImperativeHandle, useRef, type Ref } from "react";
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, Decoration, type DecorationSet } from "@codemirror/view";
 import { Compartment, EditorState, StateEffect, StateField, Prec } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
-import { sql, PostgreSQL, MySQL, SQLite, MariaSQL, type SQLNamespace } from "@codemirror/lang-sql";
+import { sql, PostgreSQL, MySQL, SQLite, MariaSQL, MSSQL, type SQLNamespace } from "@codemirror/lang-sql";
 import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap, closeCompletion } from "@codemirror/autocomplete";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { syntaxHighlighting, bracketMatching, indentOnInput, HighlightStyle } from "@codemirror/language";
@@ -97,6 +97,7 @@ const theme = EditorView.theme(EDITOR_THEME);
 function dialectFor(d: Dialect, mariadb?: boolean) {
   if (d === "postgres") return PostgreSQL;
   if (d === "sqlite") return SQLite;
+  if (d === "mssql") return MSSQL;
   return mariadb ? MariaSQL : MySQL;
 }
 

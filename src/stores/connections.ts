@@ -47,7 +47,7 @@ export function newProfile(driver: ConnectionProfile["driver"] = "postgres"): Co
     name: "",
     driver,
     host: sqlite ? "" : "localhost",
-    port: driver === "postgres" ? 5432 : driver === "redis" ? 6379 : sqlite ? null : 3306,
+    port: driver === "postgres" ? 5432 : driver === "redis" ? 6379 : driver === "mssql" ? 1433 : sqlite ? null : 3306,
     user: "",
     database: "",
     filePath: null,

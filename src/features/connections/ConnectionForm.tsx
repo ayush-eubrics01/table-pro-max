@@ -335,6 +335,9 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
               <input className="input mono" value={p.database} onChange={(e) => set({ database: e.target.value })} spellCheck={false} />
             </label>
           </div>
+          {p.driver === "mssql" && (
+            <p className="hint">Sign in with a SQL Server login. Windows and Microsoft Entra sign-in aren't supported yet. For a named instance, use its TCP port.</p>
+          )}
           <div className="field-row">
             <label className="field">
               <span>Password</span>
@@ -380,6 +383,11 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
               </div>
             </label>
           </div>
+          {p.driver === "mssql" && (
+            <p className="hint">
+              SQL Server always encrypts the sign-in. Prefer and Require both verify the certificate: for a self-signed one, choose its CA certificate or skip verification. Disable leaves the rest of the traffic unencrypted.
+            </p>
+          )}
           {p.tls.mode === "require_insecure" && (
             <div className="notice notice-warning">Traffic is encrypted, but the server's identity is not checked. Anyone able to intercept the connection could impersonate the server.</div>
           )}

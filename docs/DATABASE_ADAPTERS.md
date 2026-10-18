@@ -16,19 +16,19 @@ Every driver implements `tpm_core::adapters::Session` (`crates/tpm-core/src/adap
 
 ## Capability matrix
 
-| | PostgreSQL | MySQL | MariaDB | SQLite | DuckDB |
-|---|---|---|---|---|---|
-| Multiple databases per server (switch by reconnect) | yes | no (schemas = databases) | no | no (attached DBs as schemas) | no |
-| Schemas | yes | yes (databases) | yes | `main` + attached | yes |
-| Cancellation | protocol cancel | `KILL QUERY` | `KILL QUERY` | `sqlite3_interrupt` | `duckdb_interrupt` |
-| Transactions for grid edits | yes | yes (InnoDB) | yes | yes | yes |
-| Transactional DDL | yes | no | no | yes | yes |
-| EXPLAIN | JSON (VERBOSE) | `FORMAT=JSON` | `FORMAT=JSON` | `EXPLAIN QUERY PLAN` | not yet |
-| EXPLAIN ANALYZE | JSON + BUFFERS | tree (8.0.18+) | not offered | no | not yet |
-| Materialized views | yes | no | no | no | no |
-| Routines listed | functions, procedures | yes | yes | no | no |
-| Sequences | yes | no | yes | no | yes |
-| Read-only enforcement | `default_transaction_read_only=on` | `SET SESSION TRANSACTION READ ONLY` | same | `SQLITE_OPEN_READ_ONLY` + `query_only` | `access_mode=READ_ONLY` or per-statement `BEGIN TRANSACTION READ ONLY` |
+| | PostgreSQL | MySQL | MariaDB | SQLite | DuckDB | SQL Server |
+|---|---|---|---|---|---|---|
+| Multiple databases per server (switch by reconnect) | yes | no (schemas = databases) | no | no (attached DBs as schemas) | no | yes |
+| Schemas | yes | yes (databases) | yes | `main` + attached | yes | yes (`dbo` first) |
+| Cancellation | protocol cancel | `KILL QUERY` | `KILL QUERY` | `sqlite3_interrupt` | `duckdb_interrupt` | TDS attention (reconnects when the driver can't settle it) |
+| Transactions for grid edits | yes | yes (InnoDB) | yes | yes | yes | yes |
+| Transactional DDL | yes | no | no | yes | yes | yes |
+| EXPLAIN | JSON (VERBOSE) | `FORMAT=JSON` | `FORMAT=JSON` | `EXPLAIN QUERY PLAN` | not yet | not yet |
+| EXPLAIN ANALYZE | JSON + BUFFERS | tree (8.0.18+) | not offered | no | not yet | not yet |
+| Materialized views | yes | no | no | no | no | no |
+| Routines listed | functions, procedures | yes | yes | no | no | functions, procedures |
+| Sequences | yes | no | yes | no | yes | yes |
+| Read-only enforcement | `default_transaction_read_only=on` | `SET SESSION TRANSACTION READ ONLY` | same | `SQLITE_OPEN_READ_ONLY` + `query_only` | `access_mode=READ_ONLY` or per-statement `BEGIN TRANSACTION READ ONLY` | every batch in a transaction that is rolled back |
 
 ## PostgreSQL (`adapters/postgres.rs`)
 * Requires PostgreSQL 10+ (identity columns, `pg_sequences`). Functions are listed with
@@ -121,14 +121,54 @@ Committing edits refuses to run while the tab has an open transaction (its BEGIN
 the user's). PostgreSQL and SQLite check this exactly, MariaDB through `@@in_transaction`; MySQL
 checks `@@autocommit`, and the engine also tracks the `BEGIN`/`COMMIT`/`ROLLBACK` the user runs.
 
-## SQL Server (evaluated, not implemented)
-* `tiberius` (MIT/Apache-2.0) is a maintained async TDS client with rustls support and
-  `QueryStream` result streaming. Gaps to handle: no built-in cancel API (would need an
-  `ATTENTION` packet or a `KILL` from a second connection), and Windows integrated auth
-  (`winauth`/Kerberos) is only partially supported.
-* Plan: a `Dialect::Mssql` (bracket quoting, `@P1` parameters, `OFFSET … FETCH`), introspection
-  through `sys.*` catalog views, and read-only via `ApplicationIntent=ReadOnly` plus a
-  `db_datareader` role recommendation.
+## SQL Server (`adapters/mssql.rs`)
+* Built on `tiberius` 0.13 (TDS 7.3, rustls). Tested against SQL Server 2022; the catalog queries
+  use nothing newer than SQL Server 2016. Azure SQL is untested: its gateway redirect is followed
+  and the product name comes from `SERVERPROPERTY('EngineEdition')`. Sign-in with SQL Server
+  logins only: Windows (Kerberos, NTLM) and Microsoft Entra sign-in are not supported yet. Named
+  instances need their TCP port (no SQL Browser lookup).
+* Connections: `sqlserver://` / `mssql://` URLs and ADO.NET strings (`Server=tcp:host,port;…`).
+  TLS: the sign-in is always encrypted. Disable = sign-in only (certificate not checked);
+  Prefer = Require = everything encrypted and the certificate verified; "skip verification" for
+  self-signed servers. tiberius builds AWS-LC through tokio-rustls's defaults, but the app installs
+  ring as rustls's process provider, which tiberius uses.
+* Scripts run as batches separated by `GO` lines, as in SSMS, so `DECLARE`d variables, `IF … BEGIN
+  … END` blocks and procedure bodies work. Ctrl+Enter runs the top-level `;`-statement at the
+  cursor within its batch, keeping blocks and procedure bodies whole. The safety analyzer reads a
+  batch with sqlparser's T-SQL dialect; when it can't parse it, each statement is judged by every
+  destructive keyword it contains.
+* Values: rendered by the adapter as SSMS shows them (`datetime` to the millisecond, `datetime2`,
+  `time` and `datetimeoffset` with their declared digits, `money` with four decimals, `bit` as
+  1/0, GUIDs upper-case, binary as bytes). Each rendering converts back to the same value when
+  bound as a parameter, which conflict checks and query parameters rely on (integration test).
+  `money` arrives from the driver as a float: exact below about 900 billion.
+* Parameters: `sp_executesql` with `@P1…`, always as `nvarchar`. Statements without values run
+  as plain batches (a transaction opened inside `sp_executesql` is refused). A batch with
+  parameters runs inside `sp_executesql`, so #temp tables it creates end with it.
+* Row cap: a plain `SELECT` runs under `SET ROWCOUNT cap+1`, so the server stops; any other batch
+  past the cap is stopped with the attention signal. tiberius 0.13.0 does not wait for the
+  server's acknowledgement when it comes in a separate message (prisma/tiberius#459, fix in #460),
+  so after a cancel the connection is reopened: #temp tables, variables and an open transaction
+  are lost, and the cancel message says so.
+* Read-only: each batch runs as `BEGIN TRANSACTION; … ; ROLLBACK`, on top of the analyzer, which
+  refuses everything but reads (procedure calls and dynamic SQL included). Effects outside the
+  database's transaction log (a sequence's `NEXT VALUE FOR`, mail) are not undone; for full
+  protection use a login with read-only rights (`db_datareader`). `ApplicationIntent=ReadOnly`
+  is sent too, which routes to a readable secondary where there is one.
+* Introspection from `sys.*`: columns with declared types, identity, computed columns (the
+  expression stands in for the default), defaults, MS_Description comments; indexes (filtered,
+  INCLUDE), unique and check constraints, foreign keys, triggers. Table DDL is generated (SQL
+  Server has no SHOW CREATE TABLE); views and routines come from `OBJECT_DEFINITION`. Query
+  result columns are described with `sys.dm_exec_describe_first_result_set` in browse mode, so
+  results from one table can be edited.
+* Restore points: rows are read under `UPDLOCK, HOLDLOCK` (TRUNCATE/DROP lock the table with
+  `TABLOCKX`); restores re-insert identity values under `SET IDENTITY_INSERT`, and a dropped table
+  comes back with its identity seed and step. Tables with binary columns get none, as on MySQL.
+  The engine asks `@@TRANCOUNT` after each batch to follow the user's transactions.
+* Not yet: query plans (`SHOWPLAN_XML`), Windows/Entra sign-in, named-instance lookup,
+  `DROP DEFAULT` from the structure editor (defaults are named constraints: drop them by name).
+* Tests: `scripts/test-db.sh` starts `tpm-test-mssql` (SQL Server 2022 Developer edition, free for
+  development and testing; starting it accepts Microsoft's licence for that use).
 
 ## Adding a driver
 1. Implement `Session` in `adapters/<name>.rs` and add a `Driver` variant and dialect mapping.

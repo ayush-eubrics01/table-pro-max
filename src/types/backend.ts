@@ -1,8 +1,8 @@
 // Types mirroring the Rust IPC contract (crates/tpm-core and src-tauri/src/commands).
 // Keep in sync with the serde representations on the Rust side.
 
-export type Driver = "postgres" | "mysql" | "mariadb" | "sqlite" | "duckdb" | "redis";
-export type Dialect = "postgres" | "mysql" | "sqlite";
+export type Driver = "postgres" | "mysql" | "mariadb" | "sqlite" | "duckdb" | "redis" | "mssql";
+export type Dialect = "postgres" | "mysql" | "sqlite" | "mssql";
 export type Environment = "local" | "development" | "testing" | "staging" | "production";
 export type SafetyMode = "normal" | "confirm_destructive" | "confirm_writes" | "read_only";
 export type TlsMode = "disable" | "prefer" | "require" | "require_insecure";
@@ -124,7 +124,7 @@ export interface ServerInfo {
 export interface Capabilities {
   multipleDatabases: boolean;
   schemas: boolean;
-  cancel: "native" | "kill_query" | "interrupt";
+  cancel: "native" | "kill_query" | "interrupt" | "attention";
   transactions: boolean;
   transactionalDdl: boolean;
   explain: boolean;
