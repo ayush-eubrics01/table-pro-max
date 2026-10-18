@@ -20,6 +20,7 @@ use crate::model::{
 
 #[cfg(feature = "duckdb")]
 pub mod duckdb;
+pub mod mssql;
 pub mod mysql;
 pub mod postgres;
 pub mod sqlite;
@@ -143,6 +144,7 @@ pub async fn connect(
         #[cfg(not(feature = "duckdb"))]
         Driver::Duckdb => Err(crate::AppError::unsupported("This build does not include DuckDB support")),
         Driver::Redis => Err(crate::AppError::unsupported("Redis connections use the key browser, not SQL sessions")),
+        Driver::Mssql => Ok(Box::new(mssql::MsSession::connect(profile, password, options).await?)),
     }
 }
 

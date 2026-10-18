@@ -813,7 +813,11 @@ impl Engine {
                 if want_origins && let Ok(outcomes) = &mut res {
                     origins_reported = self.add_origins(&handle, &run_sql, outcomes).await;
                 }
-                self.track_transaction(&handle, stmt, res.is_ok());
+                if handle.profile.driver == crate::config::Driver::Mssql {
+                    self.sync_transaction(&handle, stmt, res.is_ok()).await;
+                } else {
+                    self.track_transaction(&handle, stmt, res.is_ok());
+                }
                 if stmt.class == crate::safety::StatementClass::Session
                     || stmt.class >= crate::safety::StatementClass::Ddl
                 {
@@ -1005,6 +1009,21 @@ impl Engine {
                 let rs = self.restore_read(handle, sql.into(), params, 1).await?;
                 Ok(first(&rs, 0).zip(first(&rs, 1)))
             }
+            // The name as written, resolved as the server does (default schema, [quotes]); a
+            // table in another database is not one this session can read back.
+            Driver::Mssql => {
+                let rs = self
+                    .restore_read(
+                        handle,
+                        "SELECT OBJECT_SCHEMA_NAME(OBJECT_ID(@P1, 'U')), OBJECT_NAME(OBJECT_ID(@P1, 'U')) \
+                         WHERE PARSENAME(@P1, 3) IS NULL"
+                            .into(),
+                        vec![Some(t.sql.clone())],
+                        1,
+                    )
+                    .await?;
+                Ok(first(&rs, 0).zip(first(&rs, 1)))
+            }
             _ => {
                 let schema = match &t.schema {
                     Some(s) => s.clone(),
@@ -1170,6 +1189,23 @@ impl Engine {
             self.settle_pending(handle, true);
             handle.open_txn.store(false, Ordering::SeqCst);
         }
+    }
+
+    /// SQL Server: a batch mixes transaction control with other statements, and XACT_ABORT can
+    /// end a transaction on an error, so the server says whether one is open after each batch.
+    /// One that ended is taken as committed unless the batch failed or its last word on it was
+    /// ROLLBACK.
+    async fn sync_transaction(&self, handle: &Arc<SessionHandle>, stmt: &crate::safety::StatementAnalysis, ok: bool) {
+        let open =
+            self.with_session(&handle.info.session_id, |s| Box::pin(async move { s.in_transaction().await })).await;
+        let Ok(now) = open else { return };
+        let was = handle.open_txn.swap(now, Ordering::SeqCst);
+        if was && !now {
+            let words = crate::split::mssql_words(&stmt.sql);
+            let last = words.iter().rev().find(|w| matches!(w.as_str(), "COMMIT" | "ROLLBACK"));
+            self.settle_pending(handle, ok && last.is_none_or(|w| w == "COMMIT"));
+        }
+        handle.txn_failed.store(false, Ordering::SeqCst);
     }
 
     /// Ends the restore points made inside the user's transaction: kept (COMMIT) or deleted.
@@ -1925,7 +1961,7 @@ impl Engine {
             } else {
                 restored_structure(&point, self.table_structure(session_id, &set.schema, &set.table, false).await.ok())
             };
-            let override_identity = handle.profile.driver == crate::config::Driver::Postgres;
+            let override_identity = keeps_identity_values(handle.profile.driver);
             let statements = crate::changes::build_statements_with(dialect, &structure, set, override_identity)?;
             count += statements.len();
             sql.push(preview(dialect, &statements));
@@ -1975,7 +2011,7 @@ impl Engine {
                 true,
                 crate::restore::RestoreKind::Restore,
                 Some(format!("Restore of: {}", point.statement)),
-                handle.profile.driver == crate::config::Driver::Postgres,
+                keeps_identity_values(handle.profile.driver),
             )
             .await
             .map_err(|e| {
@@ -2076,6 +2112,8 @@ impl Engine {
             }
             (Dialect::Sqlite, false) => (format!("EXPLAIN QUERY PLAN {}", stmt.sql), "sqlite_plan"),
             (Dialect::Sqlite, true) => return Err(AppError::unsupported("SQLite does not support EXPLAIN ANALYZE")),
+            // SQL Server returns plans as XML through SET SHOWPLAN_XML, which needs its own viewer.
+            (Dialect::Mssql, _) => return Err(AppError::unsupported("SQL Server query plans are not supported yet")),
         };
         let t0 = Instant::now();
         let outcomes = self
@@ -2219,7 +2257,7 @@ impl Engine {
         }
         let schema = if dialect == Dialect::Sqlite && req.schema == "main" { None } else { Some(req.schema.as_str()) };
         let table = dialect.qualified(schema, &req.table)?;
-        let batch = crate::transfer::batch_rows(req.mapping.len());
+        let batch = crate::transfer::batch_rows(dialect, req.mapping.len());
 
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<ParamStatement>>(4);
         let path = std::path::PathBuf::from(&req.path);
@@ -2453,14 +2491,13 @@ fn build_select_unchecked(
     req: &BrowseRequest,
     deferred: &[bool],
 ) -> Result<crate::browse::BuiltQuery> {
-    let mut capped = req.clone();
-    let limit = req.limit;
-    capped.limit = limit.min(crate::browse::MAX_PAGE_SIZE);
-    let mut q = crate::browse::build_select_projected(dialect, s, &capped, deferred)?;
-    if limit != capped.limit {
-        q.sql = q.sql.replacen(&format!(" LIMIT {} ", capped.limit), &format!(" LIMIT {limit} "), 1);
+    if req.limit == 0 || req.limit > crate::browse::MAX_PAGE_SIZE + 1 {
+        return Err(AppError::invalid_config(format!(
+            "Page size must be between 1 and {}",
+            crate::browse::MAX_PAGE_SIZE
+        )));
     }
-    Ok(q)
+    crate::browse::build_page(dialect, s, req, deferred, req.limit)
 }
 
 /// What a planned restore point needs while its statement runs (see `run_captured`).
@@ -2732,12 +2769,18 @@ fn capture_lock(
     kind: crate::restore_plan::CaptureKind,
     st: &TableStructure,
 ) -> Result<Option<String>> {
+    use crate::config::Driver;
     use crate::restore_plan::CaptureKind;
-    if driver != crate::config::Driver::Postgres || matches!(kind, CaptureKind::Update | CaptureKind::Delete) {
+    if matches!(kind, CaptureKind::Update | CaptureKind::Delete) {
         return Ok(None);
     }
-    let table = crate::dialect::Dialect::Postgres.qualified(Some(&st.schema), &st.name)?;
-    Ok(Some(format!("LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE")))
+    let table = driver.dialect().qualified(Some(&st.schema), &st.name)?;
+    Ok(match driver {
+        Driver::Postgres => Some(format!("LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE")),
+        // Held until the capture's transaction ends.
+        Driver::Mssql => Some(format!("SELECT TOP (0) 1 FROM {table} WITH (TABLOCKX, HOLDLOCK)")),
+        _ => None,
+    })
 }
 
 async fn run_captured(
@@ -2766,7 +2809,7 @@ async fn run_captured(
     }
     let own_txn = !in_txn && !implicit_commit;
     let guard = in_txn && job.driver == Driver::Postgres;
-    let lock = (job.driver == Driver::Postgres || mysql) && row_change;
+    let lock = (matches!(job.driver, Driver::Postgres | Driver::Mssql) || mysql) && row_change;
     let cols = capture_columns(plan, st);
     let mut cap = Captured {
         kind: match plan.kind {
@@ -2926,6 +2969,12 @@ async fn run_captured(
 
 /// The table as a restore point recorded it: the current structure plus the columns it lacks
 /// (DROP COLUMN), or rebuilt from the point (DROP TABLE). For previews before the DDL has run.
+/// Whether restores re-insert rows with their original identity values (PostgreSQL's
+/// `OVERRIDING SYSTEM VALUE`, SQL Server's `IDENTITY_INSERT`).
+fn keeps_identity_values(driver: crate::config::Driver) -> bool {
+    matches!(driver, crate::config::Driver::Postgres | crate::config::Driver::Mssql)
+}
+
 fn restored_structure(point: &crate::restore::RestorePoint, current: Option<TableStructure>) -> TableStructure {
     let d = &point.data;
     let mut s = current.unwrap_or_else(|| TableStructure {
@@ -3172,7 +3221,8 @@ pub fn default_schema_sql(driver: crate::config::Driver, schema: &str) -> Result
             Dialect::Postgres.quote_ident(schema)?;
             Some(format!("SET schema = {}", Dialect::Postgres.quote_literal(schema)))
         }
-        Driver::Sqlite | Driver::Redis => None,
+        // SQL Server resolves names through the user's default schema, which a session can't change.
+        Driver::Sqlite | Driver::Redis | Driver::Mssql => None,
     })
 }
 

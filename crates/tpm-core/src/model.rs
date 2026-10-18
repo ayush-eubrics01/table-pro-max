@@ -262,6 +262,8 @@ pub enum CancelSupport {
     KillQuery,
     /// `sqlite3_interrupt` on the same handle.
     Interrupt,
+    /// TDS attention signal on the same connection (SQL Server).
+    Attention,
 }
 
 /// What a driver can actually do. The UI uses this to hide unsupported actions instead

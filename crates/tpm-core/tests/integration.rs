@@ -64,6 +64,14 @@ fn target_from_env(var: &str) -> Option<Target> {
             cross_join_million(),
             None,
         ),
+        Driver::Mssql => (
+            "dbo".to_string(),
+            "WAITFOR DELAY '00:00:30'",
+            "SELECT TOP 1000000 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS v \
+             FROM sys.all_objects a CROSS JOIN sys.all_objects b CROSS JOIN sys.all_objects c"
+                .to_string(),
+            None,
+        ),
         _ => (parsed.profile.database.clone(), "SELECT SLEEP(30)", cross_join_million(), None),
     };
     Some(Target { profile: parsed.profile, password: parsed.password, schema, sleep_sql, big_query, sequence_write })
@@ -117,6 +125,15 @@ fn ddl(driver: Driver) -> Vec<&'static str> {
              price decimal(10,2), data blob, tags json, created datetime DEFAULT CURRENT_TIMESTAMP, \
              FOREIGN KEY (owner_id) REFERENCES tpm_it_owners(id), INDEX tpm_it_items_price (price)) ENGINE=InnoDB",
         ],
+        Driver::Mssql => vec![
+            "DROP TABLE IF EXISTS tpm_it_items",
+            "DROP TABLE IF EXISTS tpm_it_owners",
+            "CREATE TABLE tpm_it_owners (id int PRIMARY KEY, name nvarchar(100) NOT NULL)",
+            "CREATE TABLE tpm_it_items (id int IDENTITY PRIMARY KEY, owner_id int REFERENCES tpm_it_owners(id), \
+             name nvarchar(100) NOT NULL UNIQUE, price decimal(10,2), data varbinary(max), tags nvarchar(max), \
+             created datetime2 DEFAULT sysdatetime())",
+            "CREATE INDEX tpm_it_items_price ON tpm_it_items(price)",
+        ],
         Driver::Sqlite => vec![
             "DROP TABLE IF EXISTS tpm_it_items",
             "DROP TABLE IF EXISTS tpm_it_owners",
@@ -132,6 +149,7 @@ fn blob_literal(driver: Driver) -> &'static str {
     match driver {
         Driver::Postgres => "'\\xdeadbeef'::bytea",
         Driver::Duckdb => "'\\xDE\\xAD\\xBE\\xEF'::BLOB",
+        Driver::Mssql => "0xDEADBEEF",
         _ => "X'DEADBEEF'",
     }
 }
@@ -1525,6 +1543,7 @@ async fn lazy_values(engine: &Arc<Engine>, sid: &str, schema: &str, driver: Driv
         Driver::Mysql | Driver::Mariadb => ("longtext", "json", "REPEAT('x', 100000)"),
         Driver::Sqlite => ("TEXT", "TEXT", "replace(hex(zeroblob(50000)), '0', 'x')"),
         Driver::Duckdb => ("VARCHAR", "VARCHAR", "repeat('x', 100000)"),
+        Driver::Mssql => ("nvarchar(max)", "nvarchar(max)", "REPLICATE(CAST('x' AS nvarchar(max)), 100000)"),
         Driver::Redis => unreachable!(),
     };
     run(engine, sid, "DROP TABLE IF EXISTS tpm_it_docs").await;
@@ -2429,4 +2448,442 @@ async fn redis_kv() {
     s.lock().await.command(&run("FLUSHDB"), true, 10).await.unwrap();
     engine.redis_close(&id);
     engine.redis_close(&ro_id);
+}
+
+/// SQL Server: a flow of its own, since its batches, types and paging differ from the others'.
+#[tokio::test(flavor = "multi_thread")]
+async fn sql_server() {
+    let Some(t) = target_from_env("TPM_TEST_MSSQL_URL") else { return };
+    sql_server_flow(t).await;
+}
+
+async fn sql_server_flow(t: Target) {
+    let driver = Driver::Mssql;
+    let mut profile = t.profile.clone();
+    profile.safety_mode = SafetyMode::ConfirmDestructive;
+    let engine = Arc::new(Engine::new());
+    let info = engine.open_session(&profile, t.password.as_deref(), None, ConnectOptions::default()).await.unwrap();
+    let sid = info.session_id.clone();
+    assert_eq!(info.server.product, "SQL Server");
+    assert_eq!(info.server.current_database, "tpm_test");
+    let rows = |r: &tpm_core::engine::ScriptResult, i: usize| r.statements[i].rows.clone().unwrap();
+
+    // --- fixtures ---
+    let script = ddl(driver).join(";\n");
+    let err = engine.run_script(&sid, &script, RunOptions::default(), None).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::ConfirmationRequired);
+    run(&engine, &sid, &script).await;
+    run(
+        &engine,
+        &sid,
+        "INSERT INTO tpm_it_owners (id, name) VALUES (1, N'Ada'), (2, N'Grace');
+         INSERT INTO tpm_it_items (owner_id, name, price, data, tags) VALUES
+           (1, N'apple', 1.50, 0xDEADBEEF, N'{\"a\": 1}'), (1, N'banana', 0.25, NULL, NULL),
+           (2, N'cherry', 12.00, NULL, NULL), (NULL, N'it''s; tricky', NULL, NULL, NULL)",
+    )
+    .await;
+
+    // --- discovery ---
+    assert!(engine.list_schemas(&sid).await.unwrap().contains(&"dbo".to_string()));
+    let objects = engine.list_objects(&sid, "dbo").await.unwrap();
+    let items = objects.iter().find(|o| o.name == "tpm_it_items").expect("listed");
+    assert_eq!((items.kind, items.estimated_rows), (ObjectKind::Table, Some(4)));
+    let st = engine.table_structure(&sid, "dbo", "tpm_it_items", true).await.unwrap();
+    assert_eq!(st.columns.len(), 7);
+    assert_eq!(st.primary_key()[0].name, "id");
+    assert!(st.columns[0].auto_increment);
+    assert!(!st.column("name").unwrap().nullable);
+    assert_eq!(st.column("name").unwrap().data_type, "nvarchar(100)");
+    assert_eq!(st.column("price").unwrap().data_type, "decimal(10,2)");
+    assert_eq!(st.column("data").unwrap().data_type, "varbinary(max)");
+    assert!(st.indexes.iter().any(|i| i.columns == ["price"]), "{:?}", st.indexes);
+    assert_eq!(st.foreign_keys.len(), 1);
+    assert_eq!(st.foreign_keys[0].ref_table, "tpm_it_owners");
+    assert!(st.constraints.iter().any(|c| c.kind == "unique"), "{:?}", st.constraints);
+    let def = engine.object_definition(&sid, "dbo", "tpm_it_items", ObjectKind::Table).await.unwrap();
+    assert!(
+        def.contains("CREATE TABLE [dbo].[tpm_it_items]") && def.contains("[id] int IDENTITY(1, 1) NOT NULL"),
+        "{def}"
+    );
+    let dbs = engine.list_databases(&sid).await.unwrap();
+    assert_eq!(dbs.first().map(String::as_str), Some("tpm_test"), "user databases first: {dbs:?}");
+
+    // --- a batch: result sets in order, values as text, binary as bytes ---
+    let r = run(&engine, &sid, "SELECT id, name, price, data FROM tpm_it_items ORDER BY id; SELECT 1 + 1 AS two").await;
+    assert_eq!(r.statements.len(), 2, "one batch, two result sets");
+    let rs = rows(&r, 0);
+    assert_eq!(rs.len(), 4);
+    assert_eq!(text(&rs[0][1]), "apple");
+    assert_eq!(text(&rs[0][2]), "1.50");
+    assert_eq!(rs[0][3], Cell::Bytes(vec![0xde, 0xad, 0xbe, 0xef]));
+    assert_eq!(rs[1][3], Cell::Null);
+    assert_eq!(text(&rs[3][1]), "it's; tricky");
+    assert_eq!(text(&rows(&r, 1)[0][0]), "2");
+    // Variables live for the whole batch; GO starts the next one.
+    let r = run(&engine, &sid, "DECLARE @x int = 41;\nSELECT @x + 1 AS v").await;
+    assert_eq!(text(&rows(&r, 0)[0][0]), "42");
+    let r = run(&engine, &sid, "SELECT 1 AS a\nGO\nSELECT 2 AS b").await;
+    assert_eq!((r.statements.len(), text(&rows(&r, 1)[0][0])), (2, "2"));
+    let r = run(&engine, &sid, "UPDATE tpm_it_items SET tags = NULL WHERE price < 1").await;
+    assert_eq!(r.statements[0].rows_affected, Some(1));
+
+    // --- errors: the position points into the script; constraint errors are classified ---
+    let r = engine
+        .run_script(
+            &sid,
+            "SELECT 1\nGO\nSELECT 1;\n  SELEC oops",
+            RunOptions { confirmed: true, ..Default::default() },
+            None,
+        )
+        .await
+        .unwrap();
+    let e = r.statements.last().unwrap().error.as_ref().expect("syntax error");
+    assert_eq!(e.position, Some(24), "{e:?}");
+    let r = engine
+        .run_script(&sid, "INSERT INTO tpm_it_items (name) VALUES (N'apple')", RunOptions::default(), None)
+        .await
+        .unwrap();
+    assert_eq!(r.statements[0].error.as_ref().unwrap().kind, ErrorKind::Constraint);
+
+    // --- browse: filter, sort, pagination, count ---
+    let cond = |column: &str, op: FilterOp, value: &str| FilterNode::Condition {
+        column: column.into(),
+        op,
+        value: Some(value.into()),
+        value2: None,
+        values: vec![],
+        enabled: true,
+    };
+    let req = BrowseRequest {
+        schema: "dbo".into(),
+        table: "tpm_it_items".into(),
+        filter: Some(FilterNode::Group {
+            logic: Logic::Or,
+            negate: false,
+            children: vec![cond("price", FilterOp::Gte, "1"), cond("name", FilterOp::Contains, "; TRICK")],
+        }),
+        sort: vec![SortSpec { column: "name".into(), descending: true }],
+        limit: 2,
+        offset: 0,
+        ..Default::default()
+    };
+    let page = engine.browse(&sid, &req).await.unwrap();
+    assert_eq!(page.rows.iter().map(|r| text(&r[2])).collect::<Vec<_>>(), ["it's; tricky", "cherry"]);
+    assert!(page.has_more);
+    let page2 = engine.browse(&sid, &BrowseRequest { offset: 2, ..req.clone() }).await.unwrap();
+    assert_eq!((page2.rows.len(), page2.has_more), (1, false));
+    assert_eq!(engine.count_rows(&sid, "dbo", "tpm_it_items", req.filter.as_ref()).await.unwrap(), 3);
+    let evil = BrowseRequest { filter: Some(cond("name", FilterOp::Eq, "x' OR '1'='1")), ..req.clone() };
+    assert!(engine.browse(&sid, &evil).await.unwrap().rows.is_empty());
+    let brackets = BrowseRequest { filter: Some(cond("name", FilterOp::Contains, "[a]")), ..req.clone() };
+    assert!(engine.browse(&sid, &brackets).await.unwrap().rows.is_empty(), "[ is literal in a contains filter");
+
+    // --- grid edits: one transaction, conflicts, rollback ---
+    let apple_req = BrowseRequest { filter: Some(cond("name", FilterOp::Eq, "apple")), ..req.clone() };
+    let apple = engine.browse(&sid, &apple_req).await.unwrap();
+    let apple_id = text(&apple.rows[0][0]).to_string();
+    let apple_price = apple.rows[0][3].as_text().map(str::to_string);
+    let key = |id: &str| vec![ColumnValue { column: "id".into(), value: Some(id.into()) }];
+    let set = ChangeSet {
+        schema: "dbo".into(),
+        table: "tpm_it_items".into(),
+        check_conflicts: true,
+        changes: vec![
+            RowChange::Update {
+                key: key(&apple_id),
+                edits: vec![ColumnEdit {
+                    column: "price".into(),
+                    value: EditValue::Value { value: Some("2.75".into()) },
+                    original: Some(apple_price.clone()),
+                }],
+            },
+            RowChange::Insert {
+                values: vec![
+                    ColumnEdit { column: "id".into(), value: EditValue::Default, original: None },
+                    ColumnEdit {
+                        column: "name".into(),
+                        value: EditValue::Value { value: Some("date".into()) },
+                        original: None,
+                    },
+                    ColumnEdit {
+                        column: "owner_id".into(),
+                        value: EditValue::Value { value: Some("2".into()) },
+                        original: None,
+                    },
+                ],
+            },
+        ],
+    };
+    assert!(engine.preview_changes(&sid, &set).await.unwrap().sql.contains("N'2.75'"));
+    assert_eq!(engine.apply_changes(&sid, &set, true).await.unwrap(), vec![1, 1]);
+    let r = run(&engine, &sid, "SELECT price FROM tpm_it_items WHERE name = N'apple'").await;
+    assert_eq!(text(&rows(&r, 0)[0][0]), "2.75");
+    let stale = ChangeSet {
+        changes: vec![
+            RowChange::Insert {
+                values: vec![ColumnEdit {
+                    column: "name".into(),
+                    value: EditValue::Value { value: Some("should-roll-back".into()) },
+                    original: None,
+                }],
+            },
+            RowChange::Update {
+                key: key(&apple_id),
+                edits: vec![ColumnEdit {
+                    column: "price".into(),
+                    value: EditValue::Value { value: Some("9.99".into()) },
+                    original: Some(apple_price),
+                }],
+            },
+        ],
+        ..set.clone()
+    };
+    assert_eq!(engine.apply_changes(&sid, &stale, true).await.unwrap_err().kind, ErrorKind::Conflict);
+    let r = run(&engine, &sid, "SELECT count(*) FROM tpm_it_items WHERE name = N'should-roll-back'").await;
+    assert_eq!(text(&rows(&r, 0)[0][0]), "0", "the transaction rolls back");
+
+    // --- the row cap: a plain SELECT is capped by the server; a batch is stopped ---
+    for (label, sql) in [("plain", t.big_query.clone()), ("batch", format!("DECLARE @n int = 1;\n{}", t.big_query))] {
+        let t0 = Instant::now();
+        let r = engine
+            .run_script(&sid, &sql, RunOptions { max_rows: Some(100_000), ..Default::default() }, None)
+            .await
+            .unwrap();
+        let s = &r.statements[0];
+        assert!(s.error.is_none(), "{label}: {:?}", s.error);
+        assert_eq!((s.total_rows, s.truncated), (Some(100_000), true), "{label}");
+        eprintln!("{label}: 1M rows capped at 100k in {:?}", t0.elapsed());
+        assert!(t0.elapsed() < Duration::from_secs(20), "{label}: {:?}", t0.elapsed());
+        run(&engine, &sid, "SELECT 1").await;
+    }
+    // The cap's SET ROWCOUNT does not outlive the statement.
+    let r = run(&engine, &sid, "SELECT TOP 3 name FROM sys.all_objects").await;
+    assert_eq!(rows(&r, 0).len(), 3);
+    let r = engine
+        .run_script(
+            &sid,
+            "SELECT TOP 5 name FROM sys.all_objects",
+            RunOptions { max_rows: Some(2), ..Default::default() },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.statements[0].total_rows, Some(2));
+    let r = run(&engine, &sid, "SELECT TOP 5 name FROM sys.all_objects").await;
+    assert_eq!(rows(&r, 0).len(), 5, "ROWCOUNT was reset");
+
+    // --- cancel and timeout ---
+    let e2 = engine.clone();
+    let sid2 = sid.clone();
+    let sleep_sql = t.sleep_sql.to_string();
+    let handle = tokio::spawn(async move {
+        e2.run_script(&sid2, &sleep_sql, RunOptions { task_id: Some("ms-cancel".into()), ..Default::default() }, None)
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let t0 = Instant::now();
+    assert!(engine.cancel_task("ms-cancel").await.unwrap());
+    let r = handle.await.unwrap().unwrap();
+    assert!(t0.elapsed() < Duration::from_secs(5), "cancel took {:?}", t0.elapsed());
+    assert!(r.cancelled);
+    assert_eq!(r.statements[0].error.as_ref().unwrap().kind, ErrorKind::Cancelled);
+    run(&engine, &sid, "SELECT 1").await;
+    let t0 = Instant::now();
+    let r = engine
+        .run_script(&sid, t.sleep_sql, RunOptions { timeout_secs: Some(1), ..Default::default() }, None)
+        .await
+        .unwrap();
+    assert_eq!(r.statements[0].error.as_ref().unwrap().kind, ErrorKind::Timeout);
+    assert!(t0.elapsed() < Duration::from_secs(6));
+    run(&engine, &sid, "SELECT 1").await;
+    assert_eq!(engine.explain(&sid, "SELECT 1", false, false, None).await.unwrap_err().kind, ErrorKind::Unsupported);
+
+    // --- transactions the user opens are followed ---
+    run(&engine, &sid, "BEGIN TRANSACTION; UPDATE tpm_it_items SET price = 3 WHERE name = N'cherry'").await;
+    let err = engine.apply_changes(&sid, &set, true).await.unwrap_err();
+    assert!(err.message.to_lowercase().contains("transaction"), "grid commits wait for the open transaction: {err:?}");
+    run(&engine, &sid, "ROLLBACK").await;
+    let r = run(&engine, &sid, "SELECT price FROM tpm_it_items WHERE name = N'cherry'").await;
+    assert_eq!(text(&rows(&r, 0)[0][0]), "12.00");
+
+    // --- read-only: the policy refuses writes, and the server keeps none of an unparsed batch ---
+    let mut ro = t.profile.clone();
+    ro.safety_mode = SafetyMode::ReadOnly;
+    let ro_info = engine.open_session(&ro, t.password.as_deref(), None, ConnectOptions::default()).await.unwrap();
+    let err = engine
+        .run_script(
+            &ro_info.session_id,
+            "DELETE FROM tpm_it_items WHERE id = 1",
+            RunOptions { confirmed: true, ..Default::default() },
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PolicyViolation);
+    run(&engine, &ro_info.session_id, "SELECT count(*) FROM tpm_it_items").await;
+    let mut raw = adapters::connect(&ro, t.password.as_deref(), &ConnectOptions::default()).await.unwrap();
+    let _ = raw.execute("INSERT INTO tpm_it_owners (id, name) VALUES (99, N'nope')", 10).await;
+    raw.close().await;
+    let r = run(&engine, &sid, "SELECT count(*) FROM tpm_it_owners WHERE id = 99").await;
+    assert_eq!(text(&rows(&r, 0)[0][0]), "0", "a read-only session keeps no write");
+    engine.close_session(&ro_info.session_id).await;
+
+    // --- a lost connection is reported, and reconnecting works ---
+    let victim = engine.open_session(&profile, t.password.as_deref(), None, ConnectOptions::default()).await.unwrap();
+    let r = run(&engine, &victim.session_id, "SELECT @@SPID").await;
+    let spid = text(&rows(&r, 0)[0][0]).to_string();
+    run(&engine, &sid, &format!("KILL {spid}")).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let r = engine.run_script(&victim.session_id, "SELECT 1", RunOptions::default(), None).await.unwrap();
+    assert!(matches!(r.statements[0].error.as_ref().map(|e| e.kind), Some(ErrorKind::Network | ErrorKind::Database)));
+    engine.reconnect(&victim.session_id, t.password.as_deref(), None).await.unwrap();
+    run(&engine, &victim.session_id, "SELECT 1").await;
+    engine.close_session(&victim.session_id).await;
+
+    // --- query parameters ---
+    let mut values = std::collections::HashMap::new();
+    values.insert("min".to_string(), Some("1".to_string()));
+    let r = engine
+        .run_script(
+            &sid,
+            "SELECT name FROM tpm_it_items WHERE price >= :min ORDER BY name",
+            RunOptions { parameters: Some(values), ..Default::default() },
+            None,
+        )
+        .await
+        .unwrap();
+    let names: Vec<String> = rows(&r, 0).iter().map(|r| text(&r[0]).to_string()).collect();
+    assert_eq!(names, ["apple", "cherry"]);
+
+    // --- origins: query results can be edited ---
+    let r = run(&engine, &sid, "SELECT id, name FROM tpm_it_items").await;
+    let origin = r.statements[0].columns.as_ref().unwrap()[1].origin.clone().expect("origin");
+    assert_eq!(
+        (origin.schema.as_str(), origin.table.as_str(), origin.column.as_str()),
+        ("dbo", "tpm_it_items", "name")
+    );
+
+    // --- types: exact text, which also binds back as a parameter equal to the value ---
+    let cases = [
+        ("CAST('2024-01-02T03:04:05.123' AS datetime)", "2024-01-02 03:04:05.123"),
+        ("CAST('2024-01-02T03:04:05.127' AS datetime)", "2024-01-02 03:04:05.127"),
+        ("CAST('2024-01-02T03:04:00' AS smalldatetime)", "2024-01-02 03:04:00"),
+        ("CAST('2024-01-02T03:04:05.1234567' AS datetime2)", "2024-01-02 03:04:05.1234567"),
+        ("CAST('2024-01-02T03:04:05' AS datetime2(0))", "2024-01-02 03:04:05"),
+        ("CAST('0001-01-01' AS date)", "0001-01-01"),
+        ("CAST('9999-12-31' AS date)", "9999-12-31"),
+        ("CAST('23:59:59.123' AS time(3))", "23:59:59.123"),
+        ("CAST('2024-01-02T23:30:00+05:30' AS datetimeoffset(0))", "2024-01-02 23:30:00 +05:30"),
+        ("CAST('2024-01-02T00:30:00.5-08:00' AS datetimeoffset(1))", "2024-01-02 00:30:00.5 -08:00"),
+        ("CAST(12.5 AS money)", "12.5000"),
+        ("CAST(-922337203.6854 AS money)", "-922337203.6854"),
+        ("CAST(1.25 AS smallmoney)", "1.2500"),
+        ("CAST(1 AS bit)", "1"),
+        ("CAST('6F9619FF-8B86-D011-B42D-00C04FC964FF' AS uniqueidentifier)", "6F9619FF-8B86-D011-B42D-00C04FC964FF"),
+        ("CAST(12345678901234567890.1234567890 AS decimal(38,10))", "12345678901234567890.1234567890"),
+        ("CAST(-0.5 AS decimal(5,2))", "-0.50"),
+        ("CAST(0.1 AS float)", "0.1"),
+        ("CAST(255 AS tinyint)", "255"),
+        ("CAST(9223372036854775807 AS bigint)", "9223372036854775807"),
+        ("N'héllo 漢字 😀'", "héllo 漢字 😀"),
+        ("CAST('ab' AS char(4))", "ab  "),
+    ];
+    for (expr, expected) in cases {
+        let r = run(&engine, &sid, &format!("SELECT {expr} AS v")).await;
+        assert_eq!(text(&rows(&r, 0)[0][0]), expected, "{expr}");
+        let mut values = std::collections::HashMap::new();
+        values.insert("v".to_string(), Some(expected.to_string()));
+        let r = engine
+            .run_script(
+                &sid,
+                &format!("SELECT CASE WHEN {expr} = :v THEN 'same' ELSE 'different' END"),
+                RunOptions { parameters: Some(values), ..Default::default() },
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(r.statements[0].error.is_none(), "{expr}: {:?}", r.statements[0].error);
+        assert_eq!(text(&rows(&r, 0)[0][0]), "same", "{expr} = '{expected}' as a parameter");
+    }
+    let r = run(&engine, &sid, "SELECT CAST('<a x=\"1\"/>' AS xml) AS x, CAST(NULL AS int) AS n").await;
+    assert_eq!((text(&rows(&r, 0)[0][0]), &rows(&r, 0)[0][1]), ("<a x=\"1\"/>", &Cell::Null));
+
+    // --- restore points: a DELETE is captured and comes back ---
+    let store = Arc::new(tpm_core::storage::Storage::open_in_memory().unwrap());
+    engine.set_restore_store(store.clone());
+    let r = engine
+        .run_script(
+            &sid,
+            "DELETE FROM tpm_it_items WHERE name = N'banana'",
+            RunOptions { confirmed: true, ..Default::default() },
+            None,
+        )
+        .await
+        .unwrap();
+    let note = r.statements[0].restore.clone().expect("note");
+    assert_eq!(note.reason.as_deref(), Some("the table has binary columns"), "as on MySQL: {note:?}");
+    run(&engine, &sid, "INSERT INTO tpm_it_items (owner_id, name, price) VALUES (1, N'banana', 0.25)").await;
+    restore_points_on_sql_server(&engine, &sid).await;
+
+    transfer_roundtrip(&engine, &sid, "dbo", driver).await;
+
+    run(&engine, &sid, "DROP TABLE tpm_it_items; DROP TABLE tpm_it_owners").await;
+    engine.close_all().await;
+}
+
+/// SQL Server restore points: identity values come back (IDENTITY_INSERT), and so does a dropped table.
+async fn restore_points_on_sql_server(engine: &Arc<Engine>, sid: &str) {
+    let opts = RunOptions { confirmed: true, ..Default::default() };
+    let point = |r: &tpm_core::engine::ScriptResult| {
+        let note = r.statements.last().and_then(|s| s.restore.clone()).expect("note");
+        note.point_id.clone().unwrap_or_else(|| panic!("no restore point: {note:?}"))
+    };
+    let all = |sql: &'static str| async move {
+        run(engine, sid, sql).await.statements[0]
+            .rows
+            .clone()
+            .unwrap()
+            .iter()
+            .map(|r| r.iter().map(|c| text(c).to_string()).collect::<Vec<_>>().join("|"))
+            .collect::<Vec<_>>()
+    };
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_msrp").await;
+    run(
+        engine,
+        sid,
+        "CREATE TABLE tpm_it_msrp (id int IDENTITY(10, 5) PRIMARY KEY, note nvarchar(20) NOT NULL, \
+         amount money, at datetime2(3), total AS amount * 2)",
+    )
+    .await;
+    run(
+        engine,
+        sid,
+        "INSERT INTO tpm_it_msrp (note, amount, at) VALUES (N'a', 1.5, '2024-01-02 03:04:05.678'), \
+         (N'b; é', NULL, NULL), (N'c', 3, '2024-05-06')",
+    )
+    .await;
+    let before = all("SELECT id, note, amount, at, total FROM tpm_it_msrp ORDER BY id").await;
+
+    let r = engine.run_script(sid, "DELETE FROM tpm_it_msrp WHERE id >= 15", opts.clone(), None).await.unwrap();
+    engine.apply_restore(sid, &point(&r), None, true).await.unwrap();
+    assert_eq!(
+        all("SELECT id, note, amount, at, total FROM tpm_it_msrp ORDER BY id").await,
+        before,
+        "same ids and values"
+    );
+
+    let r = engine.run_script(sid, "UPDATE tpm_it_msrp SET note = N'x', amount = 0 WHERE id = 10", opts.clone(), None);
+    engine.apply_restore(sid, &point(&r.await.unwrap()), None, true).await.unwrap();
+    assert_eq!(all("SELECT id, note, amount, at, total FROM tpm_it_msrp ORDER BY id").await, before);
+
+    let r = engine.run_script(sid, "DROP TABLE tpm_it_msrp", opts.clone(), None).await.unwrap();
+    engine.apply_restore(sid, &point(&r), None, true).await.unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!(all("SELECT id, note, amount, at, total FROM tpm_it_msrp ORDER BY id").await, before);
+    run(engine, sid, "INSERT INTO tpm_it_msrp (note) VALUES (N'd')").await;
+    assert_eq!(
+        all("SELECT max(id) FROM tpm_it_msrp").await,
+        ["25"],
+        "the identity keeps its step past the restored rows"
+    );
+    run(engine, sid, "DROP TABLE tpm_it_msrp").await;
 }
