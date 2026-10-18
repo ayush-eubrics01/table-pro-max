@@ -81,6 +81,16 @@ describe("SettingsDialog", () => {
     expect(useSettings.getState().settings["editor.wordWrap"]).toBe(!DEFAULT_SETTINGS["editor.wordWrap"]);
   });
 
+  it("opens production connections read-only unless turned off", () => {
+    expect(DEFAULT_SETTINGS["safety.productionReadOnly"]).toBe(true);
+    render(<SettingsDialog appInfo={appInfo} onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "Safety" }));
+    const toggle = screen.getByRole("switch", { name: /Open production connections read-only/ });
+    expect(toggle).toBeChecked();
+    fireEvent.click(toggle);
+    expect(useSettings.getState().settings["safety.productionReadOnly"]).toBe(false);
+  });
+
   it("keeps a typed number when the dialog closes before the field loses focus", () => {
     const { unmount } = render(<SettingsDialog appInfo={appInfo} onClose={() => undefined} />);
     fireEvent.click(screen.getByRole("button", { name: "Editor" }));

@@ -218,6 +218,10 @@ pub struct ConnectRequest {
     /// Open the session read-only regardless of the profile (dashboards).
     #[serde(default)]
     pub read_only: bool,
+    /// Open a production connection read-only (`true`) or writable (`false`): the workspace's own
+    /// state, for its query tabs and after Allow writes. `None` follows the setting (a new connection).
+    #[serde(default)]
+    pub lock_production: Option<bool>,
 }
 
 #[tauri::command]
@@ -237,7 +241,11 @@ pub async fn connect(state: State<'_, AppState>, request: ConnectRequest) -> Res
             &profile,
             password.as_deref(),
             ssh_secret.as_deref(),
-            ConnectOptions { database: request.database.filter(|d| !d.is_empty()), tunnel_port: None },
+            ConnectOptions {
+                database: request.database.filter(|d| !d.is_empty()),
+                tunnel_port: None,
+                lock_production: request.lock_production.unwrap_or_else(|| production_read_only(&state)),
+            },
         )
         .await?;
     if request.remember_for_session {
@@ -251,6 +259,11 @@ pub async fn connect(state: State<'_, AppState>, request: ConnectRequest) -> Res
     let _ = state.storage.touch_connection(&profile.id);
     tracing::info!(connection = %profile.id, session = %info.session_id, "connected");
     Ok(info)
+}
+
+/// Settings › Safety › "Open production connections read-only" (on unless turned off).
+fn production_read_only(state: &AppState) -> bool {
+    !matches!(state.storage.get_setting("safety.productionReadOnly"), Ok(Some(serde_json::Value::Bool(false))))
 }
 
 #[tauri::command]

@@ -391,6 +391,18 @@ fn overrides_read_only(sql: &str) -> bool {
         || normalized.contains("set role")
 }
 
+/// On production, statements that destroy data are confirmed by typing the connection name
+/// instead of a click. A mode that never asks (Normal) or always refuses (ReadOnly) is left as is.
+pub fn needs_typed_confirmation(
+    statements: &[StatementAnalysis],
+    mode: SafetyMode,
+    environment: crate::config::Environment,
+) -> bool {
+    environment == crate::config::Environment::Production
+        && matches!(mode, SafetyMode::ConfirmDestructive | SafetyMode::ConfirmWrites)
+        && statements.iter().any(|s| s.class == StatementClass::Destructive)
+}
+
 pub fn decide(statements: &[StatementAnalysis], mode: SafetyMode) -> PolicyDecision {
     use StatementClass::*;
     match mode {
@@ -503,6 +515,23 @@ mod tests {
     fn comments_do_not_hide_statements() {
         assert_eq!(class("/* harmless */ drop table x"), Destructive);
         assert_eq!(class("-- select\ndelete from x"), Destructive);
+    }
+
+    #[test]
+    fn production_asks_for_the_name_before_destroying_data() {
+        use crate::config::Environment::{Local, Production};
+        let a = |sql: &str| analyze_script(sql, Dialect::Postgres, SafetyMode::ConfirmDestructive).statements;
+        let typed = |sql: &str, mode, env| needs_typed_confirmation(&a(sql), mode, env);
+        for sql in ["drop table t", "truncate t", "delete from t", "update t set a = 1", "select 1; drop table t"] {
+            assert!(typed(sql, SafetyMode::ConfirmDestructive, Production), "{sql}");
+            assert!(typed(sql, SafetyMode::ConfirmWrites, Production), "{sql}");
+        }
+        assert!(!typed("delete from t where id = 1", SafetyMode::ConfirmWrites, Production));
+        assert!(!typed("insert into t values (1)", SafetyMode::ConfirmWrites, Production));
+        assert!(!typed("drop table t", SafetyMode::ConfirmDestructive, Local));
+        // Normal never asks; read-only refuses.
+        assert!(!typed("drop table t", SafetyMode::Normal, Production));
+        assert!(!typed("drop table t", SafetyMode::ReadOnly, Production));
     }
 
     #[test]

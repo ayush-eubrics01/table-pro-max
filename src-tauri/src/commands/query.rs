@@ -269,8 +269,9 @@ pub async fn apply_ddl(
     session_id: String,
     statements: Vec<String>,
     confirmed: bool,
+    typed_confirmation: Option<String>,
 ) -> Result<()> {
-    state.engine.apply_ddl(&session_id, &statements, confirmed).await
+    state.engine.apply_ddl(&session_id, &statements, confirmed, typed_confirmation.as_deref()).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -281,6 +282,9 @@ pub struct ExplainRequest {
     pub analyze: bool,
     #[serde(default)]
     pub confirmed: bool,
+    /// The connection name, typed to confirm EXPLAIN ANALYZE of a destructive statement on production.
+    #[serde(default)]
+    pub typed_confirmation: Option<String>,
 }
 
 #[tauri::command]
@@ -289,7 +293,10 @@ pub async fn explain_query(
     session_id: String,
     request: ExplainRequest,
 ) -> Result<ExplainResult> {
-    state.engine.explain(&session_id, &request.sql, request.analyze, request.confirmed).await
+    state
+        .engine
+        .explain(&session_id, &request.sql, request.analyze, request.confirmed, request.typed_confirmation.as_deref())
+        .await
 }
 
 #[derive(Debug, Deserialize)]

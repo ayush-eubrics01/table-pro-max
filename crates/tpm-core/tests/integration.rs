@@ -470,14 +470,18 @@ async fn exercise(t: Target) {
 
     // --- explain ---
     if info.capabilities.explain {
-        let plan = engine.explain(&sid, "SELECT * FROM tpm_it_items WHERE price > 1", false, false).await.unwrap();
+        let plan =
+            engine.explain(&sid, "SELECT * FROM tpm_it_items WHERE price > 1", false, false, None).await.unwrap();
         assert!(!plan.raw.is_empty());
         if driver == Driver::Postgres {
             let v: serde_json::Value = serde_json::from_str(&plan.raw).unwrap();
             assert!(v[0]["Plan"]["Node Type"].is_string());
         }
     } else {
-        assert_eq!(engine.explain(&sid, "SELECT 1", false, false).await.unwrap_err().kind, ErrorKind::Unsupported);
+        assert_eq!(
+            engine.explain(&sid, "SELECT 1", false, false, None).await.unwrap_err().kind,
+            ErrorKind::Unsupported
+        );
     }
 
     // --- read-only mode: policy layer and database-level enforcement ---
@@ -1833,6 +1837,94 @@ async fn sqlite_open_rules() {
     let mut s = adapters::connect(&p, None, &ConnectOptions::default()).await.unwrap();
     let out = s.execute("CREATE TABLE t (x)", 10).await.unwrap();
     assert!(matches!(out[0], StatementOutcome::Affected { .. }));
+}
+
+/// Production safety: a production connection can be opened locked to reads (the database session
+/// refuses writes too), and statements that destroy data need the connection name typed.
+#[tokio::test(flavor = "multi_thread")]
+async fn production_safety() {
+    use tpm_core::config::Environment;
+    let dir = tempfile::tempdir().unwrap();
+    let mut t = sqlite_target(&dir);
+    t.profile.name = "Shop prod".into();
+    t.profile.environment = Environment::Production;
+    let engine = Engine::new();
+    let locked = ConnectOptions { lock_production: true, ..Default::default() };
+
+    // Locked: read-only, and the database session itself refuses writes.
+    let info = engine.open_session(&t.profile, None, None, locked.clone()).await.unwrap();
+    assert!(info.read_only && info.writes_locked, "{info:?}");
+    let err = engine.run_script(&info.session_id, "CREATE TABLE t (x)", RunOptions::default(), None).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PolicyViolation, "{err:?}");
+    engine.close_session(&info.session_id).await;
+    // Only production connections are locked.
+    let mut dev = t.profile.clone();
+    dev.environment = Environment::Development;
+    let info = engine.open_session(&dev, None, None, locked).await.unwrap();
+    assert!(!info.read_only && !info.writes_locked, "{info:?}");
+    engine.close_session(&info.session_id).await;
+
+    // Writes allowed: destroying data needs the connection name typed, not only a click.
+    let info = engine.open_session(&t.profile, None, None, ConnectOptions::default()).await.unwrap();
+    assert!(!info.read_only && !info.writes_locked);
+    let sid = info.session_id.clone();
+    run(&engine, &sid, "CREATE TABLE t (x); CREATE TABLE u (x); INSERT INTO t VALUES (1)").await;
+    let opts = |confirmed: bool, typed: Option<&str>| RunOptions {
+        confirmed,
+        typed_confirmation: typed.map(str::to_string),
+        ..Default::default()
+    };
+    for (confirmed, typed) in [(false, None), (true, None), (true, Some("shop prod")), (true, Some("Shop"))] {
+        let err = engine.run_script(&sid, "DELETE FROM t", opts(confirmed, typed), None).await.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::ConfirmationRequired, "{typed:?}");
+        assert_eq!(err.code.as_deref(), Some("confirm_typed"), "{typed:?}");
+        assert!(err.detail.as_deref().unwrap_or("").contains("DELETE"), "{err:?}");
+    }
+    let r = engine.run_script(&sid, "DELETE FROM t", opts(true, Some(" Shop prod ")), None).await.unwrap();
+    assert!(r.statements[0].error.is_none(), "{r:?}");
+    // A change with a WHERE is confirmed with a click, as before.
+    engine.run_script(&sid, "INSERT INTO t VALUES (2)", opts(false, None), None).await.unwrap();
+    engine.run_script(&sid, "DELETE FROM t WHERE x = 2", opts(true, None), None).await.unwrap();
+
+    // Reviewed DDL (sidebar Drop table, structure editor) too.
+    let err = engine.apply_ddl(&sid, &["DROP TABLE u".to_string()], true, None).await.unwrap_err();
+    assert_eq!(err.code.as_deref(), Some("confirm_typed"), "{err:?}");
+    engine.apply_ddl(&sid, &["DROP TABLE u".to_string()], true, Some("Shop prod")).await.unwrap();
+    engine.apply_ddl(&sid, &["CREATE TABLE v (x)".to_string()], true, None).await.unwrap();
+    engine.close_session(&sid).await;
+
+    // Elsewhere a click is enough.
+    let info = engine.open_session(&dev, None, None, ConnectOptions::default()).await.unwrap();
+    engine.run_script(&info.session_id, "DROP TABLE t", opts(true, None), None).await.unwrap();
+    engine.close_session(&info.session_id).await;
+}
+
+/// DuckDB opens one instance per file, read-only or writable: a production file locked to reads is
+/// opened writable underneath (the policy refuses writes), so Allow writes can open it too.
+#[tokio::test(flavor = "multi_thread")]
+async fn production_lock_on_duckdb() {
+    use tpm_core::config::Environment;
+    let dir = tempfile::tempdir().unwrap();
+    let mut t = duckdb_target(&dir);
+    t.profile.environment = Environment::Production;
+    let engine = Engine::new();
+    let locked = ConnectOptions { lock_production: true, ..Default::default() };
+    let ro = engine.open_session(&t.profile, None, None, locked).await.unwrap();
+    assert!(ro.read_only && ro.writes_locked);
+    let err = engine.run_script(&ro.session_id, "CREATE TABLE t (x INTEGER)", RunOptions::default(), None).await;
+    assert_eq!(err.unwrap_err().kind, ErrorKind::PolicyViolation);
+    // Allow writes while the locked session (and its query tabs) are still open.
+    let rw = engine.open_session(&t.profile, None, None, ConnectOptions::default()).await.unwrap();
+    run(&engine, &rw.session_id, "CREATE TABLE t (x INTEGER)").await;
+    engine.close_session(&rw.session_id).await;
+    // A reconnect of the locked session keeps it locked, and keeps the file shareable.
+    let again = engine.reconnect(&ro.session_id, None, None).await.unwrap();
+    assert!(again.read_only && again.writes_locked);
+    let err = engine.run_script(&ro.session_id, "DROP TABLE t", RunOptions::default(), None).await;
+    assert_eq!(err.unwrap_err().kind, ErrorKind::PolicyViolation);
+    let rw = engine.open_session(&t.profile, None, None, ConnectOptions::default()).await.unwrap();
+    engine.close_session(&rw.session_id).await;
+    engine.close_session(&ro.session_id).await;
 }
 
 /// The engine's own SQLite transactions (restore-point captures, grid commits, imports) read and

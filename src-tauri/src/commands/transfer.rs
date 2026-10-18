@@ -152,7 +152,7 @@ pub struct ImportFileRequest {
 #[tauri::command]
 pub async fn import_file(app: AppHandle, state: State<'_, AppState>, request: ImportFileRequest) -> Result<u64> {
     if !request.create_statements.is_empty() {
-        state.engine.apply_ddl(&request.session_id, &request.create_statements, request.confirmed).await?;
+        state.engine.apply_ddl(&request.session_id, &request.create_statements, request.confirmed, None).await?;
     }
     let cancel = register(&state, &request.job_id);
     let result = state
@@ -206,6 +206,9 @@ pub struct RunSqlFileRequest {
     pub path: String,
     pub task_id: String,
     pub confirmed: bool,
+    /// The connection name, typed to confirm a file that destroys data on production.
+    #[serde(default)]
+    pub typed_confirmation: Option<String>,
 }
 
 /// Executes a SQL script file (e.g. a dump) statement by statement, with the same safety
@@ -242,6 +245,7 @@ pub async fn run_sql_file(
             RunOptions {
                 task_id: Some(request.task_id.clone()),
                 confirmed: request.confirmed,
+                typed_confirmation: request.typed_confirmation.clone(),
                 max_rows: Some(1000),
                 // A whole SQL file (often a dump) would copy every table it touches and push
                 // older restore points out of the size limit.

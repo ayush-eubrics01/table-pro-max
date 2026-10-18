@@ -69,7 +69,7 @@ export async function resolveConnectError(err: BackendError, profile: Connection
 export async function connectWithPrompt(
   profile: ConnectionProfile,
   database?: string | null,
-  options: { readOnly?: boolean } = {},
+  options: { readOnly?: boolean; lockProduction?: boolean } = {},
 ): Promise<SessionInfo | null> {
   let secrets: Secrets = { password: null, sshSecret: null };
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -80,6 +80,7 @@ export async function connectWithPrompt(
         database,
         rememberForSession: secrets.password !== null || secrets.sshSecret !== null,
         readOnly: options.readOnly ?? false,
+        lockProduction: options.lockProduction,
       });
     } catch (e) {
       const err = toError(e);

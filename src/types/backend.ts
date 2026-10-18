@@ -143,6 +143,8 @@ export interface SessionInfo {
   capabilities: Capabilities;
   server: ServerInfo;
   readOnly: boolean;
+  /** Read-only only because production connections open read-only; writes can be allowed. */
+  writesLocked: boolean;
   safetyMode: SafetyMode;
   environment: Environment;
   target: string;
@@ -249,6 +251,8 @@ export interface ScriptAnalysis {
 export interface RunOptions {
   taskId?: string;
   confirmed?: boolean;
+  /** The connection name, typed to confirm statements that destroy data on production. */
+  typedConfirmation?: string;
   timeoutSecs?: number;
   maxRows?: number;
   baseOffset?: number;

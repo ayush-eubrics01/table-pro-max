@@ -118,6 +118,9 @@ pub struct ConnectOptions {
     /// Local port of an SSH tunnel. The driver connects to 127.0.0.1 on this port while
     /// TLS still verifies the profile's real host name.
     pub tunnel_port: Option<u16>,
+    /// Open a production connection read-only (the "Open production connections read-only"
+    /// setting) unless the user chose to allow writes for this session.
+    pub lock_production: bool,
 }
 
 pub async fn connect(

@@ -59,6 +59,8 @@ export interface Workspace {
   closed: Tab[];
   /** Result of the periodic ping of the workspace session. */
   health: "ok" | "down";
+  /** Writes were allowed on a production connection that opens read-only (this app run only). */
+  allowWrites?: boolean;
 }
 
 interface WorkspacesState {
@@ -140,6 +142,7 @@ export const useWorkspaces = create<WorkspacesState>((set, get) => {
         },
         server: { product: "Redis", version: info.version, currentDatabase: String(info.db), currentUser: profile.user },
         readOnly: profile.safetyMode === "read_only",
+        writesLocked: false,
         safetyMode: profile.safetyMode,
         environment: profile.environment,
         target: `${profile.host}:${profile.port ?? 6379}/${info.db}`,

@@ -113,6 +113,8 @@ export const api = {
       database?: string | null;
       rememberForSession?: boolean;
       readOnly?: boolean;
+      /** Open production read-only (true) or writable (false); omitted follows the setting. */
+      lockProduction?: boolean;
     } = {},
   ) =>
     call<SessionInfo>("connect", {
@@ -123,6 +125,7 @@ export const api = {
         database: opts.database ?? null,
         rememberForSession: opts.rememberForSession ?? false,
         readOnly: opts.readOnly ?? false,
+        lockProduction: opts.lockProduction ?? null,
       },
     }),
   disconnect: (sessionId: string) => call<void>("disconnect", { sessionId }),
@@ -155,8 +158,8 @@ export const api = {
   fetchRows: (resultId: string, offset: number, limit: number) =>
     call<Row[]>("fetch_rows", { resultId, offset, limit }),
   releaseResults: (resultIds: string[]) => call<void>("release_results", { resultIds }),
-  explain: (sessionId: string, sql: string, analyze: boolean, confirmed = false) =>
-    call<ExplainResult>("explain_query", { sessionId, request: { sql, analyze, confirmed } }),
+  explain: (sessionId: string, sql: string, analyze: boolean, confirmed = false, typedConfirmation?: string) =>
+    call<ExplainResult>("explain_query", { sessionId, request: { sql, analyze, confirmed, typedConfirmation: typedConfirmation ?? null } }),
 
   // browsing & editing
   browseTable: (sessionId: string, request: BrowseRequest) => call<BrowseResult>("browse_table", { sessionId, request }),
@@ -185,8 +188,9 @@ export const api = {
     call<string[]>("preview_create_table", { sessionId, request }),
   previewAlterTable: (sessionId: string, schema: string, table: string, ops: AlterOp[]) =>
     call<string[]>("preview_alter_table", { sessionId, schema, table, ops }),
-  applyDdl: (sessionId: string, statements: string[]) =>
-    call<void>("apply_ddl", { sessionId, statements, confirmed: true }),
+  /** Runs reviewed DDL. On production, statements that destroy data also need the connection name. */
+  applyDdl: (sessionId: string, statements: string[], typedConfirmation?: string) =>
+    call<void>("apply_ddl", { sessionId, statements, confirmed: true, typedConfirmation: typedConfirmation ?? null }),
 
   // import/export
   cancelJob: (jobId: string) => call<boolean>("cancel_job", { jobId }),
@@ -205,8 +209,8 @@ export const api = {
   ) => call<number>("import_file", { request: { sessionId, import: importReq, createStatements, jobId, confirmed: true } }),
   readSqlFile: (path: string) => call<string>("read_sql_file", { path }),
   writeSqlFile: (path: string, contents: string) => call<void>("write_sql_file", { path, contents }),
-  runSqlFile: (sessionId: string, path: string, taskId: string, confirmed: boolean) =>
-    call<RunFileResult>("run_sql_file", { request: { sessionId, path, taskId, confirmed } }),
+  runSqlFile: (sessionId: string, path: string, taskId: string, confirmed: boolean, typedConfirmation?: string) =>
+    call<RunFileResult>("run_sql_file", { request: { sessionId, path, taskId, confirmed, typedConfirmation: typedConfirmation ?? null } }),
 
   runWidget: (sessionId: string, sql: string, params: Record<string, string>, timeoutSecs = 30) =>
     call<{ columns: ColumnMeta[]; rows: Row[]; truncated: boolean }>("run_widget_query", {

@@ -208,6 +208,11 @@ export function SettingsDialog({ appInfo, onClose }: { appInfo: AppInfo | null; 
           )}
           {section === "safety" && (
             <>
+              <Toggle
+                label="Open production connections read-only"
+                k="safety.productionReadOnly"
+                description="Writes stay off until you choose Allow writes in the status bar, for that session only."
+              />
               <NumberField label="Default query timeout (seconds)" k="query.timeoutSecs" min={0} max={86400} hint="0 uses each connection's own timeout." />
               <NumberField
                 label="Keep restore points for (days)"

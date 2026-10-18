@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { withNameConfirm } from "../connections/nameConfirm";
 import { Icon } from "../../components/Icon";
 import { createDashboard } from "../dashboards/DashboardView";
 import { uid } from "../../lib/text";
@@ -309,7 +310,8 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
           commitLabel="Drop table"
           onClose={() => setDropping(null)}
           onCommit={async () => {
-            await api.applyDdl(ws.session.sessionId, [dropping.sql]);
+            const done = await withNameConfirm(ws.session, (typed) => api.applyDdl(ws.session.sessionId, [dropping.sql], typed).then(() => true));
+            if (!done) return;
             setDropping(null);
             await loadObjects(ws.id, ws.schema, true);
             notify(`Dropped ${dropping.obj.name}`, "success");

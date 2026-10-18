@@ -14,6 +14,8 @@ export interface ConfirmRequest {
   body: ReactNode;
   confirmLabel: string;
   danger?: boolean;
+  /** The confirm button stays disabled until exactly this text is typed (a connection name). */
+  typeToConfirm?: string;
   resolve: (ok: boolean) => void;
 }
 

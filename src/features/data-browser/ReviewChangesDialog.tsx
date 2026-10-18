@@ -36,6 +36,7 @@ export function ReviewChangesDialog({ session, title, sql, summary, atomic, stat
       await onCommit();
     } catch (e) {
       setError(toError(e));
+    } finally {
       setBusy(false);
     }
   };

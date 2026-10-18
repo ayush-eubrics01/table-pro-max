@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use crate::error::{AppError, ErrorKind, Result};
 use crate::filter::FilterNode;
 use crate::model::*;
-use crate::safety::{PolicyDecision, ScriptAnalysis, analyze_script};
+use crate::safety::{PolicyDecision, ScriptAnalysis, analyze_script, needs_typed_confirmation};
 use crate::transfer::{ColumnMapping, ImportOptions, RecordReader, RowSink};
 
 /// Rows returned inline with an execution result; the rest are fetched by page.
@@ -55,6 +55,8 @@ pub struct SessionInfo {
     pub safety_mode: SafetyMode,
     pub environment: crate::config::Environment,
     pub target: String,
+    /// Read-only only because production connections open read-only; writes can be allowed.
+    pub writes_locked: bool,
 }
 
 struct SessionHandle {
@@ -137,6 +139,9 @@ pub struct RunOptions {
     /// The user has confirmed the warnings returned by a previous attempt.
     #[serde(default)]
     pub confirmed: bool,
+    /// The connection name, typed to confirm statements that destroy data on production.
+    #[serde(default)]
+    pub typed_confirmation: Option<String>,
     /// Overrides the connection's query timeout (seconds, 0 = none).
     pub timeout_secs: Option<u64>,
     pub max_rows: Option<usize>,
@@ -385,7 +390,20 @@ impl Engine {
         ssh_secret: Option<&str>,
         options: ConnectOptions,
     ) -> Result<SessionInfo> {
-        let (mut session, tunnel) = self.connect_through(profile, password, ssh_secret, &options).await?;
+        // Production opens read-only until the user allows writes; the database session enforces it
+        // (DuckDB: the policy only, see `driver_profile`).
+        let writes_locked = options.lock_production
+            && profile.environment == crate::config::Environment::Production
+            && !profile.read_only();
+        let locked;
+        let profile = if writes_locked {
+            locked = ConnectionProfile { safety_mode: SafetyMode::ReadOnly, ..profile.clone() };
+            &locked
+        } else {
+            profile
+        };
+        let connect_as = driver_profile(profile, writes_locked);
+        let (mut session, tunnel) = self.connect_through(&connect_as, password, ssh_secret, &options).await?;
         let server = session.server_info().await?;
         let info = SessionInfo {
             session_id: uuid::Uuid::new_v4().to_string(),
@@ -403,6 +421,7 @@ impl Engine {
             safety_mode: profile.safety_mode,
             environment: profile.environment,
             target: profile.target_label(),
+            writes_locked,
         };
         let handle = Arc::new(SessionHandle {
             info: info.clone(),
@@ -429,8 +448,8 @@ impl Engine {
         ssh_secret: Option<&str>,
     ) -> Result<SessionInfo> {
         let handle = self.handle(session_id)?;
-        let (new_session, tunnel) =
-            self.connect_through(&handle.profile, password, ssh_secret, &handle.options).await?;
+        let connect_as = driver_profile(&handle.profile, handle.info.writes_locked);
+        let (new_session, tunnel) = self.connect_through(&connect_as, password, ssh_secret, &handle.options).await?;
         *lock(&handle.canceller) = new_session.canceller();
         *lock(&handle.tunnel) = tunnel;
         let old = {
@@ -579,16 +598,16 @@ impl Engine {
         Ok(analyze_script(sql, h.info.dialect, h.profile.safety_mode))
     }
 
-    fn enforce_policy(analysis: &ScriptAnalysis, confirmed: bool, info: &SessionInfo) -> Result<()> {
+    fn enforce_policy(
+        analysis: &ScriptAnalysis,
+        confirmed: bool,
+        typed: Option<&str>,
+        handle: &SessionHandle,
+    ) -> Result<()> {
         match &analysis.decision {
             PolicyDecision::Allow => Ok(()),
             PolicyDecision::Block { reason } => Err(AppError::new(ErrorKind::PolicyViolation, reason)),
-            PolicyDecision::Confirm { reasons } if !confirmed => Err(AppError::new(
-                ErrorKind::ConfirmationRequired,
-                format!("Confirm execution on {} ({})", info.connection_name, info.target),
-            )
-            .with_detail(reasons.join("\n"))),
-            PolicyDecision::Confirm { .. } => Ok(()),
+            PolicyDecision::Confirm { reasons } => check_confirmation(handle, analysis, reasons, confirmed, typed),
         }
     }
 
@@ -633,13 +652,12 @@ impl Engine {
                 reasons.push(format!("Statement {}: can't keep a restore point ({reason})", i + 1));
             }
         }
-        if !reasons.is_empty() && !opts.confirmed {
+        if !reasons.is_empty()
+            && let Err(e) =
+                check_confirmation(&handle, &analysis, &reasons, opts.confirmed, opts.typed_confirmation.as_deref())
+        {
             lock(&self.tasks).remove(&task_id);
-            return Err(AppError::new(
-                ErrorKind::ConfirmationRequired,
-                format!("Confirm execution on {} ({})", handle.info.connection_name, handle.info.target),
-            )
-            .with_detail(reasons.join("\n")));
+            return Err(e);
         }
 
         let timeout_secs = opts.timeout_secs.unwrap_or(handle.profile.query_timeout_secs);
@@ -1290,7 +1308,7 @@ impl Engine {
         let probe_q = build_select_unchecked(handle.info.dialect, &structure, &probe, &deferred)?;
         if handle.profile.read_only() && probe.filter.as_ref().is_some_and(has_raw) {
             let analysis = analyze_script(&probe_q.sql, handle.info.dialect, SafetyMode::ReadOnly);
-            Self::enforce_policy(&analysis, false, &handle.info)?;
+            Self::enforce_policy(&analysis, false, None, &handle)?;
         }
         let t0 = Instant::now();
         let limit = req.limit as usize;
@@ -1832,7 +1850,7 @@ impl Engine {
         }
         let (point, actions) = self.restore_actions(session_id, point_id, rows).await?;
         if !actions.ddl.is_empty() {
-            self.apply_ddl(session_id, &actions.ddl, true).await?;
+            self.apply_ddl(session_id, &actions.ddl, true, None).await?;
         }
         let counts = if actions.sets.is_empty() {
             vec![]
@@ -1856,7 +1874,7 @@ impl Engine {
             .counts
         };
         if !actions.after.is_empty() {
-            self.apply_ddl(session_id, &actions.after, true).await?;
+            self.apply_ddl(session_id, &actions.after, true, None).await?;
         }
         if let Some(store) = self.restore_store() {
             store.set_status(std::slice::from_ref(&point.id), crate::restore::RestoreStatus::Restored)?;
@@ -1865,7 +1883,13 @@ impl Engine {
     }
 
     /// Runs reviewed, application-generated DDL (from the structure editor).
-    pub async fn apply_ddl(&self, session_id: &str, statements: &[String], confirmed: bool) -> Result<()> {
+    pub async fn apply_ddl(
+        &self,
+        session_id: &str,
+        statements: &[String],
+        confirmed: bool,
+        typed: Option<&str>,
+    ) -> Result<()> {
         let handle = self.handle(session_id)?;
         let script = statements.iter().map(|s| format!("{s};")).collect::<Vec<_>>().join("\n");
         let analysis = analyze_script(&script, handle.info.dialect, handle.profile.safety_mode);
@@ -1873,8 +1897,11 @@ impl Engine {
             return Err(AppError::new(ErrorKind::PolicyViolation, reason));
         }
         if !confirmed {
-            return Err(AppError::new(ErrorKind::ConfirmationRequired, "Review the schema change before applying it"));
+            let e = AppError::new(ErrorKind::ConfirmationRequired, "Review the schema change before applying it");
+            return Err(if typed_needed(&handle, &analysis) { e.with_code("confirm_typed") } else { e });
         }
+        let reasons: Vec<String> = analysis.statements.iter().flat_map(|s| s.reasons.first().cloned()).collect();
+        check_confirmation(&handle, &analysis, &reasons, confirmed, typed)?;
         let stmts: Vec<ParamStatement> = statements.iter().map(|s| ParamStatement::new(s.clone(), vec![])).collect();
         let atomic = handle.info.capabilities.transactional_ddl;
         self.with_session(session_id, move |s| Box::pin(async move { s.apply(&stmts, atomic).await })).await?;
@@ -1896,7 +1923,14 @@ impl Engine {
         .await
     }
 
-    pub async fn explain(&self, session_id: &str, sql: &str, analyze: bool, confirmed: bool) -> Result<ExplainResult> {
+    pub async fn explain(
+        &self,
+        session_id: &str,
+        sql: &str,
+        analyze: bool,
+        confirmed: bool,
+        typed: Option<&str>,
+    ) -> Result<ExplainResult> {
         let handle = self.handle(session_id)?;
         if !handle.info.capabilities.explain {
             return Err(AppError::unsupported(format!(
@@ -1912,7 +1946,7 @@ impl Engine {
         if analyze {
             // ANALYZE executes the statement: apply the same policy as running it.
             let analysis = analyze_script(&stmt.sql, dialect, handle.profile.safety_mode);
-            Self::enforce_policy(&analysis, confirmed, &handle.info)?;
+            Self::enforce_policy(&analysis, confirmed, typed, &handle)?;
         }
         let (explain_sql, format) = match (dialect, analyze) {
             (Dialect::Postgres, false) => (format!("EXPLAIN (FORMAT JSON, VERBOSE) {}", stmt.sql), "postgres_json"),
@@ -2223,7 +2257,7 @@ impl Engine {
         if analysis.statements.len() != 1 {
             return Err(AppError::invalid_config("A widget runs exactly one SELECT statement"));
         }
-        Self::enforce_policy(&analysis, false, &handle.info)?;
+        Self::enforce_policy(&analysis, false, None, &handle)?;
         let cancelled = Arc::new(AtomicBool::new(false));
         let outcomes = self
             .execute_one(
@@ -2433,6 +2467,44 @@ fn is_fatal(e: &AppError) -> bool {
 /// transaction inside our own, so the rows read are exactly the rows changed; before rows, the
 /// statement, after rows (UPDATE), commit. A read that fails leaves the statement to run without
 /// a restore point; the statement's own failure rolls everything back.
+/// The profile the driver opens the session with. DuckDB opens one instance per file, either
+/// read-only or writable, so a production file locked to reads opens writable underneath (the
+/// read-only policy refuses writes) and Allow writes can share the instance.
+fn driver_profile(policy: &ConnectionProfile, writes_locked: bool) -> std::borrow::Cow<'_, ConnectionProfile> {
+    if writes_locked && policy.driver == crate::config::Driver::Duckdb {
+        std::borrow::Cow::Owned(ConnectionProfile { safety_mode: SafetyMode::ConfirmDestructive, ..policy.clone() })
+    } else {
+        std::borrow::Cow::Borrowed(policy)
+    }
+}
+
+/// Whether these statements destroy data on a production connection, so a click is not enough.
+fn typed_needed(handle: &SessionHandle, analysis: &ScriptAnalysis) -> bool {
+    needs_typed_confirmation(&analysis.statements, handle.profile.safety_mode, handle.info.environment)
+}
+
+/// A confirmation the user gave (a click, and on production for statements that destroy data, the
+/// connection name typed), or the error that asks for it. `reasons` are shown in the dialog.
+fn check_confirmation(
+    handle: &SessionHandle,
+    analysis: &ScriptAnalysis,
+    reasons: &[String],
+    confirmed: bool,
+    typed: Option<&str>,
+) -> Result<()> {
+    let needs_name = typed_needed(handle, analysis);
+    let name = handle.info.connection_name.trim();
+    if confirmed && (!needs_name || typed.map(str::trim) == Some(name)) {
+        return Ok(());
+    }
+    let e = AppError::new(
+        ErrorKind::ConfirmationRequired,
+        format!("Confirm execution on {} ({})", handle.info.connection_name, handle.info.target),
+    )
+    .with_detail(reasons.join("\n"));
+    Err(if needs_name { e.with_code("confirm_typed") } else { e })
+}
+
 /// Why a capture may not match what the statement changed: it changed more rows than were read
 /// before it (a volatile WHERE, rows another session added), or fewer. MySQL counts only the rows
 /// whose values changed, so an UPDATE there may report fewer.

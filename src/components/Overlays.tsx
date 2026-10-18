@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useUi, type PromptRequest } from "../stores/ui";
+import { useUi, type ConfirmRequest, type PromptRequest } from "../stores/ui";
 import { Dialog } from "./Dialog";
 
 /** Global toasts and the shared confirmation dialog. */
@@ -19,28 +19,55 @@ export function Overlays() {
           </div>
         ))}
       </div>
-      {confirm && (
-        <Dialog
-          title={confirm.title}
-          onClose={() => confirm.resolve(false)}
-          tone={confirm.danger ? "danger" : undefined}
-          initialFocus=".dialog-footer .btn-cancel"
-          footer={
-            <>
-              <button className="btn btn-cancel" onClick={() => confirm.resolve(false)}>
-                Cancel
-              </button>
-              <button className={`btn ${confirm.danger ? "btn-danger" : "btn-primary"}`} onClick={() => confirm.resolve(true)}>
-                {confirm.confirmLabel}
-              </button>
-            </>
-          }
-        >
-          {confirm.body}
-        </Dialog>
-      )}
+      {confirm && <ConfirmDialog key={confirm.title} req={confirm} />}
       {prompt && <PromptDialog key={prompt.title} req={prompt} />}
     </>
+  );
+}
+
+function ConfirmDialog({ req }: { req: ConfirmRequest }) {
+  const [typed, setTyped] = useState("");
+  const matches = req.typeToConfirm === undefined || typed.trim() === req.typeToConfirm.trim();
+  return (
+    <Dialog
+      title={req.title}
+      onClose={() => req.resolve(false)}
+      tone={req.danger ? "danger" : undefined}
+      initialFocus={req.typeToConfirm === undefined ? ".dialog-footer .btn-cancel" : ".type-to-confirm input"}
+      footer={
+        <>
+          <button className="btn btn-cancel" onClick={() => req.resolve(false)}>
+            Cancel
+          </button>
+          <button className={`btn ${req.danger ? "btn-danger" : "btn-primary"}`} disabled={!matches} onClick={() => req.resolve(true)}>
+            {req.confirmLabel}
+          </button>
+        </>
+      }
+    >
+      {req.body}
+      {req.typeToConfirm !== undefined && (
+        <label className="field type-to-confirm">
+          <span>
+            Type <strong>{req.typeToConfirm}</strong> to confirm
+          </span>
+          <input
+            className="input"
+            autoComplete="off"
+            spellCheck={false}
+            aria-label={`Type ${req.typeToConfirm} to confirm`}
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                if (matches) req.resolve(true);
+              }
+            }}
+          />
+        </label>
+      )}
+    </Dialog>
   );
 }
 
