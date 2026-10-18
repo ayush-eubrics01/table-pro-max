@@ -2087,10 +2087,18 @@ pre,
 .snippet-list .mono {
   min-width: 5em;
 }
+.snippet-list .grow {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .snippet-form {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  margin-top: var(--space-3);
 }
 
 .settings-dialog {

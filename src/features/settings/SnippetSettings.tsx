@@ -59,7 +59,7 @@ export function SnippetSettings() {
           </div>
           <label className="field">
             <span>SQL</span>
-            <textarea className="input mono" rows={6} value={editing.body} onChange={(e) => setEditing({ ...editing, body: e.target.value })} />
+            <textarea className="textarea" rows={6} spellCheck={false} value={editing.body} onChange={(e) => setEditing({ ...editing, body: e.target.value })} />
           </label>
           <div className="setting-actions">
             <button className="btn btn-primary" onClick={() => void submit()}>
