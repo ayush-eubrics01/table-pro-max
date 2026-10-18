@@ -152,7 +152,7 @@ pub struct ImportFileRequest {
 #[tauri::command]
 pub async fn import_file(app: AppHandle, state: State<'_, AppState>, request: ImportFileRequest) -> Result<u64> {
     if !request.create_statements.is_empty() {
-        state.engine.apply_ddl(&request.session_id, &request.create_statements, request.confirmed).await?;
+        state.engine.apply_ddl(&request.session_id, &request.create_statements, request.confirmed, None).await?;
     }
     let cancel = register(&state, &request.job_id);
     let result = state
