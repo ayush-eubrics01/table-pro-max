@@ -82,6 +82,21 @@ describe("TableView", () => {
     expect(browse.args.request).toMatchObject({ schema: "public", table: "users", offset: 0 });
   });
 
+  it("edits a field in the row inspector, with the same pending and commit flow", async () => {
+    renderView();
+    fireEvent.mouseDown((await screen.findByText("ada@example.com")).closest(".grid-cell")!);
+    fireEvent.click(screen.getByRole("button", { name: "Toggle row details" }));
+    const email = within(await screen.findByRole("complementary", { name: "Row details" })).getByRole("textbox", { name: "email" });
+    fireEvent.change(email, { target: { value: "inspected@example.com" } });
+    fireEvent.blur(email);
+    expect(await screen.findByText("1 pending change")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Review and commit" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Commit changes" }));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "apply_changes")).toBe(true));
+    const set = calls.find((c) => c.cmd === "apply_changes")!.args.changes as ChangeSet;
+    expect(set.changes[0]).toMatchObject({ type: "update", key: [{ column: "id", value: "1" }], edits: [{ column: "email", value: { kind: "value", value: "inspected@example.com" } }] });
+  });
+
   it("keeps edits pending until reviewed, then commits a parameterised change set", async () => {
     renderView();
     const editor = await openEditor("ada@example.com");
