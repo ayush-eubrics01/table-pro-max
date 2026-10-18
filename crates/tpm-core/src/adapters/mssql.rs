@@ -58,7 +58,14 @@ impl Canceller for MsCanceller {
         self.wake.notify_waiters();
         Ok(())
     }
+
+    fn reset(&self) {
+        self.requested.store(false, Ordering::SeqCst);
+    }
 }
+
+/// How long the app's own reads wait for another session's lock before giving up.
+const APP_LOCK_TIMEOUT_MS: u32 = 5000;
 
 /// A text parameter; `None` binds NULL.
 struct Text<'a>(Option<&'a str>);
@@ -180,7 +187,6 @@ impl MsSession {
     /// Starts listening for a cancel: one requested from here on is seen, even before the wait is
     /// polled. A cancel that came in before this belonged to an operation that has ended.
     fn listen(canceller: &MsCanceller) -> std::pin::Pin<Box<tokio::sync::futures::Notified<'_>>> {
-        canceller.requested.store(false, Ordering::SeqCst);
         let mut wake = Box::pin(canceller.wake.notified());
         wake.as_mut().enable();
         wake
@@ -218,51 +224,37 @@ impl MsSession {
         ))
     }
 
-    /// Rows of the app's own catalog and bookkeeping queries: not interrupted by a cancel, which
-    /// is meant for the user's statement (one arriving late must not cost the connection).
+    /// Rows of the app's own queries (catalog, pages, restore points), read in full (they are
+    /// bounded already). They run through sp_executesql with a lock timeout scoped to that call,
+    /// so none waits long behind another session's transaction, and a cancel (meant for the
+    /// user's statement) doesn't interrupt them.
     async fn rows(&mut self, sql: &str, params: &[Param]) -> Result<RowSet> {
-        self.read_rows(sql, params, false).await
+        self.fetch(&format!("SET LOCK_TIMEOUT {APP_LOCK_TIMEOUT_MS};\n{sql}"), params, true).await
     }
 
-    /// Rows of an application query, read in full (generated queries are bounded already); with
-    /// `cancellable`, a cancel stops it (capture reads and pages run for a user's request).
-    /// Without values it runs as a plain batch: through sp_executesql a BEGIN TRANSACTION would
-    /// be refused for leaving the EXECUTE with a different transaction count.
-    async fn read_rows(&mut self, sql: &str, params: &[Param], cancellable: bool) -> Result<RowSet> {
+    /// A statement of the app's own that has to run as a plain batch: transaction control (a
+    /// BEGIN TRANSACTION inside sp_executesql is refused for changing the transaction count) and
+    /// the session's `@@` counters.
+    async fn control(&mut self, sql: &str) -> Result<RowSet> {
+        self.fetch(sql, &[], false).await
+    }
+
+    async fn fetch(&mut self, sql: &str, params: &[Param], rpc: bool) -> Result<RowSet> {
         let refs: Vec<Text> = params.iter().map(|p| Text(p.as_deref())).collect();
         let args: Vec<&dyn ToSql> = refs.iter().map(|p| p as &dyn ToSql).collect();
-        let canceller = self.canceller.clone();
-        let mut wake = Self::listen(&canceller);
-        if cancellable && canceller.requested.load(Ordering::SeqCst) {
-            return Err(AppError::cancelled());
-        }
-        let result = {
-            let client = self.client()?;
-            let read = async {
-                let stream =
-                    if params.is_empty() { client.simple_query(sql).await } else { client.query(sql, &args).await };
-                let mut stream = stream.map_err(app_error)?;
-                let mut rs = RowSet::default();
-                while let Some(item) = stream.try_next().await.map_err(app_error)? {
-                    match item {
-                        QueryItem::Metadata(m) if rs.columns.is_empty() => rs.columns = columns_meta(m.columns()),
-                        QueryItem::Metadata(_) => {}
-                        QueryItem::Row(row) if row.result_index() == 0 => rs.rows.push(to_row(row)),
-                        QueryItem::Row(_) => {}
-                    }
-                }
-                Ok::<RowSet, AppError>(rs)
-            };
-            tokio::select! {
-                biased;
-                r = read => Some(r),
-                _ = &mut wake, if cancellable => None,
+        let client = self.client()?;
+        let stream = if rpc { client.query(sql, &args).await } else { client.simple_query(sql).await };
+        let mut stream = stream.map_err(app_error)?;
+        let mut rs = RowSet::default();
+        while let Some(item) = stream.try_next().await.map_err(app_error)? {
+            match item {
+                QueryItem::Metadata(m) if rs.columns.is_empty() => rs.columns = columns_meta(m.columns()),
+                QueryItem::Metadata(_) => {}
+                QueryItem::Row(row) if row.result_index() == 0 => rs.rows.push(to_row(row)),
+                QueryItem::Row(_) => {}
             }
-        };
-        match result {
-            Some(r) => r,
-            None => Err(self.cancelled().await),
         }
+        Ok(rs)
     }
 
     /// Runs one batch of user SQL (with values bound when `params` is set) and gathers its result
@@ -361,7 +353,7 @@ impl MsSession {
                 "SET ROWCOUNT 0"
             };
             if self.read_only || cap {
-                let _ = self.rows(reset, &[]).await;
+                let _ = self.control(reset).await;
             }
             return Err(with_line(e, sql, shift));
         }
@@ -373,7 +365,7 @@ impl MsSession {
     }
 
     async fn row_count(&mut self) -> Result<u64> {
-        let rs = self.rows("SELECT CAST(@@ROWCOUNT AS bigint)", &[]).await?;
+        let rs = self.control("SELECT CAST(@@ROWCOUNT AS bigint)").await?;
         Ok(rs.rows.first().and_then(|r| TextRow(r).i64(0)).unwrap_or(0).max(0) as u64)
     }
 
@@ -623,7 +615,7 @@ impl Session for MsSession {
     }
 
     async fn ping(&mut self) -> Result<()> {
-        self.rows("SELECT 1", &[]).await.map(|_| ())
+        self.control("SELECT 1").await.map(|_| ())
     }
 
     async fn list_databases(&mut self) -> Result<Vec<String>> {
@@ -999,7 +991,7 @@ impl Session for MsSession {
     }
 
     async fn in_transaction(&mut self) -> Result<bool> {
-        let rs = self.rows("SELECT @@TRANCOUNT, DB_NAME()", &[]).await?;
+        let rs = self.control("SELECT @@TRANCOUNT, DB_NAME()").await?;
         let row = rs.rows.first().map(|r| TextRow(r));
         if let Some(db) = row.as_ref().and_then(|r| r.opt(1)) {
             self.database = Some(db);
@@ -1008,7 +1000,7 @@ impl Session for MsSession {
     }
 
     async fn query(&mut self, sql: &str, params: &[Param], max_rows: usize) -> Result<RowSet> {
-        let mut rs = self.read_rows(sql, params, true).await?;
+        let mut rs = self.rows(sql, params).await?;
         if rs.rows.len() > max_rows {
             rs.rows.truncate(max_rows);
             rs.truncated = true;
@@ -1064,15 +1056,15 @@ impl Session for MsSession {
 
     async fn begin(&mut self) -> Result<()> {
         // A bare BEGIN opens a block in T-SQL, not a transaction.
-        self.rows("BEGIN TRANSACTION", &[]).await.map(|_| ())
+        self.control("BEGIN TRANSACTION").await.map(|_| ())
     }
 
     async fn commit(&mut self) -> Result<()> {
-        self.rows("COMMIT TRANSACTION", &[]).await.map(|_| ())
+        self.control("COMMIT TRANSACTION").await.map(|_| ())
     }
 
     async fn rollback(&mut self) -> Result<()> {
-        self.rows("IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION", &[]).await.map(|_| ())
+        self.control("IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION").await.map(|_| ())
     }
 }
 

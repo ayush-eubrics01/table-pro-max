@@ -3039,9 +3039,30 @@ async fn sql_server_sessions_keep_their_state(
     assert!(rb.cancelled, "the waiting one is cancelled");
     assert!(rb.statements.iter().all(|s| s.rows.is_none()), "and does not run: {:?}", rb.statements);
 
+    // The app's own reads bound their lock waits without touching the user's LOCK_TIMEOUT.
+    run(engine, sid, "SET LOCK_TIMEOUT 1234").await;
+    engine.table_structure(sid, "dbo", "tpm_it_ms_s", false).await.unwrap();
+    assert_eq!(one(run(engine, sid, "SELECT @@LOCK_TIMEOUT").await), "1234");
+    run(engine, sid, "SET LOCK_TIMEOUT -1").await;
+
     // Planning a restore point does not wait on another session's lock.
     let store = Arc::new(tpm_core::storage::Storage::open_in_memory().unwrap());
     engine.set_restore_store(store.clone());
+    // Not behind another session's uncommitted DDL either (its schema lock blocks even NOLOCK).
+    let ddl = engine.open_session(profile, password, None, ConnectOptions::default()).await.unwrap();
+    run(engine, &ddl.session_id, "BEGIN TRANSACTION; ALTER TABLE tpm_it_ms_s ADD c2 int").await;
+    let (e2, sid2) = (engine.clone(), sid.to_string());
+    let h = tokio::spawn(async move {
+        let o = RunOptions { task_id: Some("ms-ddl".into()), confirmed: true, ..Default::default() };
+        e2.run_script(&sid2, "UPDATE tpm_it_ms_s SET v = 7 WHERE id = 1", o, None).await
+    });
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let t0 = Instant::now();
+    engine.cancel_task("ms-ddl").await.unwrap();
+    let r = h.await.unwrap();
+    assert!(t0.elapsed() < Duration::from_secs(15), "cancel took {:?}: {r:?}", t0.elapsed());
+    run(engine, &ddl.session_id, "ROLLBACK").await;
+    engine.close_session(&ddl.session_id).await;
     // A COMMIT that ran keeps its points, even when the batch fails afterwards.
     run(engine, sid, "BEGIN TRANSACTION").await;
     let r = engine.run_script(sid, "DELETE FROM tpm_it_ms_s WHERE id = 3", opts.clone(), None).await.unwrap();
@@ -3069,4 +3090,55 @@ async fn sql_server_sessions_keep_their_state(
     run(engine, &other.session_id, "ROLLBACK").await;
     engine.close_session(&other.session_id).await;
     run(engine, sid, "DROP TABLE tpm_it_ms_s").await;
+}
+
+/// A cancel stops the run it names, on a session several runs share: never the one holding the
+/// session for another, and not lost when another run plans in between.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancels_reach_their_own_run() {
+    let Some(t) = target_from_env("TPM_TEST_PG_URL") else { return };
+    let engine = Arc::new(Engine::new());
+    let info = engine.open_session(&t.profile, t.password.as_deref(), None, ConnectOptions::default()).await.unwrap();
+    let sid = info.session_id.clone();
+    engine.set_restore_store(Arc::new(tpm_core::storage::Storage::open_in_memory().unwrap()));
+    run(&engine, &sid, "DROP TABLE IF EXISTS tpm_it_cr; CREATE TABLE tpm_it_cr (id int PRIMARY KEY, v int)").await;
+    run(&engine, &sid, "INSERT INTO tpm_it_cr VALUES (1, 0)").await;
+    let start = |sql: &'static str, task: &'static str| {
+        let (e, s) = (engine.clone(), sid.clone());
+        tokio::spawn(async move {
+            let o = RunOptions { task_id: Some(task.into()), confirmed: true, ..Default::default() };
+            e.run_script(&s, sql, o, None).await
+        })
+    };
+
+    // Another run planning in between does not take the cancel away from the one running.
+    let b = start("SELECT pg_sleep(6)", "cr-b");
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let a = start("SELECT 1", "cr-a");
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let t0 = Instant::now();
+    engine.cancel_task("cr-b").await.unwrap();
+    let rb = b.await.unwrap().unwrap();
+    assert!(
+        rb.cancelled && t0.elapsed() < Duration::from_secs(3),
+        "B stops: {:?} after {:?}",
+        rb.statements,
+        t0.elapsed()
+    );
+    a.await.unwrap().unwrap();
+
+    // A cancel for a run waiting on the session (here: planning a restore point) stops that run only.
+    let b = start("SELECT pg_sleep(2)", "cr-b2");
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let a = start("UPDATE tpm_it_cr SET v = 1 WHERE id = 1", "cr-a2");
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    engine.cancel_task("cr-a2").await.unwrap();
+    let rb = b.await.unwrap().unwrap();
+    assert!(!rb.cancelled && rb.statements[0].error.is_none(), "B is not the one cancelled: {:?}", rb.statements);
+    let ra = a.await.unwrap().unwrap();
+    assert!(ra.cancelled, "A is");
+    let r = run(&engine, &sid, "SELECT v FROM tpm_it_cr").await;
+    assert_eq!(text(&r.statements[0].rows.clone().unwrap()[0][0]), "0", "A never ran");
+    run(&engine, &sid, "DROP TABLE tpm_it_cr").await;
+    engine.close_all().await;
 }

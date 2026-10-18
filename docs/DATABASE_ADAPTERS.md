@@ -156,9 +156,13 @@ checks `@@autocommit`, and the engine also tracks the `BEGIN`/`COMMIT`/`ROLLBACK
   the database, and the engine drops restore points made in that transaction. In practice every
   cancel and timeout reconnects until tiberius is fixed. A cancel reaches the connection only
   while that run's statement holds it (engine `cancel_task`), so one aimed at a finished statement
-  or at a run still waiting never interrupts the app's own follow-up queries. Capture reads and
-  pages can be cancelled; catalog queries can't. The restore size estimate reads with `NOLOCK`
-  so it never waits behind another session's transaction.
+  or at a run still waiting never interrupts the app's own follow-up queries; only the user's
+  batches listen for one. The app's own reads (catalog, pages, restore planning and captures) run
+  through `sp_executesql` with `SET LOCK_TIMEOUT 5000` scoped to the call, so none waits more than
+  5 s behind another session (uncommitted DDL included) and the user's own LOCK_TIMEOUT is left
+  alone; the restore size estimate also reads with `NOLOCK`. A capture that times out on a lock
+  runs the statement without a restore point and says why. With XACT_ABORT a failed batch that
+  contains COMMIT keeps its pending restore points (the restore's conflict check stands guard).
 * A batch that fails part-way reports the error only: result sets before it are not shown, though
   statements before it ran (and, outside a transaction, were committed). `GO n` (repeat a batch)
   is not supported.

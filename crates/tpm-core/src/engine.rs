@@ -38,6 +38,12 @@ const MAX_CONCURRENT_EXECUTIONS: usize = 32;
 const RESULT_STORE_BUDGET_BYTES: usize = 512 * 1024 * 1024;
 /// After a cancel request, how long to wait for the driver before giving up on the session.
 const CANCEL_GRACE: Duration = Duration::from_secs(15);
+
+tokio::task_local! {
+    /// The cancel flag of the run whose work this is (its planning and its statements, not the
+    /// follow-up queries after a statement): `with_session` marks the session as held by it.
+    static RUN: Arc<AtomicBool>;
+}
 /// How long the PostgreSQL describe for result origins may take before it is interrupted.
 const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -625,7 +631,20 @@ impl Engine {
         let _permit = self.limiter.acquire().await.map_err(|_| AppError::internal("Engine is shutting down"))?;
         let mut guard = handle.session.lock().await;
         let session = guard.as_mut().ok_or_else(|| AppError::not_found("This connection session is closed"))?;
+        // Work of a run marks the session as held by that run, so `cancel_task` reaches the driver
+        // for it alone; marked under the session lock, before the run looks at its flag.
+        let owner = RUN.try_with(Arc::clone).ok();
+        if let Some(flag) = &owner {
+            *lock(&handle.running) = Some(flag.clone());
+            lock(&handle.canceller).reset();
+        }
         let result = f(session).await;
+        if let Some(flag) = &owner {
+            let mut running = lock(&handle.running);
+            if running.as_ref().is_some_and(|r| Arc::ptr_eq(r, flag)) {
+                *running = None;
+            }
+        }
         if let Err(e) = &result
             && e.kind == ErrorKind::Network
         {
@@ -738,14 +757,13 @@ impl Engine {
             vec![CaptureState::Off; analysis.statements.len()]
         } else {
             // A cancel may interrupt planning's reads (a slow count), except on SQL Server, where
-            // that would reopen the connection; its estimate reads don't wait on locks anyway.
-            let interruptible = handle.profile.driver != crate::config::Driver::Mssql;
-            if interruptible {
-                *lock(&handle.running) = Some(cancelled.clone());
+            // that would reopen the connection: its app reads time out on locks instead.
+            let planning = self.plan_restore_points(&handle, &analysis, limits, &cancelled, &with_params);
+            if handle.profile.driver == crate::config::Driver::Mssql {
+                planning.await
+            } else {
+                RUN.scope(cancelled.clone(), planning).await
             }
-            let planned = self.plan_restore_points(&handle, &analysis, limits, &cancelled, &with_params).await;
-            *lock(&handle.running) = None;
-            planned
         };
         if cancelled.load(Ordering::SeqCst) {
             lock(&self.tasks).remove(&task_id);
@@ -788,7 +806,12 @@ impl Engine {
                 // every read; inside the user's transaction it runs under a savepoint (see add_origins).
                 let want_origins = stmt.class == crate::safety::StatementClass::Read;
                 let state = if context_changed {
-                    self.plan_one(&handle, stmt, limits, &mut structures, with_params[index]).await
+                    let planning = self.plan_one(&handle, stmt, limits, &mut structures, with_params[index]);
+                    if handle.profile.driver == crate::config::Driver::Mssql {
+                        planning.await
+                    } else {
+                        RUN.scope(cancelled.clone(), planning).await
+                    }
                 } else {
                     captures[index].clone()
                 };
@@ -1296,24 +1319,26 @@ impl Engine {
     ) -> Result<(Vec<StatementOutcome>, Option<Captured>)> {
         let canceller = lock(&handle.canceller).clone();
         let sql_owned = sql.to_string();
-        let (holder, flag) = (handle.clone(), cancelled.clone());
-        let fut = self.with_session(&handle.info.session_id, move |s| {
-            Box::pin(async move {
-                // Cancelled while waiting for the session: don't start.
-                if flag.load(Ordering::SeqCst) {
-                    return Err(AppError::cancelled());
-                }
-                *lock(&holder.running) = Some(flag);
-                let r = match (capture, params) {
-                    // Bound values: the adapter runs the statement as `execute` would, with binds.
-                    (_, Some((sql, values))) => s.execute_params(&sql, &values, max_rows).await.map(|o| (o, None)),
-                    (Some(job), None) => run_captured(s, &sql_owned, max_rows, job).await.map(|(o, c)| (o, Some(c))),
-                    (None, None) => s.execute(&sql_owned, max_rows).await.map(|o| (o, None)),
-                };
-                *lock(&holder.running) = None;
-                r
-            })
-        });
+        let flag = cancelled.clone();
+        let fut = RUN.scope(
+            cancelled.clone(),
+            self.with_session(&handle.info.session_id, move |s| {
+                Box::pin(async move {
+                    // Cancelled while waiting for the session: don't start.
+                    if flag.load(Ordering::SeqCst) {
+                        return Err(AppError::cancelled());
+                    }
+                    match (capture, params) {
+                        // Bound values: the adapter runs the statement as `execute` would, with binds.
+                        (_, Some((sql, values))) => s.execute_params(&sql, &values, max_rows).await.map(|o| (o, None)),
+                        (Some(job), None) => {
+                            run_captured(s, &sql_owned, max_rows, job).await.map(|(o, c)| (o, Some(c)))
+                        }
+                        (None, None) => s.execute(&sql_owned, max_rows).await.map(|o| (o, None)),
+                    }
+                })
+            }),
+        );
         tokio::pin!(fut);
         // The driver's own words on a cancel give way to ours, but what it adds (SQL Server: the
         // connection was opened again) stays.

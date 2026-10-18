@@ -55,6 +55,9 @@ pub trait Canceller: Send + Sync {
     /// Requests cancellation of the statement currently running on the session. Racy by
     /// nature: the statement may complete before the request arrives.
     async fn cancel(&self) -> Result<()>;
+
+    /// Forgets a cancel that arrived for an earlier run: called when a run takes the session.
+    fn reset(&self) {}
 }
 
 #[async_trait]
