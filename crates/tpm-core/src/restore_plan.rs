@@ -4,12 +4,12 @@
 use sqlparser::ast::{
     AlterTableOperation, AssignmentTarget, FromTable, ObjectName, ObjectType, SetExpr, Statement, TableFactor,
 };
-use sqlparser::dialect::{Dialect as ParserDialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect};
 use sqlparser::parser::Parser;
 
 use crate::config::Driver;
 use crate::dialect::Dialect;
 use crate::error::Result;
+use crate::large_values::is_binary_type;
 use crate::model::{ColumnInfo, TableStructure};
 
 pub const JOINS: &str = "joins other tables";
@@ -86,11 +86,7 @@ fn unsupported(reason: &str) -> PlanOutcome {
 
 /// Decides whether one statement can keep a restore point, and how its rows are found.
 pub fn plan_statement(sql: &str, dialect: Dialect) -> PlanOutcome {
-    let parser_dialect: Box<dyn ParserDialect> = match dialect {
-        Dialect::Postgres => Box::new(PostgreSqlDialect {}),
-        Dialect::Mysql => Box::new(MySqlDialect {}),
-        Dialect::Sqlite => Box::new(SQLiteDialect {}),
-    };
+    let parser_dialect = dialect.parser();
     let stmts = match Parser::parse_sql(parser_dialect.as_ref(), sql) {
         Ok(s) if s.len() == 1 => s,
         _ => return if looks_capturable(sql) { unsupported(UNREADABLE) } else { PlanOutcome::None },
@@ -166,12 +162,6 @@ pub fn plan_statement(sql: &str, dialect: Dialect) -> PlanOutcome {
         Statement::Merge(_) => unsupported(MERGE),
         _ => PlanOutcome::None,
     }
-}
-
-fn is_binary_type(data_type: &str) -> bool {
-    let t = data_type.to_ascii_lowercase();
-    let base = t.split(['(', ' ']).next().unwrap_or("");
-    matches!(base, "bytea" | "blob" | "binary" | "varbinary" | "tinyblob" | "mediumblob" | "longblob")
 }
 
 /// Reasons the table itself rules out a restore point for this plan.
@@ -250,10 +240,14 @@ pub fn capture_select(plan: &CapturePlan, s: &TableStructure, dialect: Dialect, 
         });
     }
     let mut sql = format!("SELECT {} FROM {}", select.join(", "), from_sql(plan));
+    // SQL Server locks with a table hint instead of FOR UPDATE.
+    if lock && dialect == Dialect::Mssql {
+        sql.push_str(" WITH (UPDLOCK, HOLDLOCK)");
+    }
     if let Some(w) = &plan.where_sql {
         sql.push_str(&format!(" WHERE {w}"));
     }
-    if lock {
+    if lock && dialect != Dialect::Mssql {
         sql.push_str(" FOR UPDATE");
     }
     Ok(sql)
@@ -271,15 +265,22 @@ pub fn count_select(plan: &CapturePlan, s: &TableStructure, driver: Driver, limi
             Driver::Postgres => format!("COALESCE(octet_length({col}::text), 0)"),
             Driver::Mysql | Driver::Mariadb => format!("COALESCE(LENGTH({col}), 0)"),
             Driver::Sqlite => format!("COALESCE(length(CAST({col} AS BLOB)), 0)"),
+            Driver::Mssql => format!("COALESCE(DATALENGTH({col}), 0)"),
             _ => format!("COALESCE(strlen(CAST({col} AS VARCHAR)), 0)"),
         });
     }
     let size = if sizes.is_empty() { "0".to_string() } else { sizes.join(" + ") };
-    let mut inner = format!("SELECT {size} AS rp_size FROM {}", from_sql(plan));
+    let bound = limit.saturating_add(1);
+    let top = if driver == Driver::Mssql { format!("TOP ({bound}) ") } else { String::new() };
+    let mut inner = format!("SELECT {top}{size} AS rp_size FROM {}", from_sql(plan));
     if let (Some(w), CaptureKind::Update | CaptureKind::Delete) = (&plan.where_sql, plan.kind) {
         inner.push_str(&format!(" WHERE {w}"));
     }
-    inner.push_str(&format!(" LIMIT {}", limit.saturating_add(1)));
+    if driver == Driver::Mssql {
+        // DATALENGTH is an int: sum the rows as bigint.
+        return Ok(format!("SELECT count(*), COALESCE(sum(CAST(rp_size AS bigint)), 0) FROM ({inner}) AS rp_count"));
+    }
+    inner.push_str(&format!(" LIMIT {bound}"));
     Ok(format!("SELECT count(*), COALESCE(sum(rp_size), 0) FROM ({inner}) AS rp_count"))
 }
 
@@ -411,6 +412,28 @@ mod tests {
             structure_reason(&cap("ALTER TABLE orders DROP COLUMN id"), &orders(), Driver::Postgres),
             Some(DROPS_KEY.into())
         );
+    }
+
+    #[test]
+    fn sql_server_counts_and_captures() {
+        let PlanOutcome::Capture(p) =
+            plan_statement("UPDATE dbo.orders SET status = N'x' WHERE id = 1", Dialect::Mssql)
+        else {
+            panic!()
+        };
+        assert_eq!(
+            count_select(&p, &orders(), Driver::Mssql, 10).unwrap(),
+            "SELECT count(*), COALESCE(sum(CAST(rp_size AS bigint)), 0) FROM (SELECT TOP (11) \
+             COALESCE(DATALENGTH(dbo.orders.[id]), 0) + COALESCE(DATALENGTH(dbo.orders.[status]), 0) + \
+             COALESCE(DATALENGTH(dbo.orders.[doc]), 0) AS rp_size FROM dbo.orders WHERE id = 1) AS rp_count"
+        );
+        assert_eq!(
+            capture_select(&p, &orders(), Dialect::Mssql, true).unwrap(),
+            "SELECT dbo.orders.[id], dbo.orders.[status], dbo.orders.[doc] FROM dbo.orders WITH (UPDLOCK, HOLDLOCK) \
+             WHERE id = 1"
+        );
+        let PlanOutcome::Capture(t) = plan_statement("TRUNCATE TABLE dbo.orders", Dialect::Mssql) else { panic!() };
+        assert!(count_select(&t, &orders(), Driver::Mssql, 5).unwrap().contains("SELECT TOP (6) "));
     }
 
     #[test]

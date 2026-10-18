@@ -47,6 +47,12 @@ fn holes(sql: &str, dialect: Dialect) -> Vec<(usize, usize, Hole)> {
         "CREATE PROCEDURE",
         "CREATE OR REPLACE FUNCTION",
         "CREATE OR REPLACE PROCEDURE",
+        "CREATE PROC ",
+        "CREATE TRIGGER",
+        "CREATE OR ALTER ",
+        "ALTER PROC",
+        "ALTER FUNCTION",
+        "ALTER TRIGGER",
     ]
     .iter()
     .any(|p| head.starts_with(p))
@@ -69,7 +75,9 @@ fn holes(sql: &str, dialect: Dialect) -> Vec<(usize, usize, Hole)> {
                 i = skip_quoted(b, i, b'\'', dialect == Dialect::Mysql || e_string);
             }
             b'"' => i = skip_quoted(b, i, b'"', dialect == Dialect::Mysql),
-            b'`' if dialect != Dialect::Postgres => i = skip_quoted(b, i, b'`', false),
+            b'`' if matches!(dialect, Dialect::Mysql | Dialect::Sqlite) => i = skip_quoted(b, i, b'`', false),
+            // T-SQL [names]: `]]` is a `]` inside one.
+            b'[' if dialect == Dialect::Mssql => i = skip_quoted(b, i, b']', false),
             // MySQL starts a `--` comment only before whitespace (`5--3` is arithmetic).
             b'-' if next == Some(b'-')
                 && (dialect != Dialect::Mysql || b.get(i + 2).is_none_or(|c| c.is_ascii_whitespace())) =>
@@ -77,7 +85,7 @@ fn holes(sql: &str, dialect: Dialect) -> Vec<(usize, usize, Hole)> {
                 i = sql[i..].find('\n').map_or(n, |k| i + k)
             }
             b'#' if dialect == Dialect::Mysql => i = sql[i..].find('\n').map_or(n, |k| i + k),
-            b'/' if next == Some(b'*') => i = comment_end(b, i, dialect == Dialect::Postgres),
+            b'/' if next == Some(b'*') => i = comment_end(b, i, matches!(dialect, Dialect::Postgres | Dialect::Mssql)),
             b'$' if dialect == Dialect::Postgres => {
                 let mut j = i + 1;
                 // `a$1` is a name, not a placeholder.
@@ -255,6 +263,24 @@ mod tests {
             bind_parameters("UPDATE t SET a=:new_a WHERE b IN (:x,:y)", Dialect::Postgres).unwrap().0,
             "UPDATE t SET a=$1 WHERE b IN ($2,$3)"
         );
+    }
+
+    #[test]
+    fn sql_server_placeholders() {
+        let sql = "DECLARE @lim int = 5;\nSELECT TOP (@lim) [a:b], N'x :no' FROM t /* :c /* :d */ :e */ \
+                   WHERE id = :id AND d > :since AND g = geography::Point(1, 2, 4326) AND `x` = :x";
+        assert_eq!(parameter_names(sql, Dialect::Mssql).unwrap(), ["id", "since", "x"]);
+        let (bound, order) = bind_parameters(sql, Dialect::Mssql).unwrap();
+        assert!(
+            bound.ends_with("WHERE id = @P1 AND d > @P2 AND g = geography::Point(1, 2, 4326) AND `x` = @P3"),
+            "{bound}"
+        );
+        assert_eq!(order, ["id", "since", "x"]);
+        // Procedure bodies run later, with their own parameters.
+        assert!(parameter_names("CREATE OR ALTER PROCEDURE p AS SELECT :x", Dialect::Mssql).unwrap().is_empty());
+        assert!(parameter_names("ALTER PROC p AS SELECT :x", Dialect::Mssql).unwrap().is_empty());
+        // A label is a name followed by a colon.
+        assert!(parameter_names("done:\nSELECT 1", Dialect::Mssql).unwrap().is_empty());
     }
 
     #[test]

@@ -128,7 +128,8 @@ pub fn needs_text_equality(dialect: Dialect, data_type: &str) -> bool {
             let base = t.split(['(', ' ']).next().unwrap_or("");
             matches!(base, "float" | "double" | "real")
         }
-        Dialect::Postgres => false,
+        // A float compared with the text the grid shows converts that text to float, which matches.
+        Dialect::Postgres | Dialect::Mssql => false,
     }
 }
 
@@ -187,13 +188,15 @@ fn text_expr(dialect: Dialect, col: &str) -> String {
     match dialect {
         Dialect::Postgres | Dialect::Sqlite => format!("CAST({col} AS TEXT)"),
         Dialect::Mysql => format!("CAST({col} AS CHAR)"),
+        Dialect::Mssql => format!("CAST({col} AS NVARCHAR(MAX))"),
     }
 }
 
-fn escape_like(v: &str) -> String {
+fn escape_like(dialect: Dialect, v: &str) -> String {
     let mut out = String::with_capacity(v.len());
     for ch in v.chars() {
-        if matches!(ch, '!' | '%' | '_') {
+        // `[` opens a character class in SQL Server patterns.
+        if matches!(ch, '!' | '%' | '_') || (ch == '[' && dialect == Dialect::Mssql) {
             out.push('!');
         }
         out.push(ch);
@@ -243,7 +246,7 @@ fn compile_condition(
             format!("{} {not}LIKE {p}", text_expr(d, col))
         }
         FilterOp::Contains | FilterOp::NotContains | FilterOp::StartsWith | FilterOp::EndsWith => {
-            let v = escape_like(&need(value)?);
+            let v = escape_like(d, &need(value)?);
             let pattern = match op {
                 FilterOp::StartsWith => format!("{v}%"),
                 FilterOp::EndsWith => format!("%{v}"),
@@ -270,6 +273,9 @@ fn compile_condition(
         }
         FilterOp::IsNull => format!("{col} IS NULL"),
         FilterOp::IsNotNull => format!("{col} IS NOT NULL"),
+        // SQL Server has no boolean type to test; its bit columns hold 1 and 0.
+        FilterOp::IsTrue if d == Dialect::Mssql => format!("{col} = 1"),
+        FilterOp::IsFalse if d == Dialect::Mssql => format!("{col} = 0"),
         FilterOp::IsTrue => format!("{col} IS TRUE"),
         FilterOp::IsFalse => format!("{col} IS FALSE"),
     })
@@ -337,12 +343,36 @@ mod tests {
     #[test]
     fn values_never_appear_in_sql() {
         let evil = "'; DROP TABLE users; --";
-        for d in [Dialect::Postgres, Dialect::Mysql, Dialect::Sqlite] {
+        for d in [Dialect::Postgres, Dialect::Mysql, Dialect::Sqlite, Dialect::Mssql] {
             let mut b = SqlBuilder::new(d);
             let sql = compile(&cond("name", FilterOp::Eq, Some(evil)), &cols(), &mut b).unwrap().unwrap();
             assert!(!sql.contains("DROP"), "{sql}");
             assert_eq!(b.params[0].as_deref(), Some(evil));
         }
+    }
+
+    #[test]
+    fn sql_server_filters() {
+        let tree = FilterNode::Group {
+            logic: Logic::And,
+            negate: false,
+            children: vec![
+                cond("id", FilterOp::Gte, Some("10")),
+                cond("name", FilterOp::Contains, Some("a[1]_%")),
+                cond("active", FilterOp::IsTrue, None),
+                cond("deleted", FilterOp::IsFalse, None),
+            ],
+        };
+        let cols: Vec<String> = ["id", "name", "active", "deleted"].map(String::from).to_vec();
+        let mut b = SqlBuilder::new(Dialect::Mssql);
+        let sql = compile(&tree, &cols, &mut b).unwrap().unwrap();
+        assert_eq!(
+            sql,
+            "([id] >= @P1 AND CAST([name] AS NVARCHAR(MAX)) LIKE @P2 ESCAPE '!' AND [active] = 1 AND [deleted] = 0)"
+        );
+        // `[` starts a character class in SQL Server patterns.
+        assert_eq!(b.params, vec![Some("10".into()), Some("%a![1]!_!%%".into())]);
+        assert!(!needs_text_equality(Dialect::Mssql, "float"));
     }
 
     #[test]

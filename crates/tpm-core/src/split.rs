@@ -3,6 +3,10 @@
 //! Splits on top-level `;` while respecting string literals, quoted identifiers,
 //! comments, PostgreSQL dollar-quoting and MySQL `#` comments. Each statement keeps its
 //! byte offset in the original text so server error positions can be mapped back.
+//!
+//! SQL Server scripts run as batches separated by `GO` lines, as in SSMS: variables, `IF … BEGIN
+//! … END` blocks and procedure bodies all span `;`. The statement at the cursor is finer: the
+//! top-level `;`-statement within its batch, with blocks and procedure bodies kept whole.
 
 use serde::Serialize;
 
@@ -20,6 +24,9 @@ pub struct StatementSpan {
 }
 
 pub fn split_statements(input: &str, dialect: Dialect) -> Vec<StatementSpan> {
+    if dialect == Dialect::Mssql {
+        return mssql_batches(input);
+    }
     let bytes = input.as_bytes();
     let mut out = Vec::new();
     let mut stmt_start = 0;
@@ -29,7 +36,7 @@ pub fn split_statements(input: &str, dialect: Dialect) -> Vec<StatementSpan> {
         match b {
             b'\'' => i = skip_quoted(bytes, i, b'\'', dialect == Dialect::Mysql),
             b'"' => i = skip_quoted(bytes, i, b'"', dialect == Dialect::Mysql),
-            b'`' if dialect != Dialect::Postgres => i = skip_quoted(bytes, i, b'`', false),
+            b'`' if matches!(dialect, Dialect::Mysql | Dialect::Sqlite) => i = skip_quoted(bytes, i, b'`', false),
             b'[' if dialect == Dialect::Sqlite => {
                 i = bytes[i..].iter().position(|&c| c == b']').map_or(bytes.len(), |p| i + p + 1)
             }
@@ -51,13 +58,201 @@ pub fn split_statements(input: &str, dialect: Dialect) -> Vec<StatementSpan> {
 
 /// Returns the statement containing byte offset `cursor` (or the closest preceding one).
 pub fn statement_at(input: &str, dialect: Dialect, cursor: usize) -> Option<StatementSpan> {
-    let spans = split_statements(input, dialect);
+    let spans = if dialect == Dialect::Mssql {
+        mssql_batches(input).iter().flat_map(|b| mssql_statements(input, b.start, b.end)).collect()
+    } else {
+        split_statements(input, dialect)
+    };
     spans
         .iter()
         .find(|s| cursor >= s.start && cursor <= s.end)
         .or_else(|| spans.iter().rev().find(|s| s.end <= cursor))
         .or_else(|| spans.first())
         .cloned()
+}
+
+/// Skips a T-SQL string, quoted name, `[bracketed]` name or comment starting at `i`.
+fn mssql_skip(bytes: &[u8], i: usize) -> Option<usize> {
+    match bytes[i] {
+        b'\'' => Some(skip_quoted(bytes, i, b'\'', false)),
+        b'"' => Some(skip_quoted(bytes, i, b'"', false)),
+        b'[' => Some(skip_quoted(bytes, i, b']', false)),
+        b'-' if bytes.get(i + 1) == Some(&b'-') => Some(skip_line(bytes, i)),
+        b'/' if bytes.get(i + 1) == Some(&b'*') => Some(skip_block_comment(bytes, i, true)),
+        _ => None,
+    }
+}
+
+fn is_word_byte(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, b'_' | b'@' | b'#' | b'$') || c >= 0x80
+}
+
+/// A `GO` line starting at `i` (the line's first non-blank byte): `GO`, then only blanks or a
+/// `--` comment. Returns where the next line starts.
+fn go_line(bytes: &[u8], i: usize) -> Option<usize> {
+    if !bytes[i..].get(..2).is_some_and(|w| w.eq_ignore_ascii_case(b"go")) {
+        return None;
+    }
+    let mut j = i + 2;
+    if bytes.get(j).is_some_and(|&c| is_word_byte(c)) {
+        return None;
+    }
+    while j < bytes.len() && matches!(bytes[j], b' ' | b'\t' | b'\r') {
+        j += 1;
+    }
+    match bytes.get(j) {
+        None => Some(j),
+        Some(b'\n') => Some(j + 1),
+        Some(b'-') if bytes.get(j + 1) == Some(&b'-') => Some(skip_line(bytes, j)),
+        _ => None,
+    }
+}
+
+fn mssql_batches(input: &str) -> Vec<StatementSpan> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::new();
+    let (mut start, mut i, mut line_start) = (0, 0, true);
+    while i < bytes.len() {
+        if line_start && let Some(next) = go_line(bytes, i) {
+            push_span(input, start, i, &mut out);
+            (start, i) = (next, next);
+            continue;
+        }
+        if let Some(j) = mssql_skip(bytes, i) {
+            line_start = bytes[j - 1] == b'\n';
+            i = j;
+            continue;
+        }
+        match bytes[i] {
+            b'\n' => line_start = true,
+            c if !c.is_ascii_whitespace() => line_start = false,
+            _ => {}
+        }
+        i += 1;
+    }
+    push_span(input, start, bytes.len(), &mut out);
+    out
+}
+
+/// The next word at or after `i`, upper-cased (blanks skipped).
+fn word_after(input: &str, mut i: usize, to: usize) -> String {
+    let bytes = input.as_bytes();
+    while i < to && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    let end = (i..to).find(|&j| !is_word_byte(bytes[j])).unwrap_or(to);
+    input[i..end].to_ascii_uppercase()
+}
+
+/// A statement SQL Server only takes as the first in its batch (CREATE VIEW, PROCEDURE, FUNCTION,
+/// TRIGGER, SCHEMA …): nothing may be put before or after it in the same batch.
+pub(crate) fn starts_batch_object(sql: &str) -> bool {
+    let words = leading_words(sql, 0, sql.len());
+    let kind = match words.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["CREATE", "OR", "ALTER", k, ..] | ["CREATE", k, ..] | ["ALTER", k, ..] => k.to_string(),
+        _ => return false,
+    };
+    matches!(kind.as_str(), "PROC" | "PROCEDURE" | "FUNCTION" | "TRIGGER" | "VIEW" | "SCHEMA" | "DEFAULT" | "RULE")
+}
+
+/// The first four words from `start`, upper-cased, skipping comments.
+fn leading_words(input: &str, start: usize, to: usize) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut i = start;
+    let bytes = input.as_bytes();
+    while i < to && words.len() < 4 {
+        if let Some(j) = mssql_skip(bytes, i) {
+            i = j;
+        } else if is_word_byte(bytes[i]) {
+            let w = word_after(input, i, to);
+            i += w.len().max(1);
+            words.push(w);
+        } else {
+            i += 1;
+        }
+    }
+    words
+}
+
+/// CREATE [OR ALTER] or ALTER of a procedure, function or trigger: its body runs to the batch end.
+fn starts_module(input: &str, start: usize, to: usize) -> bool {
+    let words = leading_words(input, start, to);
+    let kind = match words.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["CREATE", "OR", "ALTER", k, ..] | ["CREATE", k, ..] | ["ALTER", k, ..] => k.to_string(),
+        _ => return false,
+    };
+    matches!(kind.as_str(), "PROC" | "PROCEDURE" | "FUNCTION" | "TRIGGER")
+}
+
+/// The top-level `;`-statements of one T-SQL batch (blocks and procedure bodies kept whole).
+pub(crate) fn mssql_statement_spans(batch: &str) -> Vec<StatementSpan> {
+    mssql_statements(batch, 0, batch.len())
+}
+
+/// The upper-cased words of T-SQL text outside strings, quoted and `[bracketed]` names and comments.
+pub(crate) fn mssql_words(sql: &str) -> Vec<String> {
+    let bytes = sql.as_bytes();
+    let (mut words, mut i) = (Vec::new(), 0);
+    while i < bytes.len() {
+        if let Some(j) = mssql_skip(bytes, i) {
+            i = j;
+        } else if is_word_byte(bytes[i]) {
+            let end = (i..bytes.len()).find(|&j| !is_word_byte(bytes[j])).unwrap_or(bytes.len());
+            words.push(sql[i..end].to_ascii_uppercase());
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    words
+}
+
+/// The top-level `;`-statements of the batch `input[from..to]`.
+fn mssql_statements(input: &str, from: usize, to: usize) -> Vec<StatementSpan> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::new();
+    let (mut start, mut i, mut depth) = (from, from, 0usize);
+    let mut module: Option<bool> = None;
+    while i < to {
+        if let Some(j) = mssql_skip(bytes, i) {
+            i = j.min(to);
+            continue;
+        }
+        let b = bytes[i];
+        if is_word_byte(b) {
+            let end = (i..to).find(|&j| !is_word_byte(bytes[j])).unwrap_or(to);
+            let after_dot = i > 0 && bytes[i - 1] == b'.';
+            if !after_dot {
+                if module.is_none() {
+                    module = Some(starts_module(input, start, to));
+                }
+                match input[i..end].to_ascii_uppercase().as_str() {
+                    // BEGIN TRAN and friends are statements, not blocks.
+                    "BEGIN" => {
+                        let next = word_after(input, end, to);
+                        if !matches!(next.as_str(), "TRAN" | "TRANSACTION" | "DISTRIBUTED" | "DIALOG" | "CONVERSATION")
+                        {
+                            depth += 1;
+                        }
+                    }
+                    "CASE" => depth += 1,
+                    "END" if word_after(input, end, to) != "CONVERSATION" => depth = depth.saturating_sub(1),
+                    _ => {}
+                }
+            }
+            i = end;
+            continue;
+        }
+        if b == b';' && depth == 0 && module != Some(true) {
+            push_span(input, start, i, &mut out);
+            i += 1;
+            (start, module) = (i, None);
+            continue;
+        }
+        i += 1;
+    }
+    push_span(input, start, to, &mut out);
+    out
 }
 
 fn push_span(input: &str, start: usize, end: usize, out: &mut Vec<StatementSpan>) {
@@ -210,9 +405,50 @@ mod tests {
 
     #[test]
     fn unterminated_constructs_do_not_panic() {
-        for s in ["select 'abc", "select $$ x", "/* open", "select \"x", "$", "$a", "--"] {
+        for s in ["select 'abc", "select $$ x", "/* open", "select \"x", "$", "$a", "--", "[open", "begin", "go"] {
             let _ = split_statements(s, Dialect::Postgres);
             let _ = split_statements(s, Dialect::Mysql);
+            let _ = split_statements(s, Dialect::Mssql);
+            let _ = statement_at(s, Dialect::Mssql, s.len());
         }
+    }
+
+    #[test]
+    fn sql_server_runs_batches_split_on_go() {
+        let s = "DECLARE @x int = 1;\nSELECT @x;\nGO\nselect 'GO;'\n  go  \n/* GO\n /* nested */ GO\n*/ SELECT [a;b]]] FROM t; -- ;\n\
+                 go -- next\nCREATE PROCEDURE p AS BEGIN SELECT 1; SELECT 2; END\nGO\n-- only a comment\nGO";
+        assert_eq!(
+            sqls(s, Dialect::Mssql),
+            [
+                "DECLARE @x int = 1;\nSELECT @x;",
+                "select 'GO;'",
+                "/* GO\n /* nested */ GO\n*/ SELECT [a;b]]] FROM t; -- ;",
+                "CREATE PROCEDURE p AS BEGIN SELECT 1; SELECT 2; END",
+            ]
+        );
+        // GO is a whole line; a column or table called go is not a separator.
+        assert_eq!(sqls("SELECT go FROM t\nGO", Dialect::Mssql), ["SELECT go FROM t"]);
+        assert_eq!(sqls("SELECT 1\nGOTO done", Dialect::Mssql), ["SELECT 1\nGOTO done"]);
+        let spans = split_statements("SELECT 1\nGO\n  SELECT 2", Dialect::Mssql);
+        assert_eq!(&"SELECT 1\nGO\n  SELECT 2"[spans[1].start..spans[1].end], "SELECT 2");
+    }
+
+    #[test]
+    fn sql_server_statement_at_cursor_keeps_blocks_whole() {
+        let s = "DECLARE @x int = 1;\nIF @x = 1 BEGIN\n  UPDATE t SET a = 1;\n  \
+                 SELECT CASE WHEN a = 1 THEN 'x' END FROM t;\nEND;\nSELECT 2\nGO\n\
+                 CREATE OR ALTER PROC p AS SELECT 1; SELECT 2;\nGO\nBEGIN TRAN; DELETE FROM t; COMMIT";
+        let at = |needle: &str| statement_at(s, Dialect::Mssql, s.find(needle).unwrap() + 1).unwrap().sql;
+        assert_eq!(at("DECLARE"), "DECLARE @x int = 1");
+        assert_eq!(
+            at("UPDATE"),
+            "IF @x = 1 BEGIN\n  UPDATE t SET a = 1;\n  SELECT CASE WHEN a = 1 THEN 'x' END FROM t;\nEND"
+        );
+        assert_eq!(at("SELECT 2\nGO"), "SELECT 2");
+        assert_eq!(at("PROC p"), "CREATE OR ALTER PROC p AS SELECT 1; SELECT 2;");
+        assert_eq!(at("DELETE"), "DELETE FROM t");
+        assert_eq!(at("COMMIT"), "COMMIT");
+        let spans_ok = statement_at(s, Dialect::Mssql, s.find("DELETE").unwrap()).unwrap();
+        assert_eq!(&s[spans_ok.start..spans_ok.end], "DELETE FROM t");
     }
 }

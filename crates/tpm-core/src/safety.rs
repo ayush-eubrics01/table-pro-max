@@ -8,8 +8,7 @@
 //! an extra refusal layer on top.
 
 use serde::Serialize;
-use sqlparser::ast::{AlterTableOperation, CopySource, Query, SetExpr, Statement};
-use sqlparser::dialect::{Dialect as ParserDialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect};
+use sqlparser::ast::{AlterTableOperation, ConditionalStatementBlock, CopySource, Query, SetExpr, Statement};
 use sqlparser::parser::Parser;
 
 use crate::config::SafetyMode;
@@ -74,16 +73,26 @@ pub fn analyze_statement(sql: &str, dialect: Dialect) -> StatementAnalysis {
 }
 
 fn analyze_span(span: StatementSpan, dialect: Dialect) -> StatementAnalysis {
-    let parser_dialect: Box<dyn ParserDialect> = match dialect {
-        Dialect::Postgres => Box::new(PostgreSqlDialect {}),
-        Dialect::Mysql => Box::new(MySqlDialect {}),
-        Dialect::Sqlite => Box::new(SQLiteDialect {}),
-    };
+    let parser_dialect = dialect.parser();
     let mut reasons = Vec::new();
     let (class, parsed) = match Parser::parse_sql(parser_dialect.as_ref(), &span.sql) {
         Ok(stmts) if !stmts.is_empty() => {
             let class = stmts.iter().map(|s| classify(s, &mut reasons)).max().unwrap_or(StatementClass::Read);
             (class, true)
+        }
+        // A T-SQL batch holds many statements, often without `;` between them: judge each one,
+        // and an unreadable one by every keyword in it rather than its first.
+        _ if dialect == Dialect::Mssql => {
+            let mut class = StatementClass::Read;
+            for part in crate::split::mssql_statement_spans(&span.sql) {
+                class = class.max(match Parser::parse_sql(parser_dialect.as_ref(), &part.sql) {
+                    Ok(stmts) if !stmts.is_empty() => {
+                        stmts.iter().map(|s| classify(s, &mut reasons)).max().unwrap_or(StatementClass::Read)
+                    }
+                    _ => mssql_keyword_fallback(&part.sql, &mut reasons),
+                });
+            }
+            (class, false)
         }
         _ => {
             let class = keyword_fallback(&span.sql, &mut reasons);
@@ -241,6 +250,13 @@ fn classify(stmt: &Statement, reasons: &mut Vec<String>) -> StatementClass {
             reasons.push("Renames tables".into());
             Ddl
         }
+        // T-SQL control flow: as strong as the statements it may run.
+        Statement::If(s) => {
+            let blocks = std::iter::once(&s.if_block).chain(&s.elseif_blocks).chain(&s.else_block);
+            classify_blocks(blocks, reasons)
+        }
+        Statement::While(s) => classify_blocks(std::iter::once(&s.while_block), reasons),
+        Statement::Case(s) => classify_blocks(s.when_blocks.iter().chain(&s.else_block), reasons),
         other => {
             let text = other.to_string();
             let head = text.split_whitespace().next().unwrap_or("").to_ascii_uppercase();
@@ -256,6 +272,13 @@ fn classify(stmt: &Statement, reasons: &mut Vec<String>) -> StatementClass {
             }
         }
     }
+}
+
+fn classify_blocks<'a>(
+    blocks: impl Iterator<Item = &'a ConditionalStatementBlock>,
+    reasons: &mut Vec<String>,
+) -> StatementClass {
+    blocks.flat_map(|b| b.statements()).map(|s| classify(s, reasons)).max().unwrap_or(StatementClass::Read)
 }
 
 fn classify_query(q: &Query, reasons: &mut Vec<String>) -> StatementClass {
@@ -313,6 +336,22 @@ fn keyword_fallback(sql: &str, reasons: &mut Vec<String>) -> StatementClass {
             StatementClass::Destructive
         }
         _ => StatementClass::Unknown,
+    }
+}
+
+/// An unparsed T-SQL statement: destructive when any destructive keyword appears in it outside
+/// strings, `[names]` and comments, otherwise unknown.
+fn mssql_keyword_fallback(sql: &str, reasons: &mut Vec<String>) -> StatementClass {
+    reasons.push("The statement could not be parsed; classification is approximate".into());
+    let found = crate::split::mssql_words(sql)
+        .into_iter()
+        .find(|w| matches!(w.as_str(), "DROP" | "TRUNCATE" | "DELETE" | "UPDATE" | "ALTER" | "MERGE"));
+    match found {
+        Some(word) => {
+            reasons.push(format!("{word} statements can destroy data"));
+            StatementClass::Destructive
+        }
+        None => StatementClass::Unknown,
     }
 }
 
@@ -486,6 +525,40 @@ mod tests {
         assert_eq!(class("delete from users where id = 2"), Write);
         assert_eq!(class("alter table users add column x int"), Ddl);
         assert_eq!(class("create table t (id int)"), Ddl);
+    }
+
+    #[test]
+    fn sql_server_batches() {
+        let class = |sql: &str| {
+            let a = analyze_script(sql, Dialect::Mssql, SafetyMode::ConfirmDestructive);
+            assert_eq!(a.statements.len(), 1, "{sql}: one batch");
+            a.statements[0].class
+        };
+        assert_eq!(class("SELECT TOP 10 * FROM t WITH (NOLOCK)"), Read);
+        assert_eq!(class("DECLARE @x int = 1;\nSELECT @x;"), Read);
+        assert_eq!(class("SELECT a INTO #t FROM x"), Ddl);
+        assert_eq!(class("EXEC sp_who"), Unknown);
+        assert_eq!(class("EXEC('DELETE FROM t')"), Unknown);
+        // Blocks are classified by what they contain.
+        assert_eq!(class("IF EXISTS (SELECT 1 FROM t) BEGIN DELETE FROM t END"), Destructive);
+        assert_eq!(class("IF @x = 1 SELECT 1 ELSE SELECT 2"), Read);
+        assert_eq!(class("WHILE @i < 3 BEGIN UPDATE t SET a = 1 WHERE id = @i; SET @i = @i + 1; END"), Write);
+        // Unparsed (the parser wants `;` before END), the UPDATE keyword makes it destructive: cautious.
+        assert_eq!(class("WHILE @i < 3 BEGIN UPDATE t SET a = 1 WHERE id = @i; SET @i += 1 END"), Destructive);
+        // A batch the parser can't read is judged by every statement in it, not its first word.
+        assert_eq!(class("SELECT 1\nDELETE FROM t"), Destructive);
+        assert_eq!(class("SELECT 1; SELECT * FROM OPENROWSET(BULK 'x', SINGLE_CLOB) AS x; DROP TABLE t"), Destructive);
+        assert_eq!(class("BEGIN TRY SELECT 1/0 END TRY BEGIN CATCH SELECT ERROR_MESSAGE() END CATCH"), Unknown);
+        assert_eq!(class("SELECT [update], 'DELETE' FROM t -- DROP\nSELECT 2 FROM OPENJSON(@j)"), Unknown);
+        assert_eq!(class("DELETE TOP (10) FROM t"), Destructive);
+
+        let ro = |sql: &str| {
+            decide(&analyze_script(sql, Dialect::Mssql, SafetyMode::ReadOnly).statements, SafetyMode::ReadOnly)
+        };
+        assert_eq!(ro("SET NOCOUNT ON;\nDECLARE @x int = 1;\nSELECT @x"), PolicyDecision::Allow);
+        assert!(matches!(ro("IF 1 = 1 BEGIN DELETE FROM t END"), PolicyDecision::Block { .. }));
+        assert!(matches!(ro("EXEC sp_who"), PolicyDecision::Block { .. }));
+        assert!(matches!(ro("SELECT 1\nGO\nUPDATE t SET a = 1 WHERE id = 1"), PolicyDecision::Block { .. }));
     }
 
     #[test]

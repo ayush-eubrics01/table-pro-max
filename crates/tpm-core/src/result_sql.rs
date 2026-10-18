@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use std::ops::ControlFlow;
 
 use sqlparser::ast::{Query, SetExpr, Statement, TableFactor, Visit, Visitor};
-use sqlparser::dialect::{Dialect as ParserDialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect};
 use sqlparser::parser::Parser;
 
 use crate::dialect::Dialect;
@@ -34,11 +33,7 @@ pub const COMBINED: &str = "Results that combine queries (UNION, INTERSECT, EXCE
 pub const UNREADABLE: &str = "This query could not be analysed, so its results can't be edited";
 
 pub fn shape(sql: &str, dialect: Dialect) -> Shape {
-    let parser_dialect: Box<dyn ParserDialect> = match dialect {
-        Dialect::Postgres => Box::new(PostgreSqlDialect {}),
-        Dialect::Mysql => Box::new(MySqlDialect {}),
-        Dialect::Sqlite => Box::new(SQLiteDialect {}),
-    };
+    let parser_dialect = dialect.parser();
     let stmts = match Parser::parse_sql(parser_dialect.as_ref(), sql) {
         Ok(s) => s,
         Err(_) => return Shape::Blocked(UNREADABLE.into()),

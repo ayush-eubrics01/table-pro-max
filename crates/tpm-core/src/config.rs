@@ -21,6 +21,8 @@ pub enum Driver {
     Duckdb,
     /// Key-value store; handled by `redis_kv`, not the relational adapters.
     Redis,
+    /// Microsoft SQL Server and Azure SQL.
+    Mssql,
 }
 
 impl Driver {
@@ -34,6 +36,7 @@ impl Driver {
             }
             Driver::Sqlite => table.to_ascii_lowercase().starts_with("sqlite_"),
             Driver::Duckdb => matches!(schema.as_str(), "information_schema" | "pg_catalog"),
+            Driver::Mssql => matches!(schema.as_str(), "sys" | "information_schema"),
             Driver::Redis => false,
         }
     }
@@ -43,6 +46,7 @@ impl Driver {
             Driver::Postgres => Dialect::Postgres,
             Driver::Mysql | Driver::Mariadb => Dialect::Mysql,
             Driver::Sqlite => Dialect::Sqlite,
+            Driver::Mssql => Dialect::Mssql,
             // Redis is not SQL; the dialect is never used for it.
             Driver::Duckdb | Driver::Redis => Dialect::Postgres,
         }
@@ -54,6 +58,7 @@ impl Driver {
             Driver::Mysql | Driver::Mariadb => Some(3306),
             Driver::Sqlite | Driver::Duckdb => None,
             Driver::Redis => Some(6379),
+            Driver::Mssql => Some(1433),
         }
     }
 
@@ -69,6 +74,7 @@ impl Driver {
             Driver::Sqlite => "sqlite",
             Driver::Duckdb => "duckdb",
             Driver::Redis => "redis",
+            Driver::Mssql => "sqlserver",
         }
     }
 }
@@ -296,11 +302,15 @@ pub struct ParsedUrl {
     pub password: Option<String>,
 }
 
-/// Parses `postgres://`, `postgresql://`, `mysql://`, `mariadb://` and `sqlite:` URLs.
+/// Parses `postgres://`, `postgresql://`, `mysql://`, `mariadb://`, `sqlserver://`, `redis://`,
+/// `sqlite:` and `duckdb:` URLs, and SQL Server's ADO.NET connection strings.
 pub fn parse_connection_url(input: &str) -> Result<ParsedUrl> {
     let input = input.trim();
     if input.is_empty() {
         return Err(AppError::invalid_config("Connection URL is empty"));
+    }
+    if is_ado_string(input) {
+        return parse_ado_string(input);
     }
     if let Some(path) = file_path_for(input, "duckdb") {
         let mut profile = ConnectionProfile::new(file_name(&path), Driver::Duckdb);
@@ -320,6 +330,7 @@ pub fn parse_connection_url(input: &str) -> Result<ParsedUrl> {
         "mysql" => Driver::Mysql,
         "mariadb" => Driver::Mariadb,
         "redis" | "rediss" => Driver::Redis,
+        "sqlserver" | "mssql" => Driver::Mssql,
         other => return Err(AppError::invalid_config(format!("Unsupported URL scheme '{other}'"))),
     };
 
@@ -365,6 +376,118 @@ pub fn parse_connection_url(input: &str) -> Result<ParsedUrl> {
     if password.is_some() {
         profile.password_mode = PasswordMode::Keychain;
     }
+    Ok(ParsedUrl { profile, password })
+}
+
+/// `Server=…;Database=…` (no `://`), as the Azure portal and SQL Server tools give them.
+fn is_ado_string(input: &str) -> bool {
+    !input.contains("://") && {
+        let first = input.split(['=', ';']).next().unwrap_or_default().trim().to_ascii_lowercase();
+        matches!(first.as_str(), "server" | "data source" | "address" | "addr" | "network address")
+    }
+}
+
+/// Splits `key=value;…` pairs. A value in `{…}` may hold `;` and `=`, with `}}` for a `}`; one
+/// in double or single quotes may hold `;`.
+fn ado_pairs(input: &str) -> Result<Vec<(String, String)>> {
+    let mut pairs = Vec::new();
+    let mut rest = input;
+    while !rest.trim().is_empty() {
+        let eq =
+            rest.find('=').ok_or_else(|| AppError::invalid_config("Invalid connection string: expected key=value"))?;
+        let key = rest[..eq].trim().to_ascii_lowercase();
+        let after = rest[eq + 1..].trim_start();
+        let (value, tail) = match after.chars().next() {
+            Some('{') => {
+                let mut value = String::new();
+                let mut chars = after[1..].char_indices();
+                let mut end = None;
+                while let Some((i, c)) = chars.next() {
+                    if c == '}' {
+                        if after[1 + i + 1..].starts_with('}') {
+                            value.push('}');
+                            chars.next();
+                        } else {
+                            end = Some(1 + i + 1);
+                            break;
+                        }
+                    } else {
+                        value.push(c);
+                    }
+                }
+                let end = end.ok_or_else(|| AppError::invalid_config("Invalid connection string: unclosed {"))?;
+                (value, &after[end..])
+            }
+            Some(q @ ('"' | '\'')) => {
+                let close = after[1..]
+                    .find(q)
+                    .ok_or_else(|| AppError::invalid_config("Invalid connection string: unclosed quote"))?;
+                (after[1..1 + close].to_string(), &after[close + 2..])
+            }
+            _ => {
+                let end = after.find(';').unwrap_or(after.len());
+                (after[..end].trim().to_string(), &after[end..])
+            }
+        };
+        if !key.is_empty() {
+            pairs.push((key, value));
+        }
+        rest = tail.trim_start().strip_prefix(';').unwrap_or(tail.trim_start());
+    }
+    Ok(pairs)
+}
+
+fn parse_ado_string(input: &str) -> Result<ParsedUrl> {
+    let truthy = |v: &str| matches!(v.to_ascii_lowercase().as_str(), "true" | "yes" | "mandatory" | "strict" | "sspi");
+    let pairs = ado_pairs(input)?;
+    let get = |keys: &[&str]| pairs.iter().rev().find(|(k, _)| keys.contains(&k.as_str())).map(|(_, v)| v.clone());
+    if get(&["integrated security", "trusted_connection"]).is_some_and(|v| truthy(&v))
+        || get(&["authentication"]).is_some_and(|v| !v.eq_ignore_ascii_case("sqlpassword"))
+    {
+        return Err(AppError::unsupported(
+            "Windows and Microsoft Entra sign-in aren't supported yet. Use a SQL Server login (user name and password).",
+        ));
+    }
+    let server = get(&["server", "data source", "address", "addr", "network address"]).unwrap_or_default();
+    let server = server.trim();
+    let server = server.strip_prefix("tcp:").unwrap_or(server);
+    let (host, port) = match server.rsplit_once(',') {
+        Some((h, p)) => {
+            let port = p.trim().parse::<u16>().map_err(|_| AppError::invalid_config("Invalid port in Server"))?;
+            (h.trim(), Some(port))
+        }
+        None => (server, None),
+    };
+    if host.contains('\\') {
+        return Err(AppError::unsupported(
+            "Named instances (server\\instance) aren't supported yet. Use the instance's TCP port: Server=host,port.",
+        ));
+    }
+    let host = match host {
+        "" | "." | "(local)" => "localhost",
+        h => h,
+    };
+    let database = get(&["database", "initial catalog"]).unwrap_or_default();
+    let mut profile = ConnectionProfile::new(
+        if database.is_empty() { host.to_string() } else { format!("{database} @ {host}") },
+        Driver::Mssql,
+    );
+    profile.host = host.to_string();
+    profile.port = port.or(Driver::Mssql.default_port());
+    profile.database = database;
+    profile.user = get(&["user id", "uid", "user", "username"]).unwrap_or_default();
+    let encrypt = get(&["encrypt"]).is_none_or(|v| truthy(&v));
+    let trust = get(&["trustservercertificate", "trust server certificate"]).is_some_and(|v| truthy(&v));
+    profile.tls.mode = match (encrypt, trust) {
+        (false, _) => TlsMode::Disable,
+        (true, true) => TlsMode::RequireInsecure,
+        (true, false) => TlsMode::Require,
+    };
+    if let Some(n) = get(&["connect timeout", "connection timeout", "timeout"]).and_then(|v| v.parse::<u64>().ok()) {
+        profile.connect_timeout_secs = n.clamp(1, 600);
+    }
+    let password = get(&["password", "pwd"]).filter(|p| !p.is_empty());
+    profile.password_mode = if password.is_some() { PasswordMode::Keychain } else { PasswordMode::Ask };
     Ok(ParsedUrl { profile, password })
 }
 
@@ -428,6 +551,60 @@ mod tests {
         assert!(!Driver::Sqlite.is_system_table("main", "orders"));
         assert!(Driver::Duckdb.is_system_table("information_schema", "columns"));
         assert!(!Driver::Duckdb.is_system_table("main", "orders"));
+        assert!(Driver::Mssql.is_system_table("sys", "objects"));
+        assert!(Driver::Mssql.is_system_table("INFORMATION_SCHEMA", "TABLES"));
+        assert!(!Driver::Mssql.is_system_table("dbo", "orders"));
+    }
+
+    #[test]
+    fn parses_sql_server_urls() {
+        let p = parse_connection_url("sqlserver://app:p%40w@db.example.com/shop?sslmode=verify-full").unwrap();
+        assert_eq!(p.profile.driver, Driver::Mssql);
+        assert_eq!(p.profile.port, Some(1433));
+        assert_eq!(p.profile.database, "shop");
+        assert_eq!(p.profile.user, "app");
+        assert_eq!(p.password.as_deref(), Some("p@w"));
+        assert_eq!(p.profile.tls.mode, TlsMode::Require);
+        assert_eq!(p.profile.to_url(), "sqlserver://app@db.example.com:1433/shop?sslmode=verify-full");
+        assert_eq!(parse_connection_url("mssql://h:1444/x").unwrap().profile.port, Some(1444));
+        assert_eq!(Driver::Mssql.dialect(), Dialect::Mssql);
+    }
+
+    #[test]
+    fn parses_ado_net_connection_strings() {
+        let p = parse_connection_url(
+            "Server=tcp:db.example.com,1444;Initial Catalog=shop;Persist Security Info=False;User ID=app;\
+             Password={p;w}}x};MultipleActiveResultSets=False;Encrypt=True;TrustServerCertificate=False;\
+             Connection Timeout=30;",
+        )
+        .unwrap();
+        assert_eq!(p.profile.driver, Driver::Mssql);
+        assert_eq!(p.profile.host, "db.example.com");
+        assert_eq!(p.profile.port, Some(1444));
+        assert_eq!(p.profile.database, "shop");
+        assert_eq!(p.profile.user, "app");
+        assert_eq!(p.password.as_deref(), Some("p;w}x"));
+        assert_eq!(p.profile.tls.mode, TlsMode::Require);
+        assert_eq!(p.profile.connect_timeout_secs, 30);
+        assert_eq!(p.profile.password_mode, PasswordMode::Keychain);
+        assert!(!format!("{:?}", p.profile).contains("p;w"));
+
+        let p = parse_connection_url("Data Source=localhost;Database=x;UID=sa;Encrypt=yes;TrustServerCertificate=true")
+            .unwrap();
+        assert_eq!((p.profile.host.as_str(), p.profile.port), ("localhost", Some(1433)));
+        assert_eq!(p.profile.tls.mode, TlsMode::RequireInsecure);
+        assert_eq!(p.profile.password_mode, PasswordMode::Ask);
+        // Without Encrypt, current SQL Server drivers encrypt and verify.
+        assert_eq!(parse_connection_url("Server=h;Database=x").unwrap().profile.tls.mode, TlsMode::Require);
+        assert_eq!(parse_connection_url("Server=h;Encrypt=False").unwrap().profile.tls.mode, TlsMode::Disable);
+        assert_eq!(parse_connection_url("Server=h;Encrypt=Strict").unwrap().profile.tls.mode, TlsMode::Require);
+
+        let e = parse_connection_url("Server=h;Integrated Security=SSPI;Password=hunter2").unwrap_err();
+        assert!(e.message.contains("Windows"), "{}", e.message);
+        assert!(!e.message.contains("hunter2"));
+        let e = parse_connection_url("Server=h\\SQLEXPRESS;Database=x").unwrap_err();
+        assert!(e.message.contains("instance"), "{}", e.message);
+        assert!(parse_connection_url("Server=h;Password={unclosed").is_err());
     }
 
     #[test]

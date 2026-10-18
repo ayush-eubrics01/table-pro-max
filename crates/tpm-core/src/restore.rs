@@ -232,8 +232,13 @@ type TableDdl = (Vec<String>, Vec<String>, Vec<String>);
 
 fn table_ddl(driver: Driver, schema: &str, table: &str, def: &str) -> Result<TableDdl> {
     let dialect = driver.dialect();
-    let mut statements: Vec<String> =
-        crate::split::split_statements(def, dialect).into_iter().map(|s| s.sql).filter(|s| !s.is_empty()).collect();
+    // A SQL Server definition is one batch: run its statements one by one, like the others'.
+    let spans = if dialect == Dialect::Mssql {
+        crate::split::mssql_statement_spans(def)
+    } else {
+        crate::split::split_statements(def, dialect)
+    };
+    let mut statements: Vec<String> = spans.into_iter().map(|s| s.sql).filter(|s| !s.is_empty()).collect();
     if let Some(first) = statements.first_mut() {
         *first = qualify_create_table(first, dialect, schema)?;
     }

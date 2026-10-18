@@ -83,6 +83,18 @@ pub fn build_select_projected(
     if req.limit == 0 || req.limit > MAX_PAGE_SIZE {
         return Err(AppError::invalid_config(format!("Page size must be between 1 and {MAX_PAGE_SIZE}")));
     }
+    build_page(dialect, s, req, deferred, req.limit)
+}
+
+/// `build_select_projected` reading `limit` rows instead of `req.limit`, unchecked: the engine
+/// reads one past the page cap to learn whether more rows follow.
+pub(crate) fn build_page(
+    dialect: Dialect,
+    s: &TableStructure,
+    req: &BrowseRequest,
+    deferred: &[bool],
+    limit: u32,
+) -> Result<BuiltQuery> {
     let table = dialect.qualified(Some(&s.schema), &s.name)?;
     let mut select = Vec::with_capacity(s.columns.len());
     for (i, c) in s.columns.iter().enumerate() {
@@ -114,14 +126,19 @@ pub fn build_select_projected(
             order.push(format!("t.{}", dialect.quote_ident(&c.name)?));
         }
     }
-    let order_sql = if order.is_empty() { String::new() } else { format!(" ORDER BY {}", order.join(", ")) };
+    let select = select.join(", ");
     // The filter references bare column names, which resolve against the aliased table.
-    let sql = format!(
-        "SELECT {} FROM {table} AS t{where_sql}{order_sql} LIMIT {} OFFSET {}",
-        select.join(", "),
-        req.limit,
-        req.offset
-    );
+    let sql = if dialect == Dialect::Mssql {
+        // OFFSET … FETCH needs an ORDER BY; with nothing to sort by the order is the server's.
+        let order_sql = if order.is_empty() { "(SELECT NULL)".to_string() } else { order.join(", ") };
+        format!(
+            "SELECT {select} FROM {table} AS t{where_sql} ORDER BY {order_sql} OFFSET {} ROWS FETCH NEXT {limit} ROWS ONLY",
+            req.offset
+        )
+    } else {
+        let order_sql = if order.is_empty() { String::new() } else { format!(" ORDER BY {}", order.join(", ")) };
+        format!("SELECT {select} FROM {table} AS t{where_sql}{order_sql} LIMIT {limit} OFFSET {}", req.offset)
+    };
     Ok(BuiltQuery { sql, params: b.params })
 }
 
@@ -359,6 +376,38 @@ pub(crate) mod tests {
         req.sort.clear();
         req.limit = MAX_PAGE_SIZE + 1;
         assert!(build_select(Dialect::Mysql, &users(), &req).is_err());
+    }
+
+    #[test]
+    fn sql_server_pages_use_offset_fetch() {
+        let mut s = users();
+        s.schema = "dbo".into();
+        let req = BrowseRequest {
+            schema: "dbo".into(),
+            table: "users".into(),
+            sort: vec![SortSpec { column: "email".into(), descending: true }],
+            limit: 50,
+            offset: 100,
+            ..Default::default()
+        };
+        let q = build_select(Dialect::Mssql, &s, &req).unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT t.[id], t.[email], t.[avatar] FROM [dbo].[users] AS t ORDER BY t.[email] DESC \
+             OFFSET 100 ROWS FETCH NEXT 50 ROWS ONLY"
+        );
+        // OFFSET needs an ORDER BY: without a sort or a key, the order is left to the server.
+        for c in &mut s.columns {
+            c.primary_key = None;
+        }
+        let q = build_select(Dialect::Mssql, &s, &BrowseRequest { sort: vec![], ..req.clone() }).unwrap();
+        assert!(q.sql.ends_with(" ORDER BY (SELECT NULL) OFFSET 100 ROWS FETCH NEXT 50 ROWS ONLY"), "{}", q.sql);
+        // The engine asks for one row past the page cap, to know whether there is more.
+        let q = build_page(Dialect::Mssql, &s, &req, &[], MAX_PAGE_SIZE + 1).unwrap();
+        assert!(q.sql.ends_with(&format!("FETCH NEXT {} ROWS ONLY", MAX_PAGE_SIZE + 1)), "{}", q.sql);
+        let q = build_page(Dialect::Postgres, &users(), &req, &[], MAX_PAGE_SIZE + 1).unwrap();
+        assert!(q.sql.ends_with(&format!("LIMIT {} OFFSET 100", MAX_PAGE_SIZE + 1)), "{}", q.sql);
+        assert_eq!(build_count(Dialect::Mssql, &s, None).unwrap().sql, "SELECT count(*) FROM [dbo].[users] AS t");
     }
 
     #[test]

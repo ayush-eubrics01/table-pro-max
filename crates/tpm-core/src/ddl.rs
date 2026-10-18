@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::dialect::Dialect;
+use crate::dialect::{Dialect, validate_ident};
 use crate::error::{AppError, Result};
 use crate::model::TableStructure;
 
@@ -12,7 +12,15 @@ use crate::model::TableStructure;
 pub fn create_table_sql(dialect: Dialect, s: &TableStructure) -> Result<String> {
     let mut lines = Vec::new();
     for c in &s.columns {
+        // SQL Server: a computed column is its expression (kept as the default); identity is a property.
+        if dialect == Dialect::Mssql && c.generated {
+            lines.push(format!("  {} AS {}", dialect.quote_ident(&c.name)?, c.default.as_deref().unwrap_or("NULL")));
+            continue;
+        }
         let mut line = format!("  {} {}", dialect.quote_ident(&c.name)?, c.data_type);
+        if dialect == Dialect::Mssql && c.auto_increment {
+            line.push_str(" IDENTITY");
+        }
         if let Some(d) = &c.default {
             line.push_str(&format!(" DEFAULT {d}"));
         }
@@ -34,7 +42,7 @@ pub fn create_table_sql(dialect: Dialect, s: &TableStructure) -> Result<String> 
             sql.push_str(&format!("\n{def};"));
         }
     }
-    for c in &s.columns {
+    for c in s.columns.iter().filter(|_| dialect != Dialect::Mssql) {
         if let Some(comment) = &c.comment {
             sql.push_str(&format!(
                 "\nCOMMENT ON COLUMN {}.{} IS {};",
@@ -160,12 +168,23 @@ pub fn build_alter(dialect: Dialect, schema: &str, table: &str, ops: &[AlterOp])
     for op in ops {
         match op {
             AlterOp::AddColumn { column } => {
-                out.push(format!("ALTER TABLE {t} ADD COLUMN {}", column_sql(dialect, column, false)?))
+                // T-SQL's ADD takes no COLUMN keyword.
+                let add = if dialect == Dialect::Mssql { "ADD" } else { "ADD COLUMN" };
+                out.push(format!("ALTER TABLE {t} {add} {}", column_sql(dialect, column, false)?))
             }
             AlterOp::DropColumn { name } => out.push(format!("ALTER TABLE {t} DROP COLUMN {}", q(name)?)),
             AlterOp::RenameColumn { from, to } => out.push(match dialect {
                 Dialect::Mysql | Dialect::Postgres | Dialect::Sqlite => {
                     format!("ALTER TABLE {t} RENAME COLUMN {} TO {}", q(from)?, q(to)?)
+                }
+                // sp_rename takes the old name quoted and the new one as plain text.
+                Dialect::Mssql => {
+                    validate_ident(to)?;
+                    format!(
+                        "EXEC sp_rename {}, {}, N'COLUMN'",
+                        dialect.quote_literal(&format!("{t}.{}", q(from)?)),
+                        dialect.quote_literal(to)
+                    )
                 }
             }),
             AlterOp::SetType { name, data_type } => out.push(match dialect {
@@ -173,6 +192,8 @@ pub fn build_alter(dialect: Dialect, schema: &str, table: &str, ops: &[AlterOp])
                     format!("ALTER TABLE {t} ALTER COLUMN {} TYPE {}", q(name)?, validate_type(data_type)?)
                 }
                 Dialect::Mysql => format!("ALTER TABLE {t} MODIFY COLUMN {} {}", q(name)?, validate_type(data_type)?),
+                // Like MySQL's MODIFY, the type carries NULL / NOT NULL (it is reset otherwise).
+                Dialect::Mssql => format!("ALTER TABLE {t} ALTER COLUMN {} {}", q(name)?, validate_type(data_type)?),
                 Dialect::Sqlite => {
                     return Err(AppError::unsupported(
                         "SQLite cannot change a column type in place; recreate the table instead",
@@ -193,6 +214,16 @@ pub fn build_alter(dialect: Dialect, schema: &str, table: &str, ops: &[AlterOp])
             }),
             AlterOp::SetDefault { name, default } => out.push(match (dialect, default.as_deref()) {
                 (Dialect::Sqlite, _) => return Err(AppError::unsupported("SQLite cannot change a column default in place")),
+                // SQL Server keeps defaults as named constraints.
+                (Dialect::Mssql, Some(d)) if !d.trim().is_empty() => {
+                    format!("ALTER TABLE {t} ADD DEFAULT ({}) FOR {}", validate_default(d)?, q(name)?)
+                }
+                (Dialect::Mssql, _) => {
+                    return Err(AppError::unsupported(
+                        "SQL Server keeps a default as a named constraint: drop it with ALTER TABLE … DROP CONSTRAINT <name> \
+                         (the name is in the table's constraints)",
+                    ));
+                }
                 (_, Some(d)) if !d.trim().is_empty() => {
                     format!("ALTER TABLE {t} ALTER COLUMN {} SET DEFAULT {}", q(name)?, validate_default(d)?)
                 }
@@ -200,6 +231,10 @@ pub fn build_alter(dialect: Dialect, schema: &str, table: &str, ops: &[AlterOp])
             }),
             AlterOp::RenameTable { to } => out.push(match dialect {
                 Dialect::Mysql => format!("RENAME TABLE {t} TO {}", dialect.qualified(Some(schema), to)?),
+                Dialect::Mssql => {
+                    validate_ident(to)?;
+                    format!("EXEC sp_rename {}, {}", dialect.quote_literal(&t), dialect.quote_literal(to))
+                }
                 _ => format!("ALTER TABLE {t} RENAME TO {}", q(to)?),
             }),
             AlterOp::CreateIndex { name, columns, unique } => {
@@ -222,7 +257,7 @@ pub fn build_alter(dialect: Dialect, schema: &str, table: &str, ops: &[AlterOp])
                 ));
             }
             AlterOp::DropIndex { name } => out.push(match dialect {
-                Dialect::Mysql => format!("DROP INDEX {} ON {t}", q(name)?),
+                Dialect::Mysql | Dialect::Mssql => format!("DROP INDEX {} ON {t}", q(name)?),
                 _ => format!("DROP INDEX {}", dialect.qualified(schema_opt, name)?),
             }),
         }
@@ -303,5 +338,46 @@ mod tests {
         );
         let sql = build_alter(Dialect::Sqlite, "main", "t", &[AlterOp::DropIndex { name: "ix".into() }]).unwrap();
         assert_eq!(sql[0], "DROP INDEX \"ix\"");
+    }
+
+    #[test]
+    fn sql_server_ddl() {
+        let req = CreateTableRequest {
+            schema: "dbo".into(),
+            name: "todo".into(),
+            columns: vec![col("id", "INT IDENTITY(1,1)", true), col("title", "NVARCHAR(200)", false)],
+        };
+        assert_eq!(
+            build_create_table(Dialect::Mssql, &req).unwrap()[0],
+            "CREATE TABLE [dbo].[todo] (\n  [id] INT IDENTITY(1,1) NOT NULL,\n  [title] NVARCHAR(200),\n  PRIMARY KEY ([id])\n)"
+        );
+        let ops = vec![
+            AlterOp::AddColumn { column: col("note", "nvarchar(max)", false) },
+            AlterOp::RenameColumn { from: "a".into(), to: "it's".into() },
+            AlterOp::SetType { name: "b".into(), data_type: "bigint NOT NULL".into() },
+            AlterOp::SetDefault { name: "b".into(), default: Some("0".into()) },
+            AlterOp::RenameTable { to: "t2".into() },
+            AlterOp::CreateIndex { name: "ix_b".into(), columns: vec!["b".into()], unique: false },
+            AlterOp::DropIndex { name: "ix_b".into() },
+            AlterOp::DropColumn { name: "old".into() },
+        ];
+        let sql = build_alter(Dialect::Mssql, "dbo", "t", &ops).unwrap();
+        assert_eq!(
+            sql,
+            [
+                "ALTER TABLE [dbo].[t] ADD [note] nvarchar(max)",
+                "EXEC sp_rename N'[dbo].[t].[a]', N'it''s', N'COLUMN'",
+                "ALTER TABLE [dbo].[t] ALTER COLUMN [b] bigint NOT NULL",
+                "ALTER TABLE [dbo].[t] ADD DEFAULT (0) FOR [b]",
+                "EXEC sp_rename N'[dbo].[t]', N't2'",
+                "CREATE INDEX [ix_b] ON [dbo].[t] ([b])",
+                "DROP INDEX [ix_b] ON [dbo].[t]",
+                "ALTER TABLE [dbo].[t] DROP COLUMN [old]",
+            ]
+        );
+        let drop_default = [AlterOp::SetDefault { name: "b".into(), default: None }];
+        assert!(build_alter(Dialect::Mssql, "dbo", "t", &drop_default).unwrap_err().message.contains("constraint"));
+        let nullable = [AlterOp::SetNullable { name: "b".into(), nullable: true }];
+        assert!(build_alter(Dialect::Mssql, "dbo", "t", &nullable).is_err());
     }
 }

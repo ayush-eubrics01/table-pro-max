@@ -324,7 +324,8 @@ impl<W: Write> SqlSink<W> {
             dialect,
             table,
             columns: String::new(),
-            batch: opts.sql_batch.clamp(1, 10_000),
+            // SQL Server takes at most 1,000 rows in one VALUES list.
+            batch: opts.sql_batch.clamp(1, if dialect == Dialect::Mssql { 1000 } else { 10_000 }),
             pending: vec![],
             header: opts.header,
         })
@@ -370,6 +371,7 @@ impl<W: Write + Send> RowSink for SqlSink<W> {
                     Cell::Text(t) => self.dialect.quote_literal(t),
                     Cell::Bytes(b) => match self.dialect {
                         Dialect::Postgres => format!("'\\x{}'::bytea", hex::encode(b)),
+                        Dialect::Mssql => format!("0x{}", hex::encode(b)),
                         _ => format!("X'{}'", hex::encode(b)),
                     },
                     Cell::NotLoaded | Cell::Partial { .. } => unreachable!("rejected by ensure_full_rows"),
@@ -804,6 +806,12 @@ pub fn sql_type(dialect: Dialect, kind: &str) -> &'static str {
         (Dialect::Sqlite, "integer") => "INTEGER",
         (Dialect::Sqlite, "decimal") => "REAL",
         (Dialect::Sqlite, _) => "TEXT",
+        (Dialect::Mssql, "integer") => "bigint",
+        (Dialect::Mssql, "decimal") => "float",
+        (Dialect::Mssql, "boolean") => "bit",
+        (Dialect::Mssql, "date") => "date",
+        (Dialect::Mssql, "timestamp") => "datetime2",
+        (Dialect::Mssql, _) => "nvarchar(max)",
     }
 }
 
@@ -841,10 +849,11 @@ pub fn insert_batch(
     }
 }
 
-/// Rows per INSERT so that one statement stays under every driver's parameter limit
-/// (SQLite's default is 32,766).
-pub fn batch_rows(columns: usize) -> usize {
-    (30_000 / columns.max(1)).clamp(1, 1000)
+/// Rows per INSERT so that one statement stays under the driver's parameter limit (SQLite's
+/// default is 32,766; SQL Server takes 2,100).
+pub fn batch_rows(dialect: Dialect, columns: usize) -> usize {
+    let params = if dialect == Dialect::Mssql { 2000 } else { 30_000 };
+    (params / columns.max(1)).clamp(1, 1000)
 }
 
 #[cfg(test)]
@@ -1105,8 +1114,40 @@ mod tests {
         assert_eq!(st.sql, "INSERT INTO \"t\" (\"name\", \"id\") VALUES (?1, ?2), (?3, ?4)");
         assert_eq!(st.params, vec![Some("'; drop table x; --".into()), Some("1".into()), None, Some("2".into())]);
         assert_eq!(st.expect_rows, Some(2));
-        assert_eq!(batch_rows(3), 1000);
-        assert_eq!(batch_rows(100), 300);
+        assert_eq!(batch_rows(Dialect::Sqlite, 3), 1000);
+        assert_eq!(batch_rows(Dialect::Postgres, 100), 300);
+        // SQL Server takes at most 2,100 parameters in one statement.
+        assert_eq!(batch_rows(Dialect::Mssql, 3), 666);
+        assert_eq!(batch_rows(Dialect::Mssql, 100), 20);
+        assert_eq!(batch_rows(Dialect::Mssql, 5000), 1);
+        let st = insert_batch(Dialect::Mssql, "[t]", &["[name]".into(), "[id]".into()], &mapping, &recs);
+        assert_eq!(st.sql, "INSERT INTO [t] ([name], [id]) VALUES (@P1, @P2), (@P3, @P4)");
+        assert_eq!(sql_type(Dialect::Mssql, "boolean"), "bit");
+        assert_eq!(sql_type(Dialect::Mssql, "timestamp"), "datetime2");
+        assert_eq!(sql_type(Dialect::Mssql, "text"), "nvarchar(max)");
+    }
+
+    #[test]
+    fn sql_server_exports() {
+        let opts = ExportOptions {
+            format: ExportFormat::Sql,
+            delimiter: ',',
+            header: false,
+            null_text: String::new(),
+            sql_table: Some("items".into()),
+            sql_schema: Some("dbo".into()),
+            dialect: Some(Dialect::Mssql),
+            sql_batch: 5000,
+        };
+        let sql = rows_as_text(&cols(), &rows(), &opts).unwrap();
+        assert_eq!(
+            sql,
+            "INSERT INTO [dbo].[items] ([id], [name], [data]) VALUES\n  (N'1', N'a,b \"q\"', 0xdead),\n  (N'2', NULL, NULL);\n"
+        );
+        // One INSERT … VALUES takes at most 1,000 rows on SQL Server.
+        let many: Vec<Row> = (0..2500).map(|i| vec![Cell::Text(i.to_string()), Cell::Null, Cell::Null]).collect();
+        let sql = rows_as_text(&cols(), &many, &opts).unwrap();
+        assert_eq!(sql.matches("INSERT INTO").count(), 3);
     }
 
     #[test]

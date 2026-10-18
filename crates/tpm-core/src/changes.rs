@@ -80,6 +80,28 @@ fn comparable(dialect: Dialect, data_type: &str) -> bool {
             .iter()
             .any(|x| t.contains(x)),
         Dialect::Sqlite => !t.contains("blob"),
+        // `=` is not defined for the LOB, XML and spatial types, bytes are bound as text, and
+        // floats do not convert back from their text form exactly.
+        Dialect::Mssql => {
+            let base = t.split('(').next().unwrap_or_default().trim();
+            ![
+                "text",
+                "ntext",
+                "image",
+                "xml",
+                "geography",
+                "geometry",
+                "hierarchyid",
+                "sql_variant",
+                "binary",
+                "varbinary",
+                "timestamp",
+                "rowversion",
+                "float",
+                "real",
+            ]
+            .contains(&base)
+        }
     }
 }
 
@@ -153,8 +175,15 @@ fn build_insert(
             _ => format!("INSERT INTO {table} DEFAULT VALUES"),
         }
     } else {
-        let overriding = if override_identity { " OVERRIDING SYSTEM VALUE" } else { "" };
-        format!("INSERT INTO {table} ({}){overriding} VALUES ({})", cols.join(", "), vals.join(", "))
+        let overriding =
+            if override_identity && dialect == Dialect::Postgres { " OVERRIDING SYSTEM VALUE" } else { "" };
+        let insert = format!("INSERT INTO {table} ({}){overriding} VALUES ({})", cols.join(", "), vals.join(", "));
+        if override_identity && dialect == Dialect::Mssql && s.columns.iter().any(|c| c.auto_increment) {
+            // An identity column takes a given value only while IDENTITY_INSERT is on.
+            format!("SET IDENTITY_INSERT {table} ON; {insert}; SET IDENTITY_INSERT {table} OFF")
+        } else {
+            insert
+        }
     };
     Ok(ParamStatement { sql, params, expect_rows: Some(1) })
 }
@@ -220,7 +249,7 @@ fn build_update(
             let q = dialect.quote_ident(&e.column)?;
             let lhs = if dialect == Dialect::Postgres { format!("{q}::text") } else { q };
             let p = placeholder(dialect, &mut params, original.clone());
-            where_sql.push_str(&format!(" AND {lhs} {} {p}", dialect.null_safe_eq()));
+            where_sql.push_str(&format!(" AND {}", dialect.null_safe_eq(&lhs, &p)));
         }
     }
     Ok(ParamStatement {
@@ -257,8 +286,12 @@ fn inline_params(dialect: Dialect, st: &ParamStatement) -> String {
             }
             out
         }
-        Dialect::Postgres | Dialect::Sqlite => {
-            let prefix = if dialect == Dialect::Postgres { "$" } else { "?" };
+        Dialect::Postgres | Dialect::Sqlite | Dialect::Mssql => {
+            let prefix = match dialect {
+                Dialect::Postgres => "$",
+                Dialect::Mssql => "@P",
+                _ => "?",
+            };
             let mut out = st.sql.clone();
             // Replace higher indexes first so "$1" does not clobber "$10".
             for (i, p) in st.params.iter().enumerate().rev() {
@@ -302,6 +335,93 @@ mod tests {
         assert_eq!(st[0].expect_rows, Some(1));
         let mysql = build_statements(Dialect::Mysql, &users(), &set).unwrap();
         assert_eq!(mysql[0].sql, "UPDATE `public`.`users` SET `email` = ? WHERE `id` = ? AND `email` <=> ?");
+    }
+
+    fn sql_server_users() -> TableStructure {
+        let mut s = users();
+        s.schema = "dbo".into();
+        s.columns[1].data_type = "nvarchar(200)".into();
+        s.columns[2].data_type = "varbinary(max)".into();
+        s
+    }
+
+    #[test]
+    fn sql_server_updates_compare_what_converts_back_exactly() {
+        let edit = |column: &str, new: &str, old: &str| ColumnEdit {
+            column: column.into(),
+            value: EditValue::Value { value: Some(new.into()) },
+            original: Some(Some(old.into())),
+        };
+        let set = ChangeSet {
+            schema: "dbo".into(),
+            table: "users".into(),
+            check_conflicts: true,
+            changes: vec![RowChange::Update {
+                key: key("7"),
+                edits: vec![edit("email", "new@x.com", "old@x.com"), edit("avatar", "\\x01", "\\x00")],
+            }],
+        };
+        let st = build_statements(Dialect::Mssql, &sql_server_users(), &set).unwrap();
+        assert_eq!(
+            st[0].sql,
+            "UPDATE [dbo].[users] SET [email] = @P1, [avatar] = @P2 WHERE [id] = @P3 \
+             AND ([email] = @P4 OR ([email] IS NULL AND @P4 IS NULL))"
+        );
+        assert_eq!(st[0].params.len(), 4);
+        for ty in ["text", "ntext", "image", "xml", "geography", "sql_variant", "float", "real", "timestamp"] {
+            assert!(!comparable(Dialect::Mssql, ty), "{ty}");
+        }
+        for ty in ["nvarchar(max)", "int", "datetime2(7)", "money", "uniqueidentifier", "bit", "decimal(10,2)"] {
+            assert!(comparable(Dialect::Mssql, ty), "{ty}");
+        }
+    }
+
+    #[test]
+    fn sql_server_inserts_and_restores_keep_identity_values() {
+        let insert = |id: &str| RowChange::Insert {
+            values: vec![
+                ColumnEdit { column: "id".into(), value: EditValue::Value { value: Some(id.into()) }, original: None },
+                ColumnEdit {
+                    column: "email".into(),
+                    value: EditValue::Value { value: Some("a".into()) },
+                    original: None,
+                },
+            ],
+        };
+        let set = ChangeSet {
+            schema: "dbo".into(),
+            table: "users".into(),
+            check_conflicts: false,
+            changes: vec![insert("5")],
+        };
+        let st = build_statements(Dialect::Mssql, &sql_server_users(), &set).unwrap();
+        assert_eq!(st[0].sql, "INSERT INTO [dbo].[users] ([id], [email]) VALUES (@P1, @P2)");
+        let restore = build_statements_with(Dialect::Mssql, &sql_server_users(), &set, true).unwrap();
+        assert_eq!(
+            restore[0].sql,
+            "SET IDENTITY_INSERT [dbo].[users] ON; INSERT INTO [dbo].[users] ([id], [email]) VALUES (@P1, @P2); \
+             SET IDENTITY_INSERT [dbo].[users] OFF"
+        );
+        // Without an identity column there is nothing to switch on.
+        let mut plain = sql_server_users();
+        plain.columns[0].auto_increment = false;
+        let st = build_statements_with(Dialect::Mssql, &plain, &set, true).unwrap();
+        assert_eq!(st[0].sql, "INSERT INTO [dbo].[users] ([id], [email]) VALUES (@P1, @P2)");
+        let empty = ChangeSet {
+            schema: "dbo".into(),
+            table: "users".into(),
+            check_conflicts: false,
+            changes: vec![RowChange::Insert { values: vec![] }, RowChange::Delete { key: key("3") }],
+        };
+        let st = build_statements(Dialect::Mssql, &sql_server_users(), &empty).unwrap();
+        assert_eq!(st[0].sql, "INSERT INTO [dbo].[users] DEFAULT VALUES");
+        assert_eq!(st[1].sql, "DELETE FROM [dbo].[users] WHERE [id] = @P1");
+        let many = ParamStatement {
+            sql: "SELECT @P1, @P10, @P11".into(),
+            params: (1..=11).map(|i| Some(format!("é{i}"))).collect(),
+            expect_rows: None,
+        };
+        assert_eq!(preview(Dialect::Mssql, &[many]), "SELECT N'é1', N'é10', N'é11';");
     }
 
     #[test]
