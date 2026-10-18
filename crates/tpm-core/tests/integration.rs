@@ -2686,7 +2686,11 @@ async fn sql_server_flow(t: Target) {
     let r = handle.await.unwrap().unwrap();
     assert!(t0.elapsed() < Duration::from_secs(5), "cancel took {:?}", t0.elapsed());
     assert!(r.cancelled);
-    assert_eq!(r.statements[0].error.as_ref().unwrap().kind, ErrorKind::Cancelled);
+    let err = r.statements[0].error.as_ref().unwrap();
+    assert_eq!(err.kind, ErrorKind::Cancelled);
+    // tiberius 0.13.0 can't settle the connection after a cancel (prisma/tiberius#459): it is
+    // opened again, and the message says what that cost. Drop this once the fix is released.
+    assert!(err.detail.as_deref().unwrap_or_default().contains("opened again"), "{err:?}");
     run(&engine, &sid, "SELECT 1").await;
     let t0 = Instant::now();
     let r = engine

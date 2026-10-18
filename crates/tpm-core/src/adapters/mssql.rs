@@ -549,7 +549,8 @@ impl Session for MsSession {
         };
         Ok(ServerInfo {
             product: product.into(),
-            version: format!("{} ({})", r.str(0), r.str(1)),
+            // "16.0.4305.5 Developer Edition (64-bit)"
+            version: format!("{} {}", r.str(0), r.str(1)),
             current_database: r.str(3),
             current_user: r.str(4),
         })

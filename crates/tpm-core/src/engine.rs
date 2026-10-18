@@ -1289,8 +1289,14 @@ impl Engine {
             })
         });
         tokio::pin!(fut);
+        // The driver's own words on a cancel give way to ours, but what it adds (SQL Server: the
+        // connection was opened again) stays.
         let map_cancel = |e: AppError| {
-            if cancelled.load(Ordering::SeqCst) && e.kind == ErrorKind::Cancelled { AppError::cancelled() } else { e }
+            if cancelled.load(Ordering::SeqCst) && e.kind == ErrorKind::Cancelled {
+                AppError { detail: e.detail, ..AppError::cancelled() }
+            } else {
+                e
+            }
         };
         if timeout_secs == 0 {
             return fut.await.map_err(map_cancel);
@@ -1300,6 +1306,7 @@ impl Engine {
             _ = tokio::time::sleep(Duration::from_secs(timeout_secs)) => {
                 let _ = canceller.cancel().await;
                 match tokio::time::timeout(CANCEL_GRACE, &mut fut).await {
+                    Ok(Err(e)) => Err(AppError { detail: e.detail, ..AppError::timeout(timeout_secs) }),
                     Ok(_) => Err(AppError::timeout(timeout_secs)),
                     Err(_) => {
                         handle.broken.store(true, Ordering::SeqCst);
