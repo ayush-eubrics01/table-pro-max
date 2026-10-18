@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { useRestore } from "../stores/restore";
 import { StatusBar } from "./WorkspaceView";
 import { profile, session } from "../test/fixtures";
-import type { Workspace } from "../stores/workspaces";
+import { useWorkspaces, type Workspace } from "../stores/workspaces";
+import { Overlays } from "../components/Overlays";
 
 afterEach(() => {
   cleanup();
@@ -53,5 +54,57 @@ describe("StatusBar", () => {
     render(<StatusBar ws={off} version="0.1.0" />);
     await new Promise((r) => setTimeout(r, 20));
     expect(screen.queryByRole("button", { name: /Restore points/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("StatusBar: production opened read-only", () => {
+  const locked = () => {
+    const w = { ...(ws({ readOnly: true, writesLocked: true, safetyMode: "read_only", environment: "production" }) as unknown as Record<string, unknown>), kind: "sql" } as unknown as Workspace;
+    useWorkspaces.setState({ workspaces: [w], activeId: w.id });
+    return w;
+  };
+
+  it("allows writes for this session after the connection name is typed", async () => {
+    const calls: { cmd: string; args: Record<string, unknown> }[] = [];
+    mockIPC((cmd, args) => {
+      calls.push({ cmd, args: args as Record<string, unknown> });
+      if (cmd === "connect") return { ...session, sessionId: "sess-2", readOnly: false, writesLocked: false };
+      return cmd.startsWith("list_") ? [] : null;
+    });
+    const w = locked();
+    render(
+      <>
+        <StatusBar ws={w} version="0.1.0" />
+        <Overlays />
+      </>,
+    );
+    expect(screen.getByText("Read-only (production)")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Allow writes" }));
+    await screen.findByRole("dialog");
+    const confirm = screen.getAllByRole("button", { name: "Allow writes" }).at(-1)!;
+    expect(confirm).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(`Type ${session.connectionName} to confirm`), { target: { value: session.connectionName } });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(useWorkspaces.getState().workspaces[0]!.session.sessionId).toBe("sess-2"));
+    const connect = calls.find((c) => c.cmd === "connect")!;
+    expect((connect.args.request as Record<string, unknown>).allowWrites).toBe(true);
+    expect(useWorkspaces.getState().workspaces[0]!.allowWrites).toBe(true);
+    expect(calls.some((c) => c.cmd === "disconnect" && c.args.sessionId === session.sessionId)).toBe(true);
+  });
+
+  it("goes back to read-only without asking", async () => {
+    const calls: { cmd: string; args: Record<string, unknown> }[] = [];
+    mockIPC((cmd, args) => {
+      calls.push({ cmd, args: args as Record<string, unknown> });
+      if (cmd === "connect") return { ...session, sessionId: "sess-3", readOnly: true, writesLocked: true };
+      return cmd.startsWith("list_") ? [] : null;
+    });
+    const w = { ...(ws({ readOnly: false, environment: "production" }) as unknown as Record<string, unknown>), kind: "sql", allowWrites: true } as unknown as Workspace;
+    useWorkspaces.setState({ workspaces: [w], activeId: w.id });
+    render(<StatusBar ws={w} version="0.1.0" />);
+    fireEvent.click(screen.getByRole("button", { name: "Back to read-only" }));
+    await waitFor(() => expect(useWorkspaces.getState().workspaces[0]!.session.sessionId).toBe("sess-3"));
+    expect((calls.find((c) => c.cmd === "connect")!.args.request as Record<string, unknown>).allowWrites).toBe(false);
+    expect(useWorkspaces.getState().workspaces[0]!.allowWrites).toBe(false);
   });
 });

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../components/Icon";
+import { EnvBadge } from "../components/EnvBadge";
 import { useWorkspaces, type Tab, type Workspace } from "../stores/workspaces";
 import { useRestore } from "../stores/restore";
 import { RestorePanel } from "../features/restore/RestorePanel";
@@ -69,7 +70,7 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
 
   const switchDatabase = async (db: string) => {
     try {
-      const session = await connectWithPrompt(ws.profile, db);
+      const session = await connectWithPrompt(ws.profile, db, { allowWrites: ws.allowWrites ?? false });
       if (!session) return;
       await api.disconnect(ws.session.sessionId).catch(() => undefined);
       const schemas = await api.listSchemas(session.sessionId);
@@ -182,6 +183,55 @@ function RestoreCount({ ws }: { ws: Workspace }) {
   );
 }
 
+/**
+ * Allows writes on a production connection that opened read-only, or takes them back: the
+ * workspace reconnects the other way (query tabs follow on their next run). Allowing asks for the
+ * connection name; it lasts until the workspace closes.
+ */
+export async function changeWriteAccess(ws: Workspace, allow: boolean) {
+  const s = ws.session;
+  if (allow) {
+    const ok = await confirmAction({
+      title: `Allow writes on ${s.connectionName}?`,
+      body: (
+        <>
+          <div className="field-row" style={{ alignItems: "center" }}>
+            <EnvBadge env={s.environment} />
+            <strong>{s.connectionName}</strong>
+            <span className="hint mono">{s.target}</span>
+          </div>
+          <p style={{ margin: 0 }}>
+            Statements and edits can change this production database until you go back to read-only or close the connection. Query tabs reconnect on their next run, and a transaction open in
+            one is rolled back.
+          </p>
+        </>
+      ),
+      confirmLabel: "Allow writes",
+      danger: true,
+      typeToConfirm: s.connectionName,
+    });
+    if (!ok) return;
+  } else {
+    const pending = usePendingEdits.getState().byWorkspace[ws.id] ?? 0;
+    const ok =
+      pending === 0 ||
+      (await confirmAction({
+        title: "Go back to read-only?",
+        body: `${pending === 1 ? "1 table has" : `${pending} tables have`} edits you have not committed. They can't be committed while the connection is read-only.`,
+        confirmLabel: "Go back to read-only",
+      }));
+    if (!ok) return;
+  }
+  try {
+    const session = await connectWithPrompt(ws.profile, s.dialect === "postgres" ? s.database : null, { allowWrites: allow });
+    if (!session) return;
+    await api.disconnect(s.sessionId).catch(() => undefined);
+    useWorkspaces.getState().update(ws.id, { session, allowWrites: allow, health: "ok" });
+  } catch (e) {
+    notifyError(e, allow ? "Could not allow writes" : "Could not go back to read-only");
+  }
+}
+
 export function StatusBar({ ws, version }: { ws: Workspace | undefined; version?: string }) {
   if (!ws)
     return (
@@ -220,12 +270,26 @@ export function StatusBar({ ws, version }: { ws: Workspace | undefined; version?
         {s.server.product} {s.server.version}
       </span>
       <span className="grow" />
-      {s.readOnly ? (
+      {s.writesLocked ? (
+        <span className="write-mode">
+          <Icon name="lock" size={12} /> Read-only (production)
+          <button className="btn btn-ghost" style={{ height: 18 }} onClick={() => void changeWriteAccess(ws, true)}>
+            Allow writes
+          </button>
+        </span>
+      ) : s.readOnly ? (
         <span className="write-mode">
           <Icon name="lock" size={12} /> Read-only
         </span>
       ) : (
-        <span className="write-mode">Writes enabled</span>
+        <span className="write-mode">
+          Writes enabled
+          {ws.allowWrites && (
+            <button className="btn btn-ghost" style={{ height: 18 }} onClick={() => void changeWriteAccess(ws, false)}>
+              Back to read-only
+            </button>
+          )}
+        </span>
       )}
       {/* A read-only session already says so; don't repeat it as the safety mode. */}
       {!(s.readOnly && s.safetyMode === "read_only") && <span title="Query safety mode">{safetyLabel(s.safetyMode)}</span>}

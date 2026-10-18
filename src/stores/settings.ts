@@ -32,6 +32,8 @@ export interface Settings {
   "restore.maxRows": number;
   "restore.maxMb": number;
   "restore.maxTotalMb": number;
+  /** Production connections open read-only until writes are allowed (read by the backend at connect). */
+  "safety.productionReadOnly": boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -58,6 +60,7 @@ export const DEFAULT_SETTINGS: Settings = {
   "restore.maxRows": 100_000,
   "restore.maxMb": 50,
   "restore.maxTotalMb": 1024,
+  "safety.productionReadOnly": true,
 };
 
 interface SettingsState {

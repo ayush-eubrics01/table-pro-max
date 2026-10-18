@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { withNameConfirm } from "../connections/nameConfirm";
 import { Icon } from "../../components/Icon";
 import type { AlterOp, ColumnDef, SessionInfo, TableStructure } from "../../types/backend";
 import { api } from "../../lib/ipc";
@@ -36,7 +37,8 @@ export function StructureView({ session, structure, onChanged }: Props) {
   };
 
   const apply = async () => {
-    await api.applyDdl(session.sessionId, review ?? []);
+    const done = await withNameConfirm(session, (typed) => api.applyDdl(session.sessionId, review ?? [], typed).then(() => true));
+    if (!done) return;
     setReview(null);
     setOps([]);
     notify("Structure updated", "success");

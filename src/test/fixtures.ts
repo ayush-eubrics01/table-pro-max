@@ -41,6 +41,7 @@ export const session: SessionInfo = {
   },
   server: { product: "PostgreSQL", version: "16", currentDatabase: "app", currentUser: "app" },
   readOnly: false,
+  writesLocked: false,
   safetyMode: "confirm_destructive",
   environment: "production",
   target: "app@localhost:5432/app",

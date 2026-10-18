@@ -12,6 +12,7 @@ import { confirmAction, notify, notifyError, promptText } from "../../stores/ui"
 import { useSettings } from "../../stores/settings";
 import { useWorkspaces, type QueryTab as QueryTabModel, type Workspace } from "../../stores/workspaces";
 import { EnvBadge } from "../../components/EnvBadge";
+import { ConfirmRunBody, needsName } from "../connections/nameConfirm";
 import { SqlEditor, type RunMode, type SqlEditorHandle } from "./SqlEditor";
 import { ResultsPanel } from "./ResultsPanel";
 import { HistoryPanel } from "../query-history/HistoryPanel";
@@ -144,13 +145,27 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
   const schemaRef = useRef(ws.schema);
   const ensureSession = useCallback(async (): Promise<SessionInfo | null> => {
     if (sessionRef.current) return sessionRef.current;
-    const s = await connectWithPrompt(ws.profile, ws.session.dialect === "postgres" ? ws.session.database : null);
+    const s = await connectWithPrompt(ws.profile, ws.session.dialect === "postgres" ? ws.session.database : null, { allowWrites: ws.allowWrites ?? false });
     sessionRef.current = s;
     setSession(s);
     // Unqualified names resolve in the schema picked in the sidebar.
     if (s) await api.setDefaultSchema(s.sessionId, schemaRef.current).catch((e) => notifyError(e, "Could not switch schema"));
     return s;
-  }, [ws.profile, ws.session]);
+  }, [ws.profile, ws.session, ws.allowWrites]);
+
+  // Writes allowed or taken back: this tab's session opened the other way, so it reconnects on
+  // the next run (an open transaction in it is rolled back).
+  const allowWrites = ws.allowWrites ?? false;
+  const allowedRef = useRef(allowWrites);
+  useEffect(() => {
+    if (allowedRef.current === allowWrites) return;
+    allowedRef.current = allowWrites;
+    const s = sessionRef.current;
+    if (!s) return;
+    sessionRef.current = null;
+    setSession(null);
+    void api.disconnect(s.sessionId).catch(() => undefined);
+  }, [allowWrites]);
 
   // Follow later schema changes in the sidebar. Runs through the session lock, so it
   // waits for a running statement instead of overlapping it.
@@ -185,7 +200,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
     return () => clearTimeout(t);
   }, [tab.sql, ws.id, ws.schema, ws.columns, ws.objects, loadColumns]);
 
-  const run = async (mode: RunMode, confirmed = false, explicit?: { sql: string; base: number }) => {
+  const run = async (mode: RunMode, confirmed = false, explicit?: { sql: string; base: number }, typed?: string) => {
     if (running) return;
     const text = editor.current?.getText() ?? tab.sql;
     let target = explicit;
@@ -224,6 +239,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
       const r = await api.runQuery(s.sessionId, target.sql, {
         taskId,
         confirmed,
+        typedConfirmation: typed,
         maxRows: settings["query.maxRows"],
         timeoutSecs: settings["query.timeoutSecs"] > 0 ? settings["query.timeoutSecs"] : undefined,
         baseOffset: target.base,
@@ -243,25 +259,15 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
       const err = toError(e);
       if (err.kind === "confirmation_required") {
         setRunning(null);
+        const byName = needsName(err);
         const ok = await confirmAction({
           title: "Confirm execution",
           confirmLabel: "Run anyway",
           danger: true,
-          body: (
-            <>
-              <div className="field-row" style={{ alignItems: "center" }}>
-                <EnvBadge env={s.environment} />
-                <strong>{s.connectionName}</strong>
-                <span className="hint mono">{s.target}</span>
-              </div>
-              <p style={{ margin: 0 }}>These statements may change or destroy data:</p>
-              <pre className="code-block" style={{ maxHeight: 240 }}>
-                {err.detail}
-              </pre>
-            </>
-          ),
+          ...(byName ? { typeToConfirm: s.connectionName } : {}),
+          body: <ConfirmRunBody session={s} detail={err.detail} />,
         });
-        if (ok) return run(mode, true, target);
+        if (ok) return run(mode, true, target, byName ? s.connectionName : undefined);
         return;
       }
       setError(err.message);
@@ -339,9 +345,18 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
       setExplain(await api.explain(s.sessionId, sql, analyze));
     } catch (e) {
       const err = toError(e);
-      if (err.kind === "confirmation_required" && (await confirmAction({ title: "EXPLAIN ANALYZE runs the statement", body: err.detail ?? err.message, confirmLabel: "Run it", danger: true }))) {
-        setExplain(await api.explain(s.sessionId, sql, analyze, true));
-      } else notifyError(err, "Explain failed");
+      const byName = needsName(err);
+      const ok =
+        err.kind === "confirmation_required" &&
+        (await confirmAction({
+          title: "EXPLAIN ANALYZE runs the statement",
+          body: err.detail ?? err.message,
+          confirmLabel: "Run it",
+          danger: true,
+          ...(byName ? { typeToConfirm: s.connectionName } : {}),
+        }));
+      if (ok) setExplain(await api.explain(s.sessionId, sql, analyze, true, byName ? s.connectionName : undefined).catch((e2) => (notifyError(e2, "Explain failed"), null)));
+      else if (err.kind !== "confirmation_required") notifyError(err, "Explain failed");
     }
   };
 

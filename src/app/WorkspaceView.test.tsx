@@ -209,3 +209,88 @@ describe("restore points", () => {
   });
 });
 
+
+describe("production safety", () => {
+  it("a statement that destroys data on production runs only after the connection name is typed", async () => {
+    const runs: Record<string, unknown>[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "connect") return session;
+      if (cmd === "statement_at_cursor") return { sql: "drop table users", start: 0, end: 16 };
+      if (cmd === "run_query") {
+        const options = (args as { options: Record<string, unknown> }).options;
+        runs.push(options);
+        if (options.typedConfirmation !== "Local PG")
+          throw { kind: "confirmation_required", message: "Confirm execution on Local PG", code: "confirm_typed", detail: "DROP permanently removes objects: drop table users" };
+        return { taskId: "t", cancelled: false, durationMs: 1, statements: [{ index: 0, sql: "drop table users", start: 0, end: 16, durationMs: 1, truncated: false, rowsAffected: 0 }] };
+      }
+      return cmd.startsWith("list_") || cmd.startsWith("search_") ? [] : null;
+    });
+    renderWs(ws({ kind: "query", id: "q20", title: "Query 20", sql: "drop table users", savedQueryId: null, dirty: false }));
+    fireEvent.click(screen.getByRole("button", { name: /Run all/ }));
+    const input = await screen.findByLabelText("Type Local PG to confirm");
+    const button = screen.getByRole("button", { name: "Run anyway" });
+    expect(button).toBeDisabled();
+    fireEvent.change(input, { target: { value: "Local PG" } });
+    fireEvent.click(button);
+    await waitFor(() => expect(runs).toHaveLength(2));
+    expect(runs[1]).toMatchObject({ confirmed: true, typedConfirmation: "Local PG" });
+    expect(await screen.findByText("0 rows affected")).toBeInTheDocument();
+  });
+});
+
+describe("production safety: reviewed DDL", () => {
+  it("Drop table in the sidebar asks for the connection name on production", async () => {
+    const ddl: Record<string, unknown>[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "apply_ddl") {
+        const a = args as Record<string, unknown>;
+        ddl.push(a);
+        if (a.typedConfirmation !== "Local PG")
+          throw { kind: "confirmation_required", message: "Review the schema change before applying it", code: "confirm_typed", detail: "DROP permanently removes objects: DROP TABLE users" };
+        return null;
+      }
+      return cmd.startsWith("list_") || cmd.startsWith("search_") ? [] : null;
+    });
+    const w = { ...ws({ kind: "query", id: "q30", title: "Query 30", sql: "", savedQueryId: null, dirty: false }), objects: { public: [{ schema: "public", name: "users", kind: "table" as const }] } };
+    renderWs(w);
+    fireEvent.contextMenu(await screen.findByText("users"));
+    fireEvent.click(await screen.findByText("Drop table…"));
+    fireEvent.click(await screen.findByRole("button", { name: "Drop table" }));
+    fireEvent.change(await screen.findByLabelText("Type Local PG to confirm"), { target: { value: "Local PG" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run anyway" }));
+    await waitFor(() => expect(ddl).toHaveLength(2));
+    expect(ddl[1]).toMatchObject({ confirmed: true, typedConfirmation: "Local PG" });
+    expect(await screen.findByText("Dropped users")).toBeInTheDocument();
+  });
+});
+
+describe("production safety: write access", () => {
+  it("a query tab opens its session the way the workspace allows, and reopens it when that changes", async () => {
+    const connects: Record<string, unknown>[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "connect") {
+        connects.push((args as { request: Record<string, unknown> }).request);
+        return { ...session, sessionId: `tab-${connects.length}` };
+      }
+      if (cmd === "statement_at_cursor") return { sql: "select 1", start: 0, end: 8 };
+      if (cmd === "run_query") return { taskId: "t", cancelled: false, durationMs: 1, statements: [{ index: 0, sql: "select 1", start: 0, end: 8, durationMs: 1, truncated: false, rowsAffected: 0 }] };
+      return cmd.startsWith("list_") || cmd.startsWith("search_") ? [] : null;
+    });
+    const w = ws({ kind: "query", id: "q40", title: "Query 40", sql: "select 1", savedQueryId: null, dirty: false });
+    const { rerender } = renderWs(w);
+    fireEvent.click(screen.getByRole("button", { name: /Run all/ }));
+    await waitFor(() => expect(connects).toHaveLength(1));
+    expect(connects[0]!.allowWrites).toBe(false);
+    const allowed = { ...w, allowWrites: true };
+    useWorkspaces.setState({ workspaces: [allowed] });
+    rerender(
+      <>
+        <WorkspaceView ws={allowed} visible />
+        <Overlays />
+      </>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Run all/ }));
+    await waitFor(() => expect(connects).toHaveLength(2));
+    expect(connects[1]!.allowWrites).toBe(true);
+  });
+});
