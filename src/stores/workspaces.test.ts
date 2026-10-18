@@ -49,6 +49,18 @@ describe("workspace store", () => {
     expect(ws.activeTabId).toBe(ws.tabs[0]!.id);
   });
 
+  it("drops a schema list that arrives after the workspace switched to another session", async () => {
+    const id = await useWorkspaces.getState().open(profile, session);
+    let release = (_: unknown) => undefined as void;
+    mockIPC((cmd) => (cmd === "list_objects" ? new Promise((r) => (release = r)) : null));
+    const loading = useWorkspaces.getState().loadObjects(id, "audit");
+    // The user switches database meanwhile: a new session, objects cleared.
+    useWorkspaces.getState().update(id, { session: { ...session, sessionId: "sess-2", database: "other" }, objects: {} });
+    release([{ schema: "audit", name: "from_the_old_database", kind: "table" }]);
+    await loading;
+    expect(useWorkspaces.getState().workspaces[0]!.objects.audit).toBeUndefined();
+  });
+
   it("reorders tabs", async () => {
     const id = await useWorkspaces.getState().open(profile, session);
     const s = useWorkspaces.getState();

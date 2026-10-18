@@ -45,6 +45,10 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
   const [databases, setDatabases] = useState<string[]>([]);
   const [saved, setSaved] = useState<SavedQuery[] | null>(null);
   const [pins, setPins] = useState<Pin[]>([]);
+  // Schemas whose object list could not be read: their pins can't be found.
+  const [unreadable, setUnreadable] = useState<Set<string>>(new Set());
+  // Pins belong to the database open where a connection has several (PostgreSQL).
+  const pinDb = ws.session.capabilities.multipleDatabases ? ws.session.database : "";
   const [dashboards, setDashboards] = useState<DashboardRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -58,30 +62,35 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
     api
       .listSavedQueries()
       .then((q) => setSaved(q.filter((x) => x.connectionId === null || x.connectionId === ws.profile.id)))
-      .catch(() => setSaved([]));
-    api
-      .listPins(ws.profile.id)
-      .then((p) => setPins(p ?? []))
-      .catch(() => undefined);
+      .catch(() => setSaved(null));
     api
       .listDashboards()
       .then((d) => setDashboards(d.filter((x) => x.definition.connectionId === ws.profile.id)))
       .catch(() => undefined);
   }, [ws.session.sessionId, ws.session.capabilities.multipleDatabases, ws.profile.id, ws.tabs.length]);
 
+  useEffect(() => {
+    setUnreadable(new Set());
+    api
+      .listPins(ws.profile.id, pinDb)
+      .then((p) => setPins(p ?? []))
+      .catch(() => setPins([]));
+  }, [ws.profile.id, pinDb]);
+
   // Pinned objects of other schemas: load those schemas' lists to know whether they still exist.
   useEffect(() => {
     for (const schema of new Set(pins.filter((p) => p.kind !== "saved_query").map((p) => p.schema))) {
-      if (!useWorkspaces.getState().workspaces.find((w) => w.id === ws.id)?.objects[schema]) void loadObjects(ws.id, schema).catch(() => undefined);
+      if (useWorkspaces.getState().workspaces.find((w) => w.id === ws.id)?.objects[schema]) continue;
+      void loadObjects(ws.id, schema).catch(() => setUnreadable((u) => new Set(u).add(schema)));
     }
   }, [pins, ws.id, loadObjects]);
 
   const isPinned = (pin: Pin) => pins.some((p) => p.kind === pin.kind && p.schema === pin.schema && p.name === pin.name);
   const togglePin = async (pin: Pin) => {
     try {
-      if (isPinned(pin)) await api.unpinObject(ws.profile.id, pin);
-      else await api.pinObject(ws.profile.id, pin);
-      setPins(await api.listPins(ws.profile.id));
+      if (isPinned(pin)) await api.unpinObject(ws.profile.id, pinDb, pin);
+      else await api.pinObject(ws.profile.id, pinDb, pin);
+      setPins(await api.listPins(ws.profile.id, pinDb));
     } catch (e) {
       notifyError(e, "Could not change the pinned objects");
     }
@@ -104,7 +113,7 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
     }
     if (needle && !pin.name.toLowerCase().includes(needle)) return [];
     const list = ws.objects[pin.schema];
-    const missing = !!list && !list.some((o) => o.name === pin.name && (o.kind === pin.kind || (pin.kind === "table" && o.kind === "foreign_table")));
+    const missing = list ? !list.some((o) => o.name === pin.name && o.kind === pin.kind) : unreadable.has(pin.schema);
     const kind: ObjectKind = pin.kind;
     return [{ pin, label: pin.name, missing, open: () => openTable(ws.id, { schema: pin.schema, name: pin.name, kind }) }];
   });
@@ -211,6 +220,7 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
                   className={`tree-item${missing ? " missing" : ""}`}
                   aria-disabled={missing || undefined}
                   title={missing ? `${label} was not found; it may have been renamed or dropped` : label}
+                  aria-label={[label, pin.kind !== "saved_query" && pin.schema !== ws.schema ? `schema ${pin.schema}` : "", missing ? "not found" : ""].filter(Boolean).join(", ")}
                   onClick={() => !missing && open()}
                   onContextMenu={(e) => menu.open(e, [...(missing ? [] : [{ label: "Open", onSelect: open }]), pinItem(pin)])}
                 >

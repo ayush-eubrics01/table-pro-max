@@ -122,7 +122,10 @@ describe("Sidebar: pinned objects", () => {
       if (cmd === "unpin_object") current = current.filter((p) => JSON.stringify(p) !== JSON.stringify(a.pin));
       if (cmd === "list_saved_queries") return saved.map((s) => ({ ...s, folder: null, favorite: false, createdAt: "", updatedAt: "" }));
       if (cmd === "list_dashboards" || cmd === "list_databases") return [];
-      if (cmd === "list_objects") return a.schema === "audit" ? [{ schema: "audit", name: "events", kind: "table" }] : [];
+      if (cmd === "list_objects") {
+        if (a.schema === "locked") throw { kind: "database", message: "permission denied for schema locked" };
+        return a.schema === "audit" ? [{ schema: "audit", name: "events", kind: "table" }] : [];
+      }
       return null;
     });
     return calls;
@@ -137,7 +140,9 @@ describe("Sidebar: pinned objects", () => {
     fireEvent.contextMenu(screen.getByText("orders"));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Pin to top" }));
     await waitFor(() => expect(calls.some((c) => c.cmd === "pin_object")).toBe(true));
-    expect(calls.find((c) => c.cmd === "pin_object")!.args).toMatchObject({ connectionId: profile.id, pin: { kind: "table", schema: "public", name: "orders" } });
+    // PostgreSQL connections have several databases: pins belong to the one open.
+    expect(calls.find((c) => c.cmd === "pin_object")!.args).toMatchObject({ connectionId: profile.id, database: "app", pin: { kind: "table", schema: "public", name: "orders" } });
+    expect(calls.find((c) => c.cmd === "list_pins")!.args).toMatchObject({ connectionId: profile.id, database: "app" });
     const pinned = await screen.findByRole("group", { name: "Pinned" });
     expect(within(pinned).getByText("orders")).toBeInTheDocument();
     fireEvent.contextMenu(within(pinned).getByText("orders"));
@@ -152,18 +157,27 @@ describe("Sidebar: pinned objects", () => {
         { kind: "table", schema: "audit", name: "events" },
         { kind: "view", schema: "public", name: "paid_orders" },
         { kind: "table", schema: "public", name: "dropped" },
+        { kind: "table", schema: "locked", name: "secrets" },
       ],
       [{ id: "q1", name: "Monthly revenue", sql: "select 1", connectionId: null }],
     );
     useWorkspaces.setState({ workspaces: [ws()], activeId: "ws-1" });
     render(<Sidebar ws={ws()} onSwitchDatabase={() => undefined} />);
     const pinned = await screen.findByRole("group", { name: "Pinned" });
-    await waitFor(() => expect(within(pinned).getAllByRole("treeitem").map((b) => b.textContent)).toEqual(["Monthly revenue", "eventsaudit", "paid_orders", "droppedNot found"]));
+    await waitFor(() =>
+      expect(within(pinned).getAllByRole("treeitem").map((b) => b.getAttribute("aria-label"))).toEqual([
+        "Monthly revenue",
+        "events, schema audit",
+        "paid_orders",
+        "dropped, not found",
+        "secrets, schema locked, not found",
+      ]),
+    );
     fireEvent.click(within(pinned).getByText("events"));
     expect(useWorkspaces.getState().workspaces[0]!.tabs.at(-1)).toMatchObject({ kind: "table", schema: "audit", name: "events" });
     fireEvent.click(within(pinned).getByText("Monthly revenue"));
     expect(useWorkspaces.getState().workspaces[0]!.tabs.at(-1)).toMatchObject({ kind: "query", savedQueryId: "q1" });
     fireEvent.change(screen.getByLabelText("Filter objects"), { target: { value: "paid" } });
-    expect(within(screen.getByRole("group", { name: "Pinned" })).getAllByRole("treeitem").map((b) => b.textContent)).toEqual(["paid_orders"]);
+    expect(within(screen.getByRole("group", { name: "Pinned" })).getAllByRole("treeitem").map((b) => b.getAttribute("aria-label"))).toEqual(["paid_orders"]);
   });
 });

@@ -111,20 +111,21 @@ pub fn prune_history(state: State<'_, AppState>, days: u32, max_entries: u32) ->
     state.storage.prune_history(days, max_entries)
 }
 
-/// Objects pinned to the top of the sidebar for a connection, in pin order.
+/// Objects pinned to the top of the sidebar for a connection and database, in pin order.
+/// `database` is empty where a connection has one database.
 #[tauri::command]
-pub fn list_pins(state: State<'_, AppState>, connection_id: String) -> Result<Vec<Pin>> {
-    state.storage.list_pins(&connection_id)
+pub fn list_pins(state: State<'_, AppState>, connection_id: String, database: String) -> Result<Vec<Pin>> {
+    state.storage.list_pins(&connection_id, &database)
 }
 
 #[tauri::command]
-pub fn pin_object(state: State<'_, AppState>, connection_id: String, pin: Pin) -> Result<()> {
-    state.storage.pin(&connection_id, &pin)
+pub fn pin_object(state: State<'_, AppState>, connection_id: String, database: String, pin: Pin) -> Result<()> {
+    state.storage.pin(&connection_id, &database, &pin)
 }
 
 #[tauri::command]
-pub fn unpin_object(state: State<'_, AppState>, connection_id: String, pin: Pin) -> Result<()> {
-    state.storage.unpin(&connection_id, &pin)
+pub fn unpin_object(state: State<'_, AppState>, connection_id: String, database: String, pin: Pin) -> Result<()> {
+    state.storage.unpin(&connection_id, &database, &pin)
 }
 
 #[tauri::command]

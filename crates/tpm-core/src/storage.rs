@@ -97,15 +97,17 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX restore_points_conn ON restore_points (connection_id, created_at);
     "#,
-    // v4: objects pinned to the top of the sidebar, per connection (names only)
+    // v4: objects pinned to the top of the sidebar, per connection and database (names only;
+    // database_name is empty where a connection has one database)
     r#"
     CREATE TABLE pinned_objects (
         connection_id TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK (kind IN ('table', 'view', 'materialized_view', 'saved_query')),
+        database_name TEXT NOT NULL,
+        kind TEXT NOT NULL,
         schema_name TEXT NOT NULL,
         name TEXT NOT NULL,
         position INTEGER NOT NULL,
-        PRIMARY KEY (connection_id, kind, schema_name, name)
+        PRIMARY KEY (connection_id, database_name, kind, schema_name, name)
     );
     "#,
 ];
@@ -458,18 +460,20 @@ impl Storage {
 
     // ---- pinned objects (names only) --------------------------------------------------
 
-    /// A connection's pins, in the order they were pinned.
-    pub fn list_pins(&self, connection_id: &str) -> Result<Vec<Pin>> {
+    /// A connection's pins in one of its databases, in the order they were pinned.
+    pub fn list_pins(&self, connection_id: &str, database: &str) -> Result<Vec<Pin>> {
         let conn = self.lock()?;
-        let mut stmt = conn
-            .prepare("SELECT kind, schema_name, name FROM pinned_objects WHERE connection_id = ?1 ORDER BY position")?;
-        let rows = stmt.query_map([connection_id], |r| {
+        let mut stmt = conn.prepare(
+            "SELECT kind, schema_name, name FROM pinned_objects WHERE connection_id = ?1 AND database_name = ?2
+             ORDER BY position",
+        )?;
+        let rows = stmt.query_map([connection_id, database], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
         })?;
         let mut out = Vec::new();
         for row in rows {
             let (kind, schema, name) = row?;
-            // An unknown kind (written by a newer version) is skipped, not an error.
+            // A kind this version doesn't know is skipped, not an error.
             if let Ok(kind) = serde_json::from_value(serde_json::Value::String(kind)) {
                 out.push(Pin { kind, schema, name });
             }
@@ -478,19 +482,21 @@ impl Storage {
     }
 
     /// Pins at the end of the list; pinning something already pinned changes nothing.
-    pub fn pin(&self, connection_id: &str, pin: &Pin) -> Result<()> {
+    pub fn pin(&self, connection_id: &str, database: &str, pin: &Pin) -> Result<()> {
         self.lock()?.execute(
-            "INSERT OR IGNORE INTO pinned_objects (connection_id, kind, schema_name, name, position)
-             VALUES (?1, ?2, ?3, ?4, (SELECT coalesce(max(position), 0) + 1 FROM pinned_objects WHERE connection_id = ?1))",
-            params![connection_id, pin_kind(pin.kind), pin.schema, pin.name],
+            "INSERT OR IGNORE INTO pinned_objects (connection_id, database_name, kind, schema_name, name, position)
+             VALUES (?1, ?2, ?3, ?4, ?5,
+                     (SELECT coalesce(max(position), 0) + 1 FROM pinned_objects WHERE connection_id = ?1))",
+            params![connection_id, database, pin_kind(pin.kind), pin.schema, pin.name],
         )?;
         Ok(())
     }
 
-    pub fn unpin(&self, connection_id: &str, pin: &Pin) -> Result<()> {
+    pub fn unpin(&self, connection_id: &str, database: &str, pin: &Pin) -> Result<()> {
         self.lock()?.execute(
-            "DELETE FROM pinned_objects WHERE connection_id = ?1 AND kind = ?2 AND schema_name = ?3 AND name = ?4",
-            params![connection_id, pin_kind(pin.kind), pin.schema, pin.name],
+            "DELETE FROM pinned_objects
+             WHERE connection_id = ?1 AND database_name = ?2 AND kind = ?3 AND schema_name = ?4 AND name = ?5",
+            params![connection_id, database, pin_kind(pin.kind), pin.schema, pin.name],
         )?;
         Ok(())
     }
@@ -875,18 +881,23 @@ mod tests {
         let view = pin(PinKind::View, "sales", "by_month");
         let query = pin(PinKind::SavedQuery, "", "q1");
         for p in [&orders, &view, &query, &orders] {
-            s.pin("c1", p).unwrap();
+            s.pin("c1", "app", p).unwrap();
         }
-        s.pin("c2", &orders).unwrap();
-        assert_eq!(s.list_pins("c1").unwrap(), vec![orders.clone(), view.clone(), query.clone()]);
-        s.unpin("c1", &view).unwrap();
-        s.pin("c1", &view).unwrap();
-        assert_eq!(s.list_pins("c1").unwrap(), vec![orders.clone(), query.clone(), view.clone()]);
+        s.pin("c2", "app", &orders).unwrap();
+        // The same connection's other database (PostgreSQL) has its own pins.
+        s.pin("c1", "staging", &view).unwrap();
+        assert_eq!(s.list_pins("c1", "app").unwrap(), vec![orders.clone(), view.clone(), query.clone()]);
+        assert_eq!(s.list_pins("c1", "staging").unwrap(), vec![view.clone()]);
+        s.unpin("c1", "app", &view).unwrap();
+        assert_eq!(s.list_pins("c1", "staging").unwrap(), vec![view.clone()]);
+        s.pin("c1", "app", &view).unwrap();
+        assert_eq!(s.list_pins("c1", "app").unwrap(), vec![orders.clone(), query.clone(), view.clone()]);
         s.delete_saved_query("q1").unwrap();
-        assert_eq!(s.list_pins("c1").unwrap(), vec![orders.clone(), view.clone()]);
+        assert_eq!(s.list_pins("c1", "app").unwrap(), vec![orders.clone(), view.clone()]);
         s.delete_connection("c1").unwrap();
-        assert!(s.list_pins("c1").unwrap().is_empty());
-        assert_eq!(s.list_pins("c2").unwrap(), vec![orders]);
+        assert!(s.list_pins("c1", "app").unwrap().is_empty());
+        assert!(s.list_pins("c1", "staging").unwrap().is_empty());
+        assert_eq!(s.list_pins("c2", "app").unwrap(), vec![orders]);
     }
 
     #[test]
