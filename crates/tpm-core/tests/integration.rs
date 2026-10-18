@@ -575,6 +575,7 @@ async fn exercise(t: Target) {
     safety_fixes(&engine, &sid, driver).await;
     result_types(&engine, &sid, driver, &profile, t.password.as_deref()).await;
     text_equality(&engine, &sid, &t.schema, driver).await;
+    copied_inserts_round_trip(&engine, &sid, driver).await;
 
     // --- cleanup ---
     run(&engine, &sid, "DROP TABLE tpm_it_items; DROP TABLE tpm_it_owners").await;
@@ -1242,6 +1243,64 @@ async fn result_types(
     assert_eq!(st.columns.as_ref().unwrap()[0].type_name, "jsonb", "read-only: {:?}", st.columns);
     assert_eq!(st.editing.as_ref().unwrap().read_only[0].reason, "Read-only connection");
     engine.close_session(&info.session_id).await;
+}
+
+/// Rows copied as INSERT statements (as the grid copies them: cells from a query result) run on
+/// the same database and give back the same values: binary, quotes, backslashes, NULL.
+async fn copied_inserts_round_trip(engine: &Arc<Engine>, sid: &str, driver: Driver) {
+    use tpm_core::transfer::{ExportFormat, ExportOptions, rows_as_text};
+    let (blob, text_type) = match driver {
+        Driver::Postgres => ("bytea", "text"),
+        Driver::Mysql | Driver::Mariadb => ("varbinary(16)", "varchar(50)"),
+        _ => ("blob", "text"),
+    };
+    let ddl = |name: &str| format!("CREATE TABLE {name} (id integer PRIMARY KEY, b {blob}, s {text_type})");
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_cp1").await;
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_cp2").await;
+    run(engine, sid, &ddl("tpm_it_cp1")).await;
+    run(engine, sid, &ddl("tpm_it_cp2")).await;
+    let insert = match driver {
+        Driver::Postgres => r"INSERT INTO tpm_it_cp1 VALUES (1, '\xdead005c'::bytea, 'it''s a\b'), (2, NULL, NULL)",
+        Driver::Duckdb => r"INSERT INTO tpm_it_cp1 VALUES (1, '\xDE\xAD\x00\x5C'::BLOB, 'it''s a\b'), (2, NULL, NULL)",
+        Driver::Mysql | Driver::Mariadb => {
+            r"INSERT INTO tpm_it_cp1 VALUES (1, X'DEAD005C', 'it''s a\\b'), (2, NULL, NULL)"
+        }
+        _ => r"INSERT INTO tpm_it_cp1 VALUES (1, X'DEAD005C', 'it''s a\b'), (2, NULL, NULL)",
+    };
+    run(engine, sid, insert).await;
+    let r = run(engine, sid, "SELECT id, b, s FROM tpm_it_cp1 ORDER BY id").await;
+    let st = &r.statements[0];
+    let (columns, rows) = (st.columns.clone().unwrap(), st.rows.clone().unwrap());
+    // PostgreSQL (text protocol) and DuckDB render binary values as their own escaped text; the
+    // others return the bytes.
+    match driver {
+        Driver::Postgres => assert_eq!(text(&rows[0][1]), r"\xdead005c"),
+        Driver::Duckdb => assert_eq!(text(&rows[0][1]), r"\xDE\xAD\x00\x5C"),
+        _ => assert!(
+            matches!(rows[0][1], Cell::Bytes(ref b) if b == &[0xde, 0xad, 0x00, 0x5c]),
+            "{driver:?}: {:?}",
+            rows[0][1]
+        ),
+    }
+    assert_eq!(text(&rows[0][2]), r"it's a\b", "{driver:?}");
+    let opts = ExportOptions {
+        format: ExportFormat::Sql,
+        delimiter: ',',
+        header: false,
+        null_text: String::new(),
+        sql_table: Some("tpm_it_cp2".into()),
+        sql_schema: None,
+        dialect: Some(driver.dialect()),
+        sql_batch: 1,
+    };
+    let sql = rows_as_text(&columns, &rows, &opts).unwrap();
+    run(engine, sid, &sql).await;
+    let check = "SELECT count(*) FROM tpm_it_cp1 a JOIN tpm_it_cp2 b ON a.id = b.id \
+                 WHERE (a.b = b.b OR (a.b IS NULL AND b.b IS NULL)) AND (a.s = b.s OR (a.s IS NULL AND b.s IS NULL))";
+    let same = run(engine, sid, check).await;
+    assert_eq!(text(&same.statements[0].rows.as_ref().unwrap()[0][0]), "2", "{driver:?}: {sql}");
+    run(engine, sid, "DROP TABLE tpm_it_cp1").await;
+    run(engine, sid, "DROP TABLE tpm_it_cp2").await;
 }
 
 /// An equality filter on the text the grid shows finds the row even where the stored value is
