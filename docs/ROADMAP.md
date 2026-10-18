@@ -8,7 +8,7 @@ Milestones follow the engineering plan. Status reflects the code in this reposit
 | 1 | Desktop foundation: Tauri shell, React/TS, logging, errors, metadata storage and migrations, navigation shell, themes, Linux dev run | Done (Linux run verified under Xvfb) |
 | 2 | PostgreSQL vertical slice: profiles, secure credentials, connect, browse schemas/tables, SELECT, paging, errors, integration tests | Done |
 | 3 | Editing and query safety: inline edits, pending changes, preview, commit/discard, safety levels, transaction tests | Done |
-| 4 | SQL editor productivity: completion, formatting, saved queries, history, tabs, cancel, timeouts | Done |
+| 4 | SQL editor productivity: completion, formatting, saved queries, history, tabs, cancel, timeouts, query parameters, snippets | Done |
 | 5 | MySQL/MariaDB and SQLite | Done (integration verified; UI verified on MySQL and SQLite) |
 | 6 | Advanced data tools: filters, schema editing, quick open, explain, import/export | Done |
 | 7 | Metrics board: dashboards, charts, SQL widgets with bounded concurrency | Done |
