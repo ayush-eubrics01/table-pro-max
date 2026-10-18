@@ -460,6 +460,14 @@ export interface AppInfo {
 
 export type ExportFormat = "csv" | "json" | "json_lines" | "sql" | "xlsx";
 
+/** Reusable SQL inserted from the editor's completions by its trigger word; `${name}` marks the fields Tab moves between. */
+export interface Snippet {
+  id: string;
+  trigger: string;
+  name: string;
+  body: string;
+}
+
 /** Something pinned to the top of the sidebar: a table or view by schema and name, or a saved query by id. */
 export interface Pin {
   kind: "table" | "view" | "materialized_view" | "saved_query";

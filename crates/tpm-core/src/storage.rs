@@ -110,6 +110,27 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (connection_id, database_name, kind, schema_name, name)
     );
     "#,
+    // v5: snippets (reusable SQL with ${field} tab-stops), starting with three examples
+    r#"
+    CREATE TABLE snippets (
+        id TEXT PRIMARY KEY,
+        trigger_word TEXT NOT NULL,
+        name TEXT NOT NULL,
+        body TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    INSERT INTO snippets VALUES
+      ('builtin-sel', 'sel', 'Select rows', 'SELECT ${columns}
+FROM ${table}
+WHERE ${condition};', ''),
+      ('builtin-upd', 'upd', 'Update rows', 'UPDATE ${table}
+SET ${column} = ${value}
+WHERE ${condition};', ''),
+      ('builtin-cte', 'cte', 'Common table expression', 'WITH ${name} AS (
+  ${query}
+)
+SELECT * FROM ${name};', '');
+    "#,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,6 +145,17 @@ pub enum FetchMode {
 pub struct ColumnFetch {
     pub column: String,
     pub mode: FetchMode,
+}
+
+/// Reusable SQL inserted from the editor's completions by its trigger word; `${name}` marks the
+/// fields Tab moves between.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Snippet {
+    pub id: String,
+    pub trigger: String,
+    pub name: String,
+    pub body: String,
 }
 
 /// What can be pinned to the top of the sidebar.
@@ -455,6 +487,54 @@ impl Storage {
         tx.execute("DELETE FROM saved_queries WHERE id = ?1", [id])?;
         tx.execute("DELETE FROM pinned_objects WHERE kind = 'saved_query' AND name = ?1", [id])?;
         tx.commit()?;
+        Ok(())
+    }
+
+    // ---- snippets ---------------------------------------------------------------------
+
+    /// All snippets, by trigger.
+    pub fn list_snippets(&self) -> Result<Vec<Snippet>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare("SELECT id, trigger_word, name, body FROM snippets ORDER BY trigger_word, name")?;
+        let rows = stmt
+            .query_map([], |r| Ok(Snippet { id: r.get(0)?, trigger: r.get(1)?, name: r.get(2)?, body: r.get(3)? }))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Adds or replaces a snippet. The trigger is one word (what you type to find it).
+    pub fn save_snippet(&self, snippet: &Snippet) -> Result<()> {
+        // The editor offers a snippet while a word of letters, digits and _ is typed.
+        let trigger = snippet.trigger.trim();
+        if trigger.is_empty() || !trigger.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            return Err(AppError::invalid_config(
+                "A snippet's trigger is one word of letters, digits and _, such as sel",
+            ));
+        }
+        if snippet.body.trim().is_empty() {
+            return Err(AppError::invalid_config("A snippet needs some SQL"));
+        }
+        let conn = self.lock()?;
+        let taken: Option<String> = conn
+            .query_row(
+                "SELECT name FROM snippets WHERE trigger_word = ?1 AND id <> ?2",
+                params![trigger, snippet.id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if taken.is_some() {
+            return Err(AppError::invalid_config(format!("Another snippet already uses the trigger {trigger}")));
+        }
+        conn.execute(
+            "INSERT INTO snippets (id, trigger_word, name, body, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET trigger_word = excluded.trigger_word, name = excluded.name,
+               body = excluded.body, updated_at = excluded.updated_at",
+            params![snippet.id, trigger, snippet.name.trim(), snippet.body, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_snippet(&self, id: &str) -> Result<()> {
+        self.lock()?.execute("DELETE FROM snippets WHERE id = ?1", [id])?;
         Ok(())
     }
 
@@ -872,6 +952,43 @@ impl RestoreStore for Storage {
 mod tests {
     use super::*;
     use crate::config::{Driver, parse_connection_url};
+
+    #[test]
+    fn snippets_start_with_examples_and_are_saved_edited_and_deleted() {
+        let s = Storage::open_in_memory().unwrap();
+        let triggers = |s: &Storage| s.list_snippets().unwrap().into_iter().map(|x| x.trigger).collect::<Vec<_>>();
+        assert_eq!(triggers(&s), ["cte", "sel", "upd"]);
+        let mut mine = Snippet {
+            id: "s1".into(),
+            trigger: "cnt".into(),
+            name: "Count rows".into(),
+            body: "SELECT count(*) FROM ${table};".into(),
+        };
+        s.save_snippet(&mine).unwrap();
+        mine.body = "SELECT count(*) AS n FROM ${table};".into();
+        s.save_snippet(&mine).unwrap();
+        let saved = s.list_snippets().unwrap();
+        assert_eq!(saved.iter().map(|x| x.trigger.as_str()).collect::<Vec<_>>(), ["cnt", "cte", "sel", "upd"]);
+        assert_eq!(saved[0].body, "SELECT count(*) AS n FROM ${table};");
+        s.delete_snippet("s1").unwrap();
+        s.delete_snippet("builtin-sel").unwrap();
+        assert_eq!(triggers(&s), ["cte", "upd"]);
+        // A trigger is one word of letters, digits and _, typed as is in the editor; a snippet
+        // needs a body.
+        assert!(s.save_snippet(&Snippet { trigger: "two words".into(), ..mine.clone() }).is_err());
+        for bad in ["my-sel", "--", "sel!"] {
+            assert!(s.save_snippet(&Snippet { trigger: bad.into(), ..mine.clone() }).is_err(), "{bad}");
+        }
+        s.save_snippet(&Snippet { id: "s2".into(), trigger: "выбор_2".into(), ..mine.clone() }).unwrap();
+        // Triggers are unique: another snippet can't take one, the same one can keep it.
+        let taken = s.save_snippet(&Snippet { id: "s3".into(), trigger: "cte".into(), ..mine.clone() });
+        assert!(taken.unwrap_err().to_string().contains("cte"));
+        s.save_snippet(&Snippet {
+            id: "s2".into(), trigger: "выбор_2".into(), name: "Renamed".into(), ..mine.clone()
+        })
+        .unwrap();
+        assert!(s.save_snippet(&Snippet { body: "  ".into(), ..mine }).is_err());
+    }
 
     #[test]
     fn pins_keep_their_order_per_connection_and_go_with_what_they_point_at() {

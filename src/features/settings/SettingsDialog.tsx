@@ -8,14 +8,16 @@ import { confirmAction, notify, notifyError } from "../../stores/ui";
 import { api } from "../../lib/ipc";
 import { isMacPlatform } from "../../app/WindowControls";
 import { AiSettings } from "../ai/AiSettings";
+import { SnippetSettings } from "./SnippetSettings";
 import { UpdateSettings } from "../updates/UpdateSettings";
 import { SettingRow } from "./SettingRow";
 
-type SectionId = "general" | "editor" | "grid" | "safety" | "history" | "updates" | "ai" | "shortcuts" | "about";
+type SectionId = "general" | "editor" | "snippets" | "grid" | "safety" | "history" | "updates" | "ai" | "shortcuts" | "about";
 
 const SECTIONS: { id: SectionId; label: string; icon: IconName }[] = [
   { id: "general", label: "General", icon: "settings" },
   { id: "editor", label: "Editor", icon: "code" },
+  { id: "snippets", label: "Snippets", icon: "code_blocks" },
   { id: "grid", label: "Data grid", icon: "table" },
   { id: "safety", label: "Safety", icon: "lock" },
   { id: "history", label: "History", icon: "history" },
@@ -260,6 +262,7 @@ export function SettingsDialog({ appInfo, onClose }: { appInfo: AppInfo | null; 
             </>
           )}
           {section === "updates" && <UpdateSettings />}
+          {section === "snippets" && <SnippetSettings />}
           {section === "ai" && <AiSettings />}
           {section === "shortcuts" && <Shortcuts />}
           {section === "about" && appInfo && (

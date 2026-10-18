@@ -23,10 +23,10 @@ afterEach(() => {
 });
 
 describe("SettingsDialog", () => {
-  it("has the nine sections from the design, one shown at a time", () => {
+  it("has the ten sections, one shown at a time", () => {
     render(<SettingsDialog appInfo={appInfo} onClose={() => undefined} />);
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
-    expect(within(nav).getAllByRole("button").map((b) => b.textContent)).toEqual(["General", "Editor", "Data grid", "Safety", "History", "Updates", "AI assistant", "Shortcuts", "About"]);
+    expect(within(nav).getAllByRole("button").map((b) => b.textContent)).toEqual(["General", "Editor", "Snippets", "Data grid", "Safety", "History", "Updates", "AI assistant", "Shortcuts", "About"]);
     expect(screen.getByRole("heading", { name: "General" })).toBeInTheDocument();
     fireEvent.click(within(nav).getByRole("button", { name: "Updates" }));
     expect(screen.getByRole("heading", { name: "Updates" })).toBeInTheDocument();
@@ -153,5 +153,44 @@ describe("SettingsDialog", () => {
     expect(useSettings.getState().settings["restore.maxTotalMb"]).toBe(30);
     expect(useSettings.getState().settings["restore.maxMb"]).toBe(30);
   });
-});
 
+  it("lists, adds, edits and deletes snippets", async () => {
+    const calls: { cmd: string; args: Record<string, unknown> }[] = [];
+    let list = [{ id: "builtin-sel", trigger: "sel", name: "Select rows", body: "SELECT ${columns} FROM ${table};" }];
+    mockIPC((cmd, args) => {
+      calls.push({ cmd, args: args as Record<string, unknown> });
+      if (cmd === "list_snippets") return list;
+      if (cmd === "save_snippet") {
+        const sn = (args as { snippet: (typeof list)[number] }).snippet;
+        list = [...list.filter((x) => x.id !== sn.id), sn];
+      }
+      if (cmd === "delete_snippet") list = list.filter((x) => x.id !== (args as { id: string }).id);
+      if (cmd === "update_status") return { currentVersion: "0.1.0", lastCheck: null, auto: "unset" };
+      return null;
+    });
+    render(<SettingsDialog appInfo={appInfo} onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "Snippets" }));
+    expect(await screen.findByText("Select rows")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "New snippet" }));
+    fireEvent.change(screen.getByLabelText("Trigger"), { target: { value: "cnt" } });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Count rows" } });
+    fireEvent.change(screen.getByLabelText("SQL"), { target: { value: "SELECT count(*) FROM ${table};" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save snippet" }));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "save_snippet")).toBe(true));
+    expect(calls.find((c) => c.cmd === "save_snippet")!.args.snippet).toMatchObject({ trigger: "cnt", name: "Count rows", body: "SELECT count(*) FROM ${table};" });
+    expect(await screen.findByText("Count rows")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Edit sel" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Select some rows" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save snippet" }));
+    expect(await screen.findByText("Select some rows")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Delete cnt" }));
+    await waitFor(() => expect(screen.queryByText("Count rows")).not.toBeInTheDocument());
+    expect(calls.find((c) => c.cmd === "delete_snippet")!.args.id).toBeTruthy();
+    // Deleting the snippet being edited closes its form, so Save can't bring it back.
+    fireEvent.click(screen.getByRole("button", { name: "Edit sel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete sel" }));
+    await waitFor(() => expect(screen.queryByText("Select some rows")).not.toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Save snippet" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New snippet" })).toBeInTheDocument();
+  });
+});

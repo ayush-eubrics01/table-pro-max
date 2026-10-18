@@ -4,7 +4,7 @@
 use tauri::State;
 use tpm_core::error::Result;
 use tpm_core::restore::{RestorePoint, RestorePointSummary, RestoreStore};
-use tpm_core::storage::{ColumnFetch, Dashboard, FetchMode, FilterPreset, HistoryEntry, Pin, SavedQuery};
+use tpm_core::storage::{ColumnFetch, Dashboard, FetchMode, FilterPreset, HistoryEntry, Pin, SavedQuery, Snippet};
 
 use crate::state::AppState;
 
@@ -109,6 +109,21 @@ pub fn set_workspace(state: State<'_, AppState>, key: String, value: serde_json:
 #[tauri::command]
 pub fn prune_history(state: State<'_, AppState>, days: u32, max_entries: u32) -> Result<usize> {
     state.storage.prune_history(days, max_entries)
+}
+
+#[tauri::command]
+pub fn list_snippets(state: State<'_, AppState>) -> Result<Vec<Snippet>> {
+    state.storage.list_snippets()
+}
+
+#[tauri::command]
+pub fn save_snippet(state: State<'_, AppState>, snippet: Snippet) -> Result<()> {
+    state.storage.save_snippet(&snippet)
+}
+
+#[tauri::command]
+pub fn delete_snippet(state: State<'_, AppState>, id: String) -> Result<()> {
+    state.storage.delete_snippet(&id)
 }
 
 /// Objects pinned to the top of the sidebar for a connection and database, in pin order.

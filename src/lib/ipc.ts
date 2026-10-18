@@ -4,6 +4,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Pin,
+  Snippet,
   Cell,
   FetchedCell,
   AiAnswer,
@@ -206,6 +207,9 @@ export const api = {
     call<number>("export_result", { resultId, path, options }),
   exportTable: (sessionId: string, source: BrowseRequest, path: string, options: ExportOptions, jobId: string) =>
     call<number>("export_table", { request: { sessionId, source, path, options, jobId } }),
+  listSnippets: () => call<Snippet[]>("list_snippets"),
+  saveSnippet: (snippet: Snippet) => call<void>("save_snippet", { snippet }),
+  deleteSnippet: (id: string) => call<void>("delete_snippet", { id }),
   /** Pins of a connection in one database (empty where a connection has one database). */
   listPins: (connectionId: string, database: string) => call<Pin[]>("list_pins", { connectionId, database }),
   pinObject: (connectionId: string, database: string, pin: Pin) => call<void>("pin_object", { connectionId, database, pin }),
