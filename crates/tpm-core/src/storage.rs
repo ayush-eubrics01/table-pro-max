@@ -503,14 +503,28 @@ impl Storage {
 
     /// Adds or replaces a snippet. The trigger is one word (what you type to find it).
     pub fn save_snippet(&self, snippet: &Snippet) -> Result<()> {
+        // The editor offers a snippet while a word of letters, digits and _ is typed.
         let trigger = snippet.trigger.trim();
-        if trigger.is_empty() || trigger.contains(char::is_whitespace) {
-            return Err(AppError::invalid_config("A snippet's trigger is one word, such as sel"));
+        if trigger.is_empty() || !trigger.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            return Err(AppError::invalid_config(
+                "A snippet's trigger is one word of letters, digits and _, such as sel",
+            ));
         }
         if snippet.body.trim().is_empty() {
             return Err(AppError::invalid_config("A snippet needs some SQL"));
         }
-        self.lock()?.execute(
+        let conn = self.lock()?;
+        let taken: Option<String> = conn
+            .query_row(
+                "SELECT name FROM snippets WHERE trigger_word = ?1 AND id <> ?2",
+                params![trigger, snippet.id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if taken.is_some() {
+            return Err(AppError::invalid_config(format!("Another snippet already uses the trigger {trigger}")));
+        }
+        conn.execute(
             "INSERT INTO snippets (id, trigger_word, name, body, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(id) DO UPDATE SET trigger_word = excluded.trigger_word, name = excluded.name,
                body = excluded.body, updated_at = excluded.updated_at",
@@ -959,8 +973,20 @@ mod tests {
         s.delete_snippet("s1").unwrap();
         s.delete_snippet("builtin-sel").unwrap();
         assert_eq!(triggers(&s), ["cte", "upd"]);
-        // A trigger is one word; a snippet needs a body.
+        // A trigger is one word of letters, digits and _, typed as is in the editor; a snippet
+        // needs a body.
         assert!(s.save_snippet(&Snippet { trigger: "two words".into(), ..mine.clone() }).is_err());
+        for bad in ["my-sel", "--", "sel!"] {
+            assert!(s.save_snippet(&Snippet { trigger: bad.into(), ..mine.clone() }).is_err(), "{bad}");
+        }
+        s.save_snippet(&Snippet { id: "s2".into(), trigger: "выбор_2".into(), ..mine.clone() }).unwrap();
+        // Triggers are unique: another snippet can't take one, the same one can keep it.
+        let taken = s.save_snippet(&Snippet { id: "s3".into(), trigger: "cte".into(), ..mine.clone() });
+        assert!(taken.unwrap_err().to_string().contains("cte"));
+        s.save_snippet(&Snippet {
+            id: "s2".into(), trigger: "выбор_2".into(), name: "Renamed".into(), ..mine.clone()
+        })
+        .unwrap();
         assert!(s.save_snippet(&Snippet { body: "  ".into(), ..mine }).is_err());
     }
 

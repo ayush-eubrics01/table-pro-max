@@ -12,6 +12,16 @@ export function SnippetSettings() {
     load().catch((e) => notifyError(e, "Could not load snippets"));
   }, [load]);
 
+  const drop = async (s: Snippet) => {
+    try {
+      await remove(s.id);
+      // Closing its form keeps Save from writing the deleted snippet back.
+      setEditing((e) => (e?.id === s.id ? null : e));
+    } catch (e) {
+      notifyError(e, "Could not delete the snippet");
+    }
+  };
+
   const submit = async () => {
     if (!editing) return;
     try {
@@ -25,9 +35,9 @@ export function SnippetSettings() {
   return (
     <>
       <p className="hint" style={{ margin: 0 }}>
-        Type a snippet's trigger in the SQL editor and pick it from the suggestions. Write <span className="mono">{"${name}"}</span> for each field; Tab moves to the next one.
+        Type a snippet's trigger in the SQL editor and pick it from the suggestions. A trigger is one word of letters, digits and _. Write <span className="mono">{"${name}"}</span> for each field; Tab moves to the next one.
       </p>
-      <ul className="snippet-list">
+      <ul className="snippet-list" aria-label="Snippets">
         {snippets.map((s) => (
           <li key={s.id}>
             <span className="mono">{s.trigger}</span>
@@ -35,11 +45,7 @@ export function SnippetSettings() {
             <button className="btn btn-ghost" aria-label={`Edit ${s.trigger}`} onClick={() => setEditing(s)}>
               Edit
             </button>
-            <button
-              className="btn btn-ghost"
-              aria-label={`Delete ${s.trigger}`}
-              onClick={() => remove(s.id).catch((e) => notifyError(e, "Could not delete the snippet"))}
-            >
+            <button className="btn btn-ghost" aria-label={`Delete ${s.trigger}`} onClick={() => void drop(s)}>
               Delete
             </button>
           </li>

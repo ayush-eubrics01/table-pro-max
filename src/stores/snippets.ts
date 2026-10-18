@@ -11,16 +11,26 @@ interface SnippetsState {
   remove: (id: string) => Promise<void>;
 }
 
-export const useSnippets = create<SnippetsState>((set) => ({
-  snippets: [],
-  loaded: false,
-  load: async () => set({ snippets: (await api.listSnippets()) ?? [], loaded: true }),
-  save: async (snippet) => {
-    await api.saveSnippet(snippet);
-    set({ snippets: (await api.listSnippets()) ?? [] });
-  },
-  remove: async (id) => {
-    await api.deleteSnippet(id);
-    set({ snippets: (await api.listSnippets()) ?? [] });
-  },
-}));
+/** Numbers each read, so a slow older read can't replace the list a newer one brought. */
+let reads = 0;
+
+export const useSnippets = create<SnippetsState>((set) => {
+  const refresh = async () => {
+    const n = ++reads;
+    const snippets = (await api.listSnippets()) ?? [];
+    if (n === reads) set({ snippets, loaded: true });
+  };
+  return {
+    snippets: [],
+    loaded: false,
+    load: refresh,
+    save: async (snippet) => {
+      await api.saveSnippet(snippet);
+      await refresh();
+    },
+    remove: async (id) => {
+      await api.deleteSnippet(id);
+      await refresh();
+    },
+  };
+});

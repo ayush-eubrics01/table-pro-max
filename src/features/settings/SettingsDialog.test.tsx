@@ -186,5 +186,11 @@ describe("SettingsDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete cnt" }));
     await waitFor(() => expect(screen.queryByText("Count rows")).not.toBeInTheDocument());
     expect(calls.find((c) => c.cmd === "delete_snippet")!.args.id).toBeTruthy();
+    // Deleting the snippet being edited closes its form, so Save can't bring it back.
+    fireEvent.click(screen.getByRole("button", { name: "Edit sel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete sel" }));
+    await waitFor(() => expect(screen.queryByText("Select some rows")).not.toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Save snippet" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New snippet" })).toBeInTheDocument();
   });
 });

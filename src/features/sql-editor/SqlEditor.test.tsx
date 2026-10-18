@@ -25,4 +25,15 @@ describe("SqlEditor", () => {
     await waitFor(() => expect(currentCompletions(view.state).map((c) => c.label)).toContain("sel"));
     expect(currentCompletions(view.state).map((c) => c.label)).toContain("SELECT");
   });
+
+  it("picks up snippets that arrive after it mounts", async () => {
+    const snippets = [{ id: "s", trigger: "sel", name: "Select rows", body: "SELECT ${columns} FROM ${table};" }];
+    const props = { value: "se", dialect: "postgres" as const, fontSize: 13, wordWrap: false, onChange: noop, onRun: noop, onFormat: noop, onSave: noop, onExplain: noop };
+    const { container, rerender } = render(<SqlEditor {...props} snippets={[]} />);
+    rerender(<SqlEditor {...props} snippets={snippets} />);
+    const view = EditorView.findFromDOM(container.querySelector(".cm-editor") as HTMLElement)!;
+    view.dispatch({ selection: { anchor: 2 } });
+    startCompletion(view);
+    await waitFor(() => expect(currentCompletions(view.state).map((c) => c.label)).toContain("sel"));
+  });
 });
