@@ -48,6 +48,7 @@ No feature has a paid tier, license check, quota or artificial limit.
 | Formatting | sql-formatter with dialect | IMPLEMENTED | `QueryTab.tsx` | all | | |
 | Find and replace | CodeMirror search panel | IMPLEMENTED | `SqlEditor.tsx` | — | | |
 | Saved queries | Save (Ctrl+S), list in sidebar, open without running | IMPLEMENTED | `storage.rs`, `Sidebar.tsx` | all | storage tests | Folders stored but not editable in the UI |
+| Pinned objects | Right-click a table, view, materialized view or saved query → Pin to top / Unpin; a Pinned group heads the sidebar in pin order, across schemas (other schemas named), filtered by the object filter; a pin whose object is gone shows "Not found" with Unpin. Kept per connection and database (PostgreSQL connections with several databases keep pins per database) in the local database (names only), removed with the connection or the saved query, not exported with profiles. A schema that can't be listed marks its pins Not found | VERIFIED | `storage.rs` (`pinned_objects`, v4), `commands/library.rs`, `Sidebar.tsx` | all | unit `pins_keep_their_order_per_connection_and_go_with_what_they_point_at`; `Sidebar` tests; manual (Xvfb): pin, Not found after DROP, kept across restart, unpin |
 | Query history | Local, searchable, per connection; retention by days and count | VERIFIED (storage) / IMPLEMENTED (UI) | `storage.rs`, `HistoryPanel.tsx` | all | storage tests | |
 | Query parameters (`:name`) | | NOT_STARTED | | | | |
 | Bookmarks / snippets | | NOT_STARTED | | | | Saved queries cover part of this |

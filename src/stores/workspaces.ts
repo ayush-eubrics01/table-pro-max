@@ -188,8 +188,10 @@ export const useWorkspaces = create<WorkspacesState>((set, get) => {
       if (!ws) return [];
       if (!force && ws.objects[schema]) return ws.objects[schema];
       try {
-        const objects = await api.listObjects(ws.session.sessionId, schema);
-        patchWs(id, (w) => ({ ...w, objects: { ...w.objects, [schema]: objects } }));
+        const sessionId = ws.session.sessionId;
+        const objects = await api.listObjects(sessionId, schema);
+        // A list from a session the workspace has since left (another database) is not kept.
+        patchWs(id, (w) => (w.session.sessionId === sessionId ? { ...w, objects: { ...w.objects, [schema]: objects } } : w));
         return objects;
       } catch (e) {
         throw toError(e);
