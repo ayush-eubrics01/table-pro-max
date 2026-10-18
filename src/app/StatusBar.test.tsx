@@ -87,7 +87,7 @@ describe("StatusBar: production opened read-only", () => {
     fireEvent.click(confirm);
     await waitFor(() => expect(useWorkspaces.getState().workspaces[0]!.session.sessionId).toBe("sess-2"));
     const connect = calls.find((c) => c.cmd === "connect")!;
-    expect((connect.args.request as Record<string, unknown>).allowWrites).toBe(true);
+    expect((connect.args.request as Record<string, unknown>).lockProduction).toBe(false);
     expect(useWorkspaces.getState().workspaces[0]!.allowWrites).toBe(true);
     expect(calls.some((c) => c.cmd === "disconnect" && c.args.sessionId === session.sessionId)).toBe(true);
   });
@@ -104,7 +104,7 @@ describe("StatusBar: production opened read-only", () => {
     render(<StatusBar ws={w} version="0.1.0" />);
     fireEvent.click(screen.getByRole("button", { name: "Back to read-only" }));
     await waitFor(() => expect(useWorkspaces.getState().workspaces[0]!.session.sessionId).toBe("sess-3"));
-    expect((calls.find((c) => c.cmd === "connect")!.args.request as Record<string, unknown>).allowWrites).toBe(false);
+    expect((calls.find((c) => c.cmd === "connect")!.args.request as Record<string, unknown>).lockProduction).toBe(true);
     expect(useWorkspaces.getState().workspaces[0]!.allowWrites).toBe(false);
   });
 });

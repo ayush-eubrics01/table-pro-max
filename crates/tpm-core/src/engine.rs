@@ -390,7 +390,8 @@ impl Engine {
         ssh_secret: Option<&str>,
         options: ConnectOptions,
     ) -> Result<SessionInfo> {
-        // Production opens read-only until the user allows writes; the database session enforces it.
+        // Production opens read-only until the user allows writes; the database session enforces it
+        // (DuckDB: the policy only, see `driver_profile`).
         let writes_locked = options.lock_production
             && profile.environment == crate::config::Environment::Production
             && !profile.read_only();
@@ -401,7 +402,8 @@ impl Engine {
         } else {
             profile
         };
-        let (mut session, tunnel) = self.connect_through(profile, password, ssh_secret, &options).await?;
+        let connect_as = driver_profile(profile, writes_locked);
+        let (mut session, tunnel) = self.connect_through(&connect_as, password, ssh_secret, &options).await?;
         let server = session.server_info().await?;
         let info = SessionInfo {
             session_id: uuid::Uuid::new_v4().to_string(),
@@ -446,8 +448,8 @@ impl Engine {
         ssh_secret: Option<&str>,
     ) -> Result<SessionInfo> {
         let handle = self.handle(session_id)?;
-        let (new_session, tunnel) =
-            self.connect_through(&handle.profile, password, ssh_secret, &handle.options).await?;
+        let connect_as = driver_profile(&handle.profile, handle.info.writes_locked);
+        let (new_session, tunnel) = self.connect_through(&connect_as, password, ssh_secret, &handle.options).await?;
         *lock(&handle.canceller) = new_session.canceller();
         *lock(&handle.tunnel) = tunnel;
         let old = {
@@ -2465,6 +2467,17 @@ fn is_fatal(e: &AppError) -> bool {
 /// transaction inside our own, so the rows read are exactly the rows changed; before rows, the
 /// statement, after rows (UPDATE), commit. A read that fails leaves the statement to run without
 /// a restore point; the statement's own failure rolls everything back.
+/// The profile the driver opens the session with. DuckDB opens one instance per file, either
+/// read-only or writable, so a production file locked to reads opens writable underneath (the
+/// read-only policy refuses writes) and Allow writes can share the instance.
+fn driver_profile(policy: &ConnectionProfile, writes_locked: bool) -> std::borrow::Cow<'_, ConnectionProfile> {
+    if writes_locked && policy.driver == crate::config::Driver::Duckdb {
+        std::borrow::Cow::Owned(ConnectionProfile { safety_mode: SafetyMode::ConfirmDestructive, ..policy.clone() })
+    } else {
+        std::borrow::Cow::Borrowed(policy)
+    }
+}
+
 /// Whether these statements destroy data on a production connection, so a click is not enough.
 fn typed_needed(handle: &SessionHandle, analysis: &ScriptAnalysis) -> bool {
     needs_typed_confirmation(&analysis.statements, handle.profile.safety_mode, handle.info.environment)

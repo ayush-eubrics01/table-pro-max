@@ -265,33 +265,57 @@ describe("production safety: reviewed DDL", () => {
 });
 
 describe("production safety: write access", () => {
-  it("a query tab opens its session the way the workspace allows, and reopens it when that changes", async () => {
-    const connects: Record<string, unknown>[] = [];
-    mockIPC((cmd, args) => {
+  const runAll = () => fireEvent.click(screen.getByRole("button", { name: /Run all/ }));
+  const queryWs = (locked: boolean) => ({
+    ...ws({ kind: "query", id: "q40", title: "Query 40", sql: "select 1", savedQueryId: null, dirty: false }),
+    session: { ...session, readOnly: locked, writesLocked: locked },
+  });
+  const mock = (connects: Record<string, unknown>[], gate?: Promise<void>) =>
+    mockIPC(async (cmd, args) => {
       if (cmd === "connect") {
-        connects.push((args as { request: Record<string, unknown> }).request);
-        return { ...session, sessionId: `tab-${connects.length}` };
+        const request = (args as { request: Record<string, unknown> }).request;
+        connects.push(request);
+        if (gate) await gate;
+        return { ...session, sessionId: `tab-${connects.length}`, writesLocked: request.lockProduction === true };
       }
       if (cmd === "statement_at_cursor") return { sql: "select 1", start: 0, end: 8 };
       if (cmd === "run_query") return { taskId: "t", cancelled: false, durationMs: 1, statements: [{ index: 0, sql: "select 1", start: 0, end: 8, durationMs: 1, truncated: false, rowsAffected: 0 }] };
       return cmd.startsWith("list_") || cmd.startsWith("search_") ? [] : null;
     });
-    const w = ws({ kind: "query", id: "q40", title: "Query 40", sql: "select 1", savedQueryId: null, dirty: false });
-    const { rerender } = renderWs(w);
-    fireEvent.click(screen.getByRole("button", { name: /Run all/ }));
-    await waitFor(() => expect(connects).toHaveLength(1));
-    expect(connects[0]!.allowWrites).toBe(false);
-    const allowed = { ...w, allowWrites: true };
-    useWorkspaces.setState({ workspaces: [allowed] });
+  const rerenderWith = (rerender: (ui: React.ReactElement) => void, w: Workspace) => {
+    useWorkspaces.setState({ workspaces: [w] });
     rerender(
       <>
-        <WorkspaceView ws={allowed} visible />
+        <WorkspaceView ws={w} visible />
         <Overlays />
       </>,
     );
-    fireEvent.click(screen.getByRole("button", { name: /Run all/ }));
+  };
+
+  it("a query tab opens its session locked or not like the workspace, and reopens it when that changes", async () => {
+    const connects: Record<string, unknown>[] = [];
+    mock(connects);
+    const { rerender } = renderWs(queryWs(true));
+    runAll();
+    await waitFor(() => expect(connects).toHaveLength(1));
+    expect(connects[0]!.lockProduction).toBe(true);
+    rerenderWith(rerender, { ...queryWs(false), allowWrites: true });
+    runAll();
     await waitFor(() => expect(connects).toHaveLength(2));
-    expect(connects[1]!.allowWrites).toBe(true);
+    expect(connects[1]!.lockProduction).toBe(false);
+  });
+
+  it("a session still connecting when writes change is replaced, not kept", async () => {
+    const connects: Record<string, unknown>[] = [];
+    let release = () => undefined as void;
+    mock(connects, new Promise<void>((r) => (release = r)));
+    const { rerender } = renderWs(queryWs(false));
+    runAll();
+    await waitFor(() => expect(connects).toHaveLength(1));
+    rerenderWith(rerender, queryWs(true));
+    release();
+    await waitFor(() => expect(connects).toHaveLength(2));
+    expect(connects[1]!.lockProduction).toBe(true);
   });
 });
 
@@ -307,5 +331,31 @@ describe("production safety: locked", () => {
     renderWs({ ...ws({ kind: "query", id: "q50", title: "Query 50", sql: "delete from users", savedQueryId: null, dirty: false }), session: locked });
     fireEvent.click(screen.getByRole("button", { name: /Run all/ }));
     expect(await screen.findByText(/This connection is read-only.*Choose Allow writes in the status bar to change data\./)).toBeInTheDocument();
+  });
+});
+
+describe("production safety: SQL files", () => {
+  it("Run SQL file asks for the connection name when the file destroys data on production", async () => {
+    const runs: Record<string, unknown>[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "connect") return session;
+      if (cmd === "plugin:dialog|open") return "/tmp/dump.sql";
+      if (cmd === "run_sql_file") {
+        const request = (args as { request: Record<string, unknown> }).request;
+        runs.push(request);
+        if (request.typedConfirmation !== "Local PG")
+          throw { kind: "confirmation_required", message: "Confirm execution on Local PG", code: "confirm_typed", detail: "DROP permanently removes objects: DROP TABLE IF EXISTS users" };
+        return { statementsRun: 3, failures: [], cancelled: false, durationMs: 5 };
+      }
+      return cmd.startsWith("list_") || cmd.startsWith("search_") ? [] : null;
+    });
+    renderWs(ws({ kind: "query", id: "q60", title: "Query 60", sql: "", savedQueryId: null, dirty: false }));
+    fireEvent.click(screen.getByRole("button", { name: "Run SQL file" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Run file" }));
+    fireEvent.change(await screen.findByLabelText("Type Local PG to confirm"), { target: { value: "Local PG" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run anyway" }));
+    await waitFor(() => expect(runs).toHaveLength(2));
+    expect(runs[1]).toMatchObject({ confirmed: true, typedConfirmation: "Local PG" });
+    expect(await screen.findByText(/dump.sql: 3 statements/)).toBeInTheDocument();
   });
 });

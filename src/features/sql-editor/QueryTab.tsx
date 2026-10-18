@@ -12,7 +12,7 @@ import { confirmAction, notify, notifyError, promptText } from "../../stores/ui"
 import { useSettings } from "../../stores/settings";
 import { useWorkspaces, type QueryTab as QueryTabModel, type Workspace } from "../../stores/workspaces";
 import { EnvBadge } from "../../components/EnvBadge";
-import { ConfirmRunBody, needsName } from "../connections/nameConfirm";
+import { ConfirmRunBody, needsName, withNameConfirm } from "../connections/nameConfirm";
 import { SqlEditor, type RunMode, type SqlEditorHandle } from "./SqlEditor";
 import { ResultsPanel } from "./ResultsPanel";
 import { HistoryPanel } from "../query-history/HistoryPanel";
@@ -143,29 +143,38 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
   );
 
   const schemaRef = useRef(ws.schema);
+  // A production workspace opened read-only: this tab's session is locked the same way.
+  const locked = ws.session.writesLocked;
+  const lockedRef = useRef(locked);
   const ensureSession = useCallback(async (): Promise<SessionInfo | null> => {
     if (sessionRef.current) return sessionRef.current;
-    const s = await connectWithPrompt(ws.profile, ws.session.dialect === "postgres" ? ws.session.database : null, { allowWrites: ws.allowWrites ?? false });
-    sessionRef.current = s;
-    setSession(s);
-    // Unqualified names resolve in the schema picked in the sidebar.
-    if (s) await api.setDefaultSchema(s.sessionId, schemaRef.current).catch((e) => notifyError(e, "Could not switch schema"));
-    return s;
-  }, [ws.profile, ws.session, ws.allowWrites]);
+    for (;;) {
+      const lockProduction = lockedRef.current;
+      const s = await connectWithPrompt(ws.profile, ws.session.dialect === "postgres" ? ws.session.database : null, { lockProduction });
+      if (s && lockedRef.current !== lockProduction) {
+        // Writes were allowed or taken back while connecting: open it the new way instead.
+        void api.disconnect(s.sessionId).catch(() => undefined);
+        continue;
+      }
+      sessionRef.current = s;
+      setSession(s);
+      // Unqualified names resolve in the schema picked in the sidebar.
+      if (s) await api.setDefaultSchema(s.sessionId, schemaRef.current).catch((e) => notifyError(e, "Could not switch schema"));
+      return s;
+    }
+  }, [ws.profile, ws.session]);
 
   // Writes allowed or taken back: this tab's session opened the other way, so it reconnects on
   // the next run (an open transaction in it is rolled back).
-  const allowWrites = ws.allowWrites ?? false;
-  const allowedRef = useRef(allowWrites);
   useEffect(() => {
-    if (allowedRef.current === allowWrites) return;
-    allowedRef.current = allowWrites;
+    if (lockedRef.current === locked) return;
+    lockedRef.current = locked;
     const s = sessionRef.current;
     if (!s) return;
     sessionRef.current = null;
     setSession(null);
     void api.disconnect(s.sessionId).catch(() => undefined);
-  }, [allowWrites]);
+  }, [locked]);
 
   // Follow later schema changes in the sidebar. Runs through the session lock, so it
   // waits for a running statement instead of overlapping it.
@@ -413,7 +422,8 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
     const id = uid();
     setFileTask({ id, name });
     try {
-      const r = await api.runSqlFile(s.sessionId, path, id, true);
+      const r = await withNameConfirm(s, (typed) => api.runSqlFile(s.sessionId, path, id, true, typed));
+      if (!r) return;
       const msg = `${name}: ${r.statementsRun} statements in ${formatDuration(r.durationMs)}`;
       if (r.failures.length) {
         setError(`${msg}. Stopped at an error: ${r.failures[0]!.error!.message}\n${r.failures[0]!.sql.slice(0, 300)}`);

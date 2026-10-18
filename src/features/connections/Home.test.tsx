@@ -45,6 +45,14 @@ describe("Home", () => {
     expect(within(card()).queryByText(/Opens read-only/)).not.toBeInTheDocument();
   });
 
+  it("does not say a production Redis connection opens read-only (the setting covers SQL databases)", () => {
+    useConnections.setState({ connections: [conn({ id: "r", name: "Cache prod", driver: "redis", environment: "production", group: null, safetyMode: "confirm_destructive" })] } as never);
+    useSettings.setState({ settings: { ...DEFAULT_SETTINGS, "safety.productionReadOnly": true } });
+    render(<Home appInfo={null} connecting={null} onConnect={() => undefined} />);
+    const card = screen.getByRole("button", { name: "Connect to Cache prod" }).closest(".conn-card") as HTMLElement;
+    expect(within(card).queryByText(/Opens read-only/)).not.toBeInTheDocument();
+  });
+
   it("groups connections by environment, production first", () => {
     render(<Home appInfo={null} connecting={null} onConnect={() => undefined} />);
     expect(headings()).toEqual(["Production", "Staging", "Testing", "Development", "Local"]);

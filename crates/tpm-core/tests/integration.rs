@@ -1899,6 +1899,34 @@ async fn production_safety() {
     engine.close_session(&info.session_id).await;
 }
 
+/// DuckDB opens one instance per file, read-only or writable: a production file locked to reads is
+/// opened writable underneath (the policy refuses writes), so Allow writes can open it too.
+#[tokio::test(flavor = "multi_thread")]
+async fn production_lock_on_duckdb() {
+    use tpm_core::config::Environment;
+    let dir = tempfile::tempdir().unwrap();
+    let mut t = duckdb_target(&dir);
+    t.profile.environment = Environment::Production;
+    let engine = Engine::new();
+    let locked = ConnectOptions { lock_production: true, ..Default::default() };
+    let ro = engine.open_session(&t.profile, None, None, locked).await.unwrap();
+    assert!(ro.read_only && ro.writes_locked);
+    let err = engine.run_script(&ro.session_id, "CREATE TABLE t (x INTEGER)", RunOptions::default(), None).await;
+    assert_eq!(err.unwrap_err().kind, ErrorKind::PolicyViolation);
+    // Allow writes while the locked session (and its query tabs) are still open.
+    let rw = engine.open_session(&t.profile, None, None, ConnectOptions::default()).await.unwrap();
+    run(&engine, &rw.session_id, "CREATE TABLE t (x INTEGER)").await;
+    engine.close_session(&rw.session_id).await;
+    // A reconnect of the locked session keeps it locked, and keeps the file shareable.
+    let again = engine.reconnect(&ro.session_id, None, None).await.unwrap();
+    assert!(again.read_only && again.writes_locked);
+    let err = engine.run_script(&ro.session_id, "DROP TABLE t", RunOptions::default(), None).await;
+    assert_eq!(err.unwrap_err().kind, ErrorKind::PolicyViolation);
+    let rw = engine.open_session(&t.profile, None, None, ConnectOptions::default()).await.unwrap();
+    engine.close_session(&rw.session_id).await;
+    engine.close_session(&ro.session_id).await;
+}
+
 /// The engine's own SQLite transactions (restore-point captures, grid commits, imports) read and
 /// then write, so they take the write lock up front: a deferred BEGIN can fail on its first write
 /// with SQLITE_BUSY_SNAPSHOT when another connection wrote in between (WAL mode).

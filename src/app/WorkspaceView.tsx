@@ -70,7 +70,7 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
 
   const switchDatabase = async (db: string) => {
     try {
-      const session = await connectWithPrompt(ws.profile, db, { allowWrites: ws.allowWrites ?? false });
+      const session = await connectWithPrompt(ws.profile, db, { lockProduction: ws.session.writesLocked });
       if (!session) return;
       await api.disconnect(ws.session.sessionId).catch(() => undefined);
       const schemas = await api.listSchemas(session.sessionId);
@@ -219,7 +219,7 @@ export async function changeWriteAccess(ws: Workspace, allow: boolean) {
     if (!ok) return;
   }
   try {
-    const session = await connectWithPrompt(ws.profile, s.dialect === "postgres" ? s.database : null, { allowWrites: allow });
+    const session = await connectWithPrompt(ws.profile, s.dialect === "postgres" ? s.database : null, { lockProduction: !allow });
     if (!session) return;
     await api.disconnect(s.sessionId).catch(() => undefined);
     useWorkspaces.getState().update(ws.id, { session, allowWrites: allow, health: "ok" });

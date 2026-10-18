@@ -179,7 +179,7 @@ export function Home({ appInfo, onConnect, connecting }: Props) {
             </h2>
             <div className="conn-cards">
               {items.map(({ profile: p, lastUsedAt }) => {
-                const facts = [p.group?.trim() || "No group", p.ssh ? "SSH tunnel" : null, p.safetyMode === "read_only" || (productionReadOnly && p.environment === "production") ? "Opens read-only" : null].filter(
+                const facts = [p.group?.trim() || "No group", p.ssh ? "SSH tunnel" : null, p.safetyMode === "read_only" || (productionReadOnly && p.environment === "production" && p.driver !== "redis") ? "Opens read-only" : null].filter(
                   Boolean,
                 );
                 return (

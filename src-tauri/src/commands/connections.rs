@@ -218,9 +218,10 @@ pub struct ConnectRequest {
     /// Open the session read-only regardless of the profile (dashboards).
     #[serde(default)]
     pub read_only: bool,
-    /// The user chose to allow writes on a production connection for this session.
+    /// Open a production connection read-only (`true`) or writable (`false`): the workspace's own
+    /// state, for its query tabs and after Allow writes. `None` follows the setting (a new connection).
     #[serde(default)]
-    pub allow_writes: bool,
+    pub lock_production: Option<bool>,
 }
 
 #[tauri::command]
@@ -243,7 +244,7 @@ pub async fn connect(state: State<'_, AppState>, request: ConnectRequest) -> Res
             ConnectOptions {
                 database: request.database.filter(|d| !d.is_empty()),
                 tunnel_port: None,
-                lock_production: !request.allow_writes && production_read_only(&state),
+                lock_production: request.lock_production.unwrap_or_else(|| production_read_only(&state)),
             },
         )
         .await?;
