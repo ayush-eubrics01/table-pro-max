@@ -134,11 +134,19 @@ fn mssql_batches(input: &str) -> Vec<StatementSpan> {
     out
 }
 
-/// The next word at or after `i`, upper-cased (blanks skipped).
+/// The next word at or after `i`, upper-cased (blanks and comments skipped).
 fn word_after(input: &str, mut i: usize, to: usize) -> String {
     let bytes = input.as_bytes();
-    while i < to && bytes[i].is_ascii_whitespace() {
-        i += 1;
+    while i < to {
+        if bytes[i].is_ascii_whitespace() {
+            i += 1;
+        } else if matches!(bytes[i], b'-' | b'/')
+            && let Some(j) = mssql_skip(bytes, i)
+        {
+            i = j.min(to);
+        } else {
+            break;
+        }
     }
     let end = (i..to).find(|&j| !is_word_byte(bytes[j])).unwrap_or(to);
     input[i..end].to_ascii_uppercase()
@@ -448,6 +456,9 @@ mod tests {
         assert_eq!(at("PROC p"), "CREATE OR ALTER PROC p AS SELECT 1; SELECT 2;");
         assert_eq!(at("DELETE"), "DELETE FROM t");
         assert_eq!(at("COMMIT"), "COMMIT");
+        // A comment between BEGIN and TRAN still makes it a statement, not a block.
+        let c = "BEGIN /*c*/ TRAN; DELETE FROM t WHERE id = 1; COMMIT; SELECT 1";
+        assert_eq!(statement_at(c, Dialect::Mssql, c.len()).unwrap().sql, "SELECT 1");
         let spans_ok = statement_at(s, Dialect::Mssql, s.find("DELETE").unwrap()).unwrap();
         assert_eq!(&s[spans_ok.start..spans_ok.end], "DELETE FROM t");
     }

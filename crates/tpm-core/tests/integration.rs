@@ -2830,6 +2830,7 @@ async fn sql_server_flow(t: Target) {
     restore_points_on_sql_server(&engine, &sid).await;
 
     transfer_roundtrip(&engine, &sid, "dbo", driver).await;
+    sql_server_sessions_keep_their_state(&engine, &sid, &profile, t.password.as_deref()).await;
 
     run(&engine, &sid, "DROP TABLE tpm_it_items; DROP TABLE tpm_it_owners").await;
     engine.close_all().await;
@@ -2890,4 +2891,86 @@ async fn restore_points_on_sql_server(engine: &Arc<Engine>, sid: &str) {
         "the identity keeps its step past the restored rows"
     );
     run(engine, sid, "DROP TABLE tpm_it_msrp").await;
+}
+
+/// What a SQL Server session holds survives the app's own work: the user's transaction through an
+/// error and the row cap, the rest of a capped batch, the database after a reconnect; read-only
+/// can't be ended by COMMIT; a lock elsewhere doesn't hang planning.
+async fn sql_server_sessions_keep_their_state(
+    engine: &Arc<Engine>,
+    sid: &str,
+    profile: &ConnectionProfile,
+    password: Option<&str>,
+) {
+    let opts = RunOptions { confirmed: true, ..Default::default() };
+    let one = |r: tpm_core::engine::ScriptResult| text(&r.statements[0].rows.clone().unwrap()[0][0]).to_string();
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_ms_s; CREATE TABLE tpm_it_ms_s (id int PRIMARY KEY, v int)").await;
+    run(engine, sid, "INSERT INTO tpm_it_ms_s VALUES (1, 0), (2, 0), (3, 0)").await;
+    let big = "SELECT TOP 200000 a.object_id FROM sys.all_objects a CROSS JOIN sys.all_objects b";
+
+    // An error in a plain SELECT leaves the user's transaction alone.
+    run(engine, sid, "BEGIN TRANSACTION; UPDATE tpm_it_ms_s SET v = 1 WHERE id = 1").await;
+    let r = engine.run_script(sid, "SELECT * FROM tpm_it_no_such_table", opts.clone(), None).await.unwrap();
+    assert!(r.statements[0].error.is_some());
+    assert_eq!(one(run(engine, sid, "SELECT @@TRANCOUNT").await), "1", "the transaction is still open");
+    // A batch past the row cap runs to its end, inside the same transaction.
+    let capped =
+        format!("UPDATE tpm_it_ms_s SET v = 2 WHERE id = 2;\n{big};\nUPDATE tpm_it_ms_s SET v = 3 WHERE id = 3");
+    let r = engine
+        .run_script(sid, &capped, RunOptions { max_rows: Some(10), confirmed: true, ..Default::default() }, None)
+        .await
+        .unwrap();
+    assert!(r.statements.iter().all(|s| s.error.is_none()), "{:?}", r.statements);
+    assert_eq!(one(run(engine, sid, "SELECT @@TRANCOUNT").await), "1", "no reconnect for the row cap");
+    run(engine, sid, "COMMIT").await;
+    let r = run(engine, sid, "SELECT v FROM tpm_it_ms_s ORDER BY id").await;
+    let vs: Vec<String> = r.statements[0].rows.clone().unwrap().iter().map(|r| text(&r[0]).to_string()).collect();
+    assert_eq!(vs, ["1", "2", "3"], "every statement of the capped batch ran and was committed");
+
+    // SET ROWCOUNT would cap the app's own reads, and the app's would clear it: refused.
+    let r = engine.run_script(sid, "SET ROWCOUNT 1", opts.clone(), None).await.unwrap();
+    assert!(r.statements[0].error.as_ref().is_some_and(|e| e.message.contains("TOP")), "{:?}", r.statements[0].error);
+
+    // A reconnect (here after a timeout) comes back to the database the session was using.
+    run(engine, sid, "USE tempdb").await;
+    let r = engine
+        .run_script(sid, "WAITFOR DELAY '00:00:10'", RunOptions { timeout_secs: Some(1), ..Default::default() }, None)
+        .await
+        .unwrap();
+    assert_eq!(r.statements[0].error.as_ref().unwrap().kind, ErrorKind::Timeout);
+    assert_eq!(one(run(engine, sid, "SELECT DB_NAME()").await), "tempdb");
+    run(engine, sid, "USE tpm_test").await;
+
+    // Read-only: nothing may end the transaction every batch is rolled back in.
+    let mut ro = profile.clone();
+    ro.safety_mode = SafetyMode::ReadOnly;
+    let ro_info = engine.open_session(&ro, password, None, ConnectOptions::default()).await.unwrap();
+    for sql in ["SELECT 1; COMMIT; SELECT @@TRANCOUNT", "ROLLBACK", "SET IMPLICIT_TRANSACTIONS ON"] {
+        let r = engine.run_script(&ro_info.session_id, sql, RunOptions::default(), None).await;
+        let refused = match r {
+            Err(e) => e.kind == ErrorKind::PolicyViolation,
+            Ok(r) => r.statements[0].error.as_ref().is_some_and(|e| e.kind == ErrorKind::PolicyViolation),
+        };
+        assert!(refused, "read-only must refuse {sql}");
+    }
+    engine.close_session(&ro_info.session_id).await;
+
+    // Planning a restore point does not wait on another session's lock.
+    let store = Arc::new(tpm_core::storage::Storage::open_in_memory().unwrap());
+    engine.set_restore_store(store);
+    let other = engine.open_session(profile, password, None, ConnectOptions::default()).await.unwrap();
+    run(engine, &other.session_id, "BEGIN TRANSACTION; UPDATE tpm_it_ms_s SET v = 9 WHERE id = 2").await;
+    let t0 = Instant::now();
+    let r = engine
+        .run_script(
+            sid,
+            "DELETE FROM tpm_it_ms_s WHERE id = 2",
+            RunOptions { timeout_secs: Some(2), confirmed: true, ..Default::default() },
+            None,
+        )
+        .await;
+    assert!(t0.elapsed() < Duration::from_secs(15), "took {:?}: {r:?}", t0.elapsed());
+    run(engine, &other.session_id, "ROLLBACK").await;
+    engine.close_session(&other.session_id).await;
+    run(engine, sid, "DROP TABLE tpm_it_ms_s").await;
 }

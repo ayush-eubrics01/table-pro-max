@@ -236,7 +236,7 @@ pub fn capture_select(plan: &CapturePlan, s: &TableStructure, dialect: Dialect, 
         select.push(match dialect {
             // Text everywhere (bytea too, as \x hex) so every value round-trips as a parameter.
             Dialect::Postgres => format!("{qual}.{q}::text AS {q}"),
-            _ => format!("{qual}.{q}"),
+            _ => dialect.read_column(&format!("{qual}.{q}"), &q, &c.data_type),
         });
     }
     let mut sql = format!("SELECT {} FROM {}", select.join(", "), from_sql(plan));
@@ -273,6 +273,10 @@ pub fn count_select(plan: &CapturePlan, s: &TableStructure, driver: Driver, limi
     let bound = limit.saturating_add(1);
     let top = if driver == Driver::Mssql { format!("TOP ({bound}) ") } else { String::new() };
     let mut inner = format!("SELECT {top}{size} AS rp_size FROM {}", from_sql(plan));
+    if driver == Driver::Mssql {
+        // An estimate: it must not wait behind another session's open transaction.
+        inner.push_str(" WITH (NOLOCK)");
+    }
     if let (Some(w), CaptureKind::Update | CaptureKind::Delete) = (&plan.where_sql, plan.kind) {
         inner.push_str(&format!(" WHERE {w}"));
     }
@@ -425,12 +429,20 @@ mod tests {
             count_select(&p, &orders(), Driver::Mssql, 10).unwrap(),
             "SELECT count(*), COALESCE(sum(CAST(rp_size AS bigint)), 0) FROM (SELECT TOP (11) \
              COALESCE(DATALENGTH(dbo.orders.[id]), 0) + COALESCE(DATALENGTH(dbo.orders.[status]), 0) + \
-             COALESCE(DATALENGTH(dbo.orders.[doc]), 0) AS rp_size FROM dbo.orders WHERE id = 1) AS rp_count"
+             COALESCE(DATALENGTH(dbo.orders.[doc]), 0) AS rp_size FROM dbo.orders WITH (NOLOCK) WHERE id = 1) AS rp_count"
         );
         assert_eq!(
             capture_select(&p, &orders(), Dialect::Mssql, true).unwrap(),
             "SELECT dbo.orders.[id], dbo.orders.[status], dbo.orders.[doc] FROM dbo.orders WITH (UPDLOCK, HOLDLOCK) \
              WHERE id = 1"
+        );
+        // money is read as decimal: the driver would read it as a float.
+        let mut paid = orders();
+        paid.columns[1].data_type = "money".into();
+        assert!(
+            capture_select(&p, &paid, Dialect::Mssql, false)
+                .unwrap()
+                .contains("CAST(dbo.orders.[status] AS decimal(19,4)) AS [status]")
         );
         let PlanOutcome::Capture(t) = plan_statement("TRUNCATE TABLE dbo.orders", Dialect::Mssql) else { panic!() };
         assert!(count_select(&t, &orders(), Driver::Mssql, 5).unwrap().contains("SELECT TOP (6) "));

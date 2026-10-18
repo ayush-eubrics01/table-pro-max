@@ -141,17 +141,27 @@ checks `@@autocommit`, and the engine also tracks the `BEGIN`/`COMMIT`/`ROLLBACK
   `time` and `datetimeoffset` with their declared digits, `money` with four decimals, `bit` as
   1/0, GUIDs upper-case, binary as bytes). Each rendering converts back to the same value when
   bound as a parameter, which conflict checks and query parameters rely on (integration test).
-  `money` arrives from the driver as a float: exact below about 900 billion.
+  `money` arrives from the driver as a float, exact below about 900 billion; the app's own reads
+  (pages, restore points, rows by key) cast it to `decimal(19,4)`, which is exact.
 * Parameters: `sp_executesql` with `@P1…`, always as `nvarchar`. Statements without values run
   as plain batches (a transaction opened inside `sp_executesql` is refused). A batch with
   parameters runs inside `sp_executesql`, so #temp tables it creates end with it.
-* Row cap: a plain `SELECT` runs under `SET ROWCOUNT cap+1`, so the server stops; any other batch
-  past the cap is stopped with the attention signal. tiberius 0.13.0 does not wait for the
+* Row cap: a plain `SELECT` runs under `SET ROWCOUNT cap+1`, so the server stops; in any other
+  batch, rows past the cap are read and dropped, so the statements after it still run. A user's
+  own `SET ROWCOUNT` is refused (it would cap the app's reads, and the app's would clear it): use
+  `TOP`. Cancels and timeouts send the attention signal. tiberius 0.13.0 does not wait for the
   server's acknowledgement when it comes in a separate message (prisma/tiberius#459, fix in #460),
-  so after a cancel the connection is reopened: #temp tables, variables and an open transaction
-  are lost, and the cancel message says so.
+  so after a cancel the connection is opened again on the database it was using: #temp tables,
+  variables, SET options and an open transaction are lost, and the cancel message says so. App
+  queries (catalog, restore planning) can be cancelled too; the restore size estimate reads with
+  `NOLOCK` so it never waits behind another session's transaction.
+* A batch that fails part-way reports the error only: result sets before it are not shown, though
+  statements before it ran (and, outside a transaction, were committed). `GO n` (repeat a batch)
+  is not supported.
 * Read-only: each batch runs as `BEGIN TRANSACTION; … ; ROLLBACK`, on top of the analyzer, which
-  refuses everything but reads (procedure calls and dynamic SQL included). Effects outside the
+  refuses everything but reads (procedure calls and dynamic SQL included). Batches that could end
+  that transaction or reach past it are refused: `COMMIT`, `ROLLBACK`, `IMPLICIT_TRANSACTIONS`,
+  `OPENQUERY`, `OPENROWSET`, `OPENDATASOURCE`. Effects outside the
   database's transaction log (a sequence's `NEXT VALUE FOR`, mail) are not undone; for full
   protection use a login with read-only rights (`db_datareader`). `ApplicationIntent=ReadOnly`
   is sent too, which routes to a readable secondary where there is one.
@@ -164,7 +174,9 @@ checks `@@autocommit`, and the engine also tracks the `BEGIN`/`COMMIT`/`ROLLBACK
 * Restore points: rows are read under `UPDLOCK, HOLDLOCK` (TRUNCATE/DROP lock the table with
   `TABLOCKX`); restores re-insert identity values under `SET IDENTITY_INSERT`, and a dropped table
   comes back with its identity seed and step. Tables with binary columns get none, as on MySQL.
-  The engine asks `@@TRANCOUNT` after each batch to follow the user's transactions.
+  The engine asks `@@TRANCOUNT` (and `DB_NAME()`) after each batch to follow the user's
+  transactions; one that ended counts as committed unless the batch failed or only rolled back.
+  An error in a statement never ends the user's transaction on the app's side.
 * Not yet: query plans (`SHOWPLAN_XML`), Windows/Entra sign-in, named-instance lookup,
   `DROP DEFAULT` from the structure editor (defaults are named constraints: drop them by name).
 * Tests: `scripts/test-db.sh` starts `tpm-test-mssql` (SQL Server 2022 Developer edition, free for

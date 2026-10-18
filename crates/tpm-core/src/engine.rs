@@ -1193,8 +1193,9 @@ impl Engine {
 
     /// SQL Server: a batch mixes transaction control with other statements, and XACT_ABORT can
     /// end a transaction on an error, so the server says whether one is open after each batch.
-    /// One that ended is taken as committed unless the batch failed or its last word on it was
-    /// ROLLBACK.
+    /// One that ended is taken as committed unless the batch failed or rolled back without
+    /// committing (TRY … COMMIT … CATCH … ROLLBACK counts as committed: a kept point that turns
+    /// out unneeded is refused by the restore's conflict check, a deleted one is gone).
     async fn sync_transaction(&self, handle: &Arc<SessionHandle>, stmt: &crate::safety::StatementAnalysis, ok: bool) {
         let open =
             self.with_session(&handle.info.session_id, |s| Box::pin(async move { s.in_transaction().await })).await;
@@ -1202,8 +1203,8 @@ impl Engine {
         let was = handle.open_txn.swap(now, Ordering::SeqCst);
         if was && !now {
             let words = crate::split::mssql_words(&stmt.sql);
-            let last = words.iter().rev().find(|w| matches!(w.as_str(), "COMMIT" | "ROLLBACK"));
-            self.settle_pending(handle, ok && last.is_none_or(|w| w == "COMMIT"));
+            let rolled_back = words.iter().any(|w| w == "ROLLBACK") && !words.iter().any(|w| w == "COMMIT");
+            self.settle_pending(handle, ok && !rolled_back);
         }
         handle.txn_failed.store(false, Ordering::SeqCst);
     }

@@ -6,12 +6,14 @@
 //!   converts to the column's type.
 //! * Read-only sessions run every batch inside a transaction that is always rolled back, on
 //!   top of the safety analyzer refusing anything but reads.
-//! * A plain `SELECT` is capped on the server (`SET ROWCOUNT`); other batches past the row cap,
-//!   and cancels, use the TDS attention signal. When the driver cannot settle the connection
-//!   after one, the connection is opened again (session state such as #temp tables is lost).
+//! * A plain `SELECT` is capped on the server (`SET ROWCOUNT`); in other batches rows past the
+//!   cap are read and dropped, so every statement still runs. Cancels (and timeouts) use the TDS
+//!   attention signal; when the driver cannot settle the connection after one, it is opened
+//!   again on the same database, and session state such as #temp tables is lost.
 
 use std::borrow::Cow;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -35,18 +37,22 @@ pub struct MsSession {
     connect_timeout: Duration,
     read_only: bool,
     canceller: Arc<MsCanceller>,
+    /// The database the session last reported (`USE` changes it): a reconnect goes back to it.
+    database: Option<String>,
 }
 
 #[derive(Default)]
 struct MsCanceller {
+    requested: AtomicBool,
     wake: Notify,
 }
 
 #[async_trait]
 impl Canceller for MsCanceller {
     async fn cancel(&self) -> Result<()> {
-        // The running batch is waiting on this; it sends the attention signal itself, because the
-        // connection is borrowed by the batch.
+        // The running operation is waiting on this; it sends the attention signal itself, because
+        // the connection is borrowed by it.
+        self.requested.store(true, Ordering::SeqCst);
         self.wake.notify_waiters();
         Ok(())
     }
@@ -61,11 +67,9 @@ impl ToSql for Text<'_> {
     }
 }
 
-/// How a batch ended early.
-enum Stop {
-    Cap,
-    Cancel,
-}
+/// Words that would end the transaction a read-only session runs each batch in, or reach past it.
+const READ_ONLY_REFUSED: [&str; 6] =
+    ["COMMIT", "ROLLBACK", "IMPLICIT_TRANSACTIONS", "OPENQUERY", "OPENROWSET", "OPENDATASOURCE"];
 
 impl MsSession {
     pub async fn connect(
@@ -119,6 +123,7 @@ impl MsSession {
             connect_timeout,
             read_only: profile.read_only(),
             canceller: Arc::new(MsCanceller::default()),
+            database: None,
         };
         session.open().await?;
         Ok(session)
@@ -127,6 +132,9 @@ impl MsSession {
     async fn open(&mut self) -> Result<()> {
         let timeout = self.connect_timeout;
         let mut config = self.config.clone();
+        if let Some(db) = &self.database {
+            config.database(db);
+        }
         // Azure SQL's gateway may send the client on to the database's own node.
         for _ in 0..3 {
             let tcp = tokio::time::timeout(timeout, TcpStream::connect(config.get_addr()))
@@ -164,17 +172,32 @@ impl MsSession {
         self.client.as_mut().ok_or_else(|| AppError::new(ErrorKind::Network, "The connection to the server was closed"))
     }
 
-    /// Settles the connection after a batch was stopped early. False when it had to be opened
-    /// again (and lost its session state).
-    async fn stop_running(&mut self) -> Result<bool> {
+    /// Starts listening for a cancel: one requested from here on is seen, even before the wait is
+    /// polled. A cancel that came in before this belonged to an operation that has ended.
+    fn listen(canceller: &MsCanceller) -> std::pin::Pin<Box<tokio::sync::futures::Notified<'_>>> {
+        canceller.requested.store(false, Ordering::SeqCst);
+        let mut wake = Box::pin(canceller.wake.notified());
+        wake.as_mut().enable();
+        wake
+    }
+
+    /// After a cancel interrupted an operation: stops the server's work with the attention signal,
+    /// or, when the driver can't settle the connection that way (tiberius#459), opens it again on
+    /// the same database. The error says what that cost.
+    async fn cancelled(&mut self) -> AppError {
         if let Some(client) = self.client.as_mut()
             && client.cancel_query().await.is_ok()
         {
-            return Ok(true);
+            return AppError::cancelled();
         }
         self.client = None;
-        self.open().await?;
-        Ok(false)
+        if let Err(e) = self.open().await {
+            return e.add_context("The connection was lost while stopping the query.");
+        }
+        AppError::cancelled().add_context(
+            "The connection was opened again to stop the query, so temporary tables, variables, SET options \
+             and any open transaction were reset.",
+        )
     }
 
     /// Rows of an application query, read in full (generated queries are bounded already).
@@ -183,24 +206,61 @@ impl MsSession {
     async fn rows(&mut self, sql: &str, params: &[Param]) -> Result<RowSet> {
         let refs: Vec<Text> = params.iter().map(|p| Text(p.as_deref())).collect();
         let args: Vec<&dyn ToSql> = refs.iter().map(|p| p as &dyn ToSql).collect();
-        let client = self.client()?;
-        let stream = if params.is_empty() { client.simple_query(sql).await } else { client.query(sql, &args).await };
-        let mut stream = stream.map_err(app_error)?;
-        let mut rs = RowSet::default();
-        while let Some(item) = stream.try_next().await.map_err(app_error)? {
-            match item {
-                QueryItem::Metadata(m) if rs.columns.is_empty() => rs.columns = columns_meta(m.columns()),
-                QueryItem::Metadata(_) => {}
-                QueryItem::Row(row) if row.result_index() == 0 => rs.rows.push(to_row(row)),
-                QueryItem::Row(_) => {}
-            }
+        let canceller = self.canceller.clone();
+        let mut wake = Self::listen(&canceller);
+        if canceller.requested.load(Ordering::SeqCst) {
+            return Err(AppError::cancelled());
         }
-        Ok(rs)
+        let result = {
+            let client = self.client()?;
+            let read = async {
+                let stream =
+                    if params.is_empty() { client.simple_query(sql).await } else { client.query(sql, &args).await };
+                let mut stream = stream.map_err(app_error)?;
+                let mut rs = RowSet::default();
+                while let Some(item) = stream.try_next().await.map_err(app_error)? {
+                    match item {
+                        QueryItem::Metadata(m) if rs.columns.is_empty() => rs.columns = columns_meta(m.columns()),
+                        QueryItem::Metadata(_) => {}
+                        QueryItem::Row(row) if row.result_index() == 0 => rs.rows.push(to_row(row)),
+                        QueryItem::Row(_) => {}
+                    }
+                }
+                Ok::<RowSet, AppError>(rs)
+            };
+            tokio::select! {
+                biased;
+                r = read => Some(r),
+                _ = &mut wake => None,
+            }
+        };
+        match result {
+            Some(r) => r,
+            None => Err(self.cancelled().await),
+        }
     }
 
     /// Runs one batch of user SQL (with values bound when `params` is set) and gathers its result
-    /// sets, stopping the server once `max_rows` are read or when asked to.
+    /// sets. Rows past `max_rows` are read and dropped, so the rest of the batch still runs; a
+    /// plain SELECT is capped by the server instead.
     async fn run(&mut self, sql: &str, params: Option<&[Param]>, max_rows: usize) -> Result<Vec<StatementOutcome>> {
+        let words = crate::split::mssql_words(sql);
+        if words.windows(2).any(|w| w[0] == "SET" && w[1] == "ROWCOUNT") {
+            return Err(AppError::unsupported(
+                "SET ROWCOUNT isn't supported here: it would also limit the app's own queries. Use TOP (n) instead.",
+            ));
+        }
+        if self.read_only
+            && let Some(w) = words.iter().find(|w| READ_ONLY_REFUSED.contains(&w.as_str()))
+        {
+            return Err(AppError::new(
+                ErrorKind::PolicyViolation,
+                format!(
+                    "This connection is read-only: {w} isn't allowed, because every batch runs in a transaction \
+                     that is rolled back afterwards"
+                ),
+            ));
+        }
         let module = crate::split::starts_batch_object(sql);
         // A plain SELECT is capped by the server: it stops after the rows we keep (+1 to know).
         let cap = !module && is_plain_select(sql);
@@ -218,15 +278,14 @@ impl MsSession {
         let shift = prefix.matches('\n').count() as u32;
 
         let canceller = self.canceller.clone();
-        let wake = canceller.wake.notified();
-        tokio::pin!(wake);
-        wake.as_mut().enable();
-
+        let mut wake = Self::listen(&canceller);
+        if canceller.requested.load(Ordering::SeqCst) {
+            return Err(AppError::cancelled());
+        }
         let refs: Vec<Text> = params.unwrap_or_default().iter().map(|p| Text(p.as_deref())).collect();
         let args: Vec<&dyn ToSql> = refs.iter().map(|p| p as &dyn ToSql).collect();
         let mut outcomes: Vec<StatementOutcome> = Vec::new();
-        let mut stopped: Option<Stop> = None;
-        let result: Result<()> = {
+        let result: Option<Result<()>> = {
             let client = self.client()?;
             let read = async {
                 let mut stream = match params {
@@ -248,12 +307,9 @@ impl MsSession {
                             if rs.rows.len() < max_rows {
                                 rs.rows.push(to_row(row));
                             } else {
+                                // Read and dropped: stopping the server here would also stop the
+                                // statements after this one.
                                 rs.truncated = true;
-                                if !cap {
-                                    // Stop the server from producing rows we will not keep.
-                                    stopped = Some(Stop::Cap);
-                                    break;
-                                }
                             }
                         }
                     }
@@ -265,36 +321,21 @@ impl MsSession {
             };
             tokio::select! {
                 biased;
-                r = read => r,
-                _ = &mut wake => {
-                    stopped = Some(Stop::Cancel);
-                    Ok(())
-                }
+                r = read => Some(r),
+                _ = &mut wake => None,
             }
         };
-        match stopped {
-            Some(Stop::Cancel) => {
-                let kept = self.stop_running().await?;
-                let err = AppError::cancelled();
-                return Err(if kept {
-                    err
-                } else {
-                    err.add_context(
-                        "The connection was opened again to stop the query, so temporary tables, variables and \
-                         any open transaction were reset.",
-                    )
-                });
-            }
-            Some(Stop::Cap) => {
-                self.stop_running().await?;
-                return Ok(outcomes);
-            }
-            None => {}
-        }
+        let Some(result) = result else { return Err(self.cancelled().await) };
         if let Err(e) = result {
+            // The batch may have stopped before its own clean-up ran. Only the app's own state is
+            // reset: a transaction outside read-only is the user's.
+            let reset = if self.read_only {
+                "SET ROWCOUNT 0; IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION"
+            } else {
+                "SET ROWCOUNT 0"
+            };
             if self.read_only || cap {
-                // The batch may have stopped before its own clean-up ran.
-                let _ = self.reset_after_error().await;
+                let _ = self.rows(reset, &[]).await;
             }
             return Err(with_line(e, sql, shift));
         }
@@ -303,14 +344,6 @@ impl MsSession {
             outcomes.push(StatementOutcome::Affected { rows_affected: n });
         }
         Ok(outcomes)
-    }
-
-    async fn reset_after_error(&mut self) -> Result<()> {
-        let client = self.client()?;
-        let s =
-            client.simple_query("SET ROWCOUNT 0; IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION").await.map_err(app_error)?;
-        s.into_results().await.map_err(app_error)?;
-        Ok(())
     }
 
     async fn row_count(&mut self) -> Result<u64> {
@@ -416,6 +449,13 @@ fn fraction(increments: u64, scale: u8, digits: u8) -> String {
     format!(".{:0width$}", frac, width = digits as usize)
 }
 
+/// Very large and very small floats in exponent form (`1e300`), as SQL Server shows them,
+/// rather than hundreds of digits. Both forms convert back to the same value.
+fn float_text(f: f64, plain: String) -> String {
+    let a = f.abs();
+    if f.is_finite() && a != 0.0 && !(1e-5..1e16).contains(&a) { format!("{f:e}") } else { plain }
+}
+
 fn clock(seconds: u64) -> String {
     format!("{:02}:{:02}:{:02}", seconds / 3600, seconds / 60 % 60, seconds % 60)
 }
@@ -445,8 +485,8 @@ fn to_cell(v: ColumnData<'static>, ty: Option<ColumnType>) -> Cell {
         ColumnData::F64(Some(f)) if matches!(ty, Some(ColumnType::Money | ColumnType::Money4)) => {
             text(format!("{f:.4}"))
         }
-        ColumnData::F32(Some(f)) => text(f.to_string()),
-        ColumnData::F64(Some(f)) => text(f.to_string()),
+        ColumnData::F32(Some(f)) => text(float_text(f64::from(f), f.to_string())),
+        ColumnData::F64(Some(f)) => text(float_text(f, f.to_string())),
         ColumnData::Bit(Some(b)) => text(if b { "1" } else { "0" }.into()),
         ColumnData::String(Some(s)) => text(s.into_owned()),
         ColumnData::Guid(Some(g)) => text(g.to_string().to_uppercase()),
@@ -926,9 +966,15 @@ impl Session for MsSession {
             .collect())
     }
 
+    /// Asked after every batch (engine.rs `sync_transaction`): notes the database too, which
+    /// `USE` may have changed, for a reconnect to come back to.
     async fn in_transaction(&mut self) -> Result<bool> {
-        let rs = self.rows("SELECT @@TRANCOUNT", &[]).await?;
-        Ok(rs.rows.first().and_then(|r| TextRow(r).i64(0)).unwrap_or(0) > 0)
+        let rs = self.rows("SELECT @@TRANCOUNT, DB_NAME()", &[]).await?;
+        let row = rs.rows.first().map(|r| TextRow(r));
+        if let Some(db) = row.as_ref().and_then(|r| r.opt(1)) {
+            self.database = Some(db);
+        }
+        Ok(row.and_then(|r| r.i64(0)).unwrap_or(0) > 0)
     }
 
     async fn query(&mut self, sql: &str, params: &[Param], max_rows: usize) -> Result<RowSet> {

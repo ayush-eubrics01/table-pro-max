@@ -91,6 +91,17 @@ impl Dialect {
         }
     }
 
+    /// A column as the app reads it back: SQL Server's money is cast to decimal, which the driver
+    /// reads exactly (it reads money as a float).
+    pub(crate) fn read_column(self, qualified: &str, quoted: &str, data_type: &str) -> String {
+        let base = data_type.trim().to_ascii_lowercase();
+        if self == Dialect::Mssql && matches!(base.as_str(), "money" | "smallmoney") {
+            format!("CAST({qualified} AS decimal(19,4)) AS {quoted}")
+        } else {
+            qualified.to_string()
+        }
+    }
+
     /// The SQL parser's dialect, for analysing statements.
     pub(crate) fn parser(self) -> Box<dyn ParserDialect> {
         match self {

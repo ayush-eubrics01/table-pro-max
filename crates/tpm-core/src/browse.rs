@@ -104,7 +104,7 @@ pub(crate) fn build_page(
         let q = dialect.quote_ident(&c.name)?;
         select.push(match dialect {
             Dialect::Postgres if c.data_type != "bytea" => format!("t.{q}::text AS {q}"),
-            _ => format!("t.{q}"),
+            _ => dialect.read_column(&format!("t.{q}"), &q, &c.data_type),
         });
     }
     if select.is_empty() {
@@ -163,7 +163,7 @@ pub fn build_fetch(
         let q = dialect.quote_ident(name)?;
         Ok(match dialect {
             Dialect::Postgres if ty != "bytea" => format!("t.{q}::text AS {q}"),
-            _ => format!("t.{q}"),
+            _ => dialect.read_column(&format!("t.{q}"), &q, ty),
         })
     };
     let mut select = Vec::new();
@@ -210,7 +210,7 @@ pub fn build_rows_by_key(
         let q = dialect.quote_ident(&c.name)?;
         select.push(match dialect {
             Dialect::Postgres => format!("t.{q}::text AS {q}"),
-            _ => format!("t.{q}"),
+            _ => dialect.read_column(&format!("t.{q}"), &q, &c.data_type),
         });
     }
     let mut b = SqlBuilder::new(dialect);
@@ -408,6 +408,20 @@ pub(crate) mod tests {
         let q = build_page(Dialect::Postgres, &users(), &req, &[], MAX_PAGE_SIZE + 1).unwrap();
         assert!(q.sql.ends_with(&format!("LIMIT {} OFFSET 100", MAX_PAGE_SIZE + 1)), "{}", q.sql);
         assert_eq!(build_count(Dialect::Mssql, &s, None).unwrap().sql, "SELECT count(*) FROM [dbo].[users] AS t");
+        // money comes back exact: the driver would read it as a float.
+        s.columns[1].data_type = "money".into();
+        let q = build_select(Dialect::Mssql, &s, &req).unwrap();
+        assert!(
+            q.sql.starts_with("SELECT t.[id], CAST(t.[email] AS decimal(19,4)) AS [email], t.[avatar] FROM"),
+            "{}",
+            q.sql
+        );
+        let k = vec![crate::changes::ColumnValue { column: "id".into(), value: Some("1".into()) }];
+        let mut keyed = users();
+        keyed.columns[1].data_type = "money".into();
+        assert!(
+            build_rows_by_key(Dialect::Mssql, &keyed, &[k]).unwrap().sql.contains("CAST(t.[email] AS decimal(19,4))")
+        );
     }
 
     #[test]

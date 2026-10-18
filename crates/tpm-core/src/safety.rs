@@ -8,7 +8,9 @@
 //! an extra refusal layer on top.
 
 use serde::Serialize;
-use sqlparser::ast::{AlterTableOperation, ConditionalStatementBlock, CopySource, Query, SetExpr, Statement};
+use sqlparser::ast::{
+    AlterTableOperation, ConditionalStatementBlock, CopySource, MergeAction, MergeClauseKind, Query, SetExpr, Statement,
+};
 use sqlparser::parser::Parser;
 
 use crate::config::SafetyMode;
@@ -99,6 +101,17 @@ fn analyze_span(span: StatementSpan, dialect: Dialect) -> StatementAnalysis {
             (class, false)
         }
     };
+    // OPENQUERY and friends run their own SQL on another server, whatever the outer statement is.
+    let class = if dialect == Dialect::Mssql
+        && crate::split::mssql_words(&span.sql)
+            .iter()
+            .any(|w| matches!(w.as_str(), "OPENQUERY" | "OPENROWSET" | "OPENDATASOURCE"))
+    {
+        reasons.push("Runs SQL on another server (OPENQUERY, OPENROWSET or OPENDATASOURCE)".into());
+        class.max(StatementClass::Unknown)
+    } else {
+        class
+    };
     StatementAnalysis { sql: span.sql, start: span.start, end: span.end, class, reasons, parsed }
 }
 
@@ -133,12 +146,22 @@ fn classify(stmt: &Statement, reasons: &mut Vec<String>) -> StatementClass {
         | Statement::Fetch { .. }
         | Statement::Close { .. } => Read,
         Statement::Declare { .. } => Read,
+        // MERGE … WHEN NOT MATCHED BY SOURCE THEN DELETE removes every row the source lacks.
+        Statement::Merge(m)
+            if m.clauses.iter().any(|c| {
+                c.clause_kind == MergeClauseKind::NotMatchedBySource && matches!(c.action, MergeAction::Delete { .. })
+            }) =>
+        {
+            reasons.push("MERGE deletes every row the source does not have".into());
+            Destructive
+        }
         Statement::Insert(_) | Statement::Merge(_) | Statement::LoadData { .. } => {
             reasons.push("Modifies table data".into());
             Write
         }
         Statement::Update(u) => {
-            if u.selection.is_none() && u.from.is_none() {
+            // With FROM and no WHERE, every row of the table is joined, and changed.
+            if u.selection.is_none() {
                 reasons.push("UPDATE without a WHERE clause changes every row".into());
                 Destructive
             } else {
@@ -343,9 +366,14 @@ fn keyword_fallback(sql: &str, reasons: &mut Vec<String>) -> StatementClass {
 /// strings, `[names]` and comments, otherwise unknown.
 fn mssql_keyword_fallback(sql: &str, reasons: &mut Vec<String>) -> StatementClass {
     reasons.push("The statement could not be parsed; classification is approximate".into());
-    let found = crate::split::mssql_words(sql)
+    let words = crate::split::mssql_words(sql);
+    let repair = words.iter().any(|w| w == "DBCC") && words.iter().any(|w| w.starts_with("REPAIR_"));
+    let found = words
         .into_iter()
-        .find(|w| matches!(w.as_str(), "DROP" | "TRUNCATE" | "DELETE" | "UPDATE" | "ALTER" | "MERGE"));
+        .find(|w| {
+            matches!(w.as_str(), "DROP" | "TRUNCATE" | "DELETE" | "UPDATE" | "ALTER" | "MERGE" | "RESTORE" | "SHUTDOWN")
+        })
+        .or(repair.then(|| "DBCC REPAIR".to_string()));
     match found {
         Some(word) => {
             reasons.push(format!("{word} statements can destroy data"));
@@ -551,6 +579,20 @@ mod tests {
         assert_eq!(class("BEGIN TRY SELECT 1/0 END TRY BEGIN CATCH SELECT ERROR_MESSAGE() END CATCH"), Unknown);
         assert_eq!(class("SELECT [update], 'DELETE' FROM t -- DROP\nSELECT 2 FROM OPENJSON(@j)"), Unknown);
         assert_eq!(class("DELETE TOP (10) FROM t"), Destructive);
+        // Found in review: each ran without a prompt under ConfirmDestructive.
+        assert_eq!(class("UPDATE t SET v = 1 FROM t"), Destructive, "a join without WHERE changes every row");
+        assert_eq!(class("UPDATE t SET v = 1 FROM t JOIN s ON s.id = t.id WHERE s.x = 1"), Write);
+        assert_eq!(
+            class("MERGE t USING s ON t.id = s.id WHEN NOT MATCHED BY SOURCE THEN DELETE;"),
+            Destructive,
+            "deletes every row the source lacks"
+        );
+        assert_eq!(class("RESTORE DATABASE x FROM DISK = 'y' WITH REPLACE"), Destructive);
+        assert_eq!(class("SHUTDOWN WITH NOWAIT"), Destructive);
+        assert_eq!(class("DBCC CHECKDB (x, REPAIR_ALLOW_DATA_LOSS)"), Destructive);
+        assert_eq!(class("DBCC CHECKDB"), Unknown);
+        // Pass-through queries run on another server, whatever the outer SELECT says.
+        assert_eq!(class("SELECT * FROM OPENQUERY(lnk, 'DELETE FROM t')"), Unknown);
 
         let ro = |sql: &str| {
             decide(&analyze_script(sql, Dialect::Mssql, SafetyMode::ReadOnly).statements, SafetyMode::ReadOnly)
