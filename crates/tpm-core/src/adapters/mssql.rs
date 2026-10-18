@@ -39,6 +39,8 @@ pub struct MsSession {
     canceller: Arc<MsCanceller>,
     /// The database the session last reported (`USE` changes it): a reconnect goes back to it.
     database: Option<String>,
+    /// Opened again since the engine last asked (`take_connection_reset`).
+    reset: bool,
 }
 
 #[derive(Default)]
@@ -68,8 +70,9 @@ impl ToSql for Text<'_> {
 }
 
 /// Words that would end the transaction a read-only session runs each batch in, or reach past it.
-const READ_ONLY_REFUSED: [&str; 6] =
-    ["COMMIT", "ROLLBACK", "IMPLICIT_TRANSACTIONS", "OPENQUERY", "OPENROWSET", "OPENDATASOURCE"];
+/// (ANSI_DEFAULTS turns IMPLICIT_TRANSACTIONS on.)
+const READ_ONLY_REFUSED: [&str; 7] =
+    ["COMMIT", "ROLLBACK", "IMPLICIT_TRANSACTIONS", "ANSI_DEFAULTS", "OPENQUERY", "OPENROWSET", "OPENDATASOURCE"];
 
 impl MsSession {
     pub async fn connect(
@@ -124,8 +127,10 @@ impl MsSession {
             read_only: profile.read_only(),
             canceller: Arc::new(MsCanceller::default()),
             database: None,
+            reset: false,
         };
         session.open().await?;
+        session.in_transaction().await?;
         Ok(session)
     }
 
@@ -188,27 +193,47 @@ impl MsSession {
         if let Some(client) = self.client.as_mut()
             && client.cancel_query().await.is_ok()
         {
+            // The batch stopped part-way, before its own clean-up.
+            let reset = if self.read_only {
+                "SET ROWCOUNT 0; IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION"
+            } else {
+                "SET ROWCOUNT 0"
+            };
+            if let Some(client) = self.client.as_mut()
+                && let Ok(stream) = client.simple_query(reset).await
+            {
+                let _ = stream.into_results().await;
+            }
             return AppError::cancelled();
         }
         self.client = None;
+        self.reset = true;
         if let Err(e) = self.open().await {
             return e.add_context("The connection was lost while stopping the query.");
         }
-        AppError::cancelled().add_context(
+        let on = self.database.as_deref().map(|d| format!(" It is on database {d}.")).unwrap_or_default();
+        AppError::cancelled().add_context(format!(
             "The connection was opened again to stop the query, so temporary tables, variables, SET options \
-             and any open transaction were reset.",
-        )
+             and any open transaction were reset.{on}"
+        ))
     }
 
-    /// Rows of an application query, read in full (generated queries are bounded already).
+    /// Rows of the app's own catalog and bookkeeping queries: not interrupted by a cancel, which
+    /// is meant for the user's statement (one arriving late must not cost the connection).
+    async fn rows(&mut self, sql: &str, params: &[Param]) -> Result<RowSet> {
+        self.read_rows(sql, params, false).await
+    }
+
+    /// Rows of an application query, read in full (generated queries are bounded already); with
+    /// `cancellable`, a cancel stops it (capture reads and pages run for a user's request).
     /// Without values it runs as a plain batch: through sp_executesql a BEGIN TRANSACTION would
     /// be refused for leaving the EXECUTE with a different transaction count.
-    async fn rows(&mut self, sql: &str, params: &[Param]) -> Result<RowSet> {
+    async fn read_rows(&mut self, sql: &str, params: &[Param], cancellable: bool) -> Result<RowSet> {
         let refs: Vec<Text> = params.iter().map(|p| Text(p.as_deref())).collect();
         let args: Vec<&dyn ToSql> = refs.iter().map(|p| p as &dyn ToSql).collect();
         let canceller = self.canceller.clone();
         let mut wake = Self::listen(&canceller);
-        if canceller.requested.load(Ordering::SeqCst) {
+        if cancellable && canceller.requested.load(Ordering::SeqCst) {
             return Err(AppError::cancelled());
         }
         let result = {
@@ -231,7 +256,7 @@ impl MsSession {
             tokio::select! {
                 biased;
                 r = read => Some(r),
-                _ = &mut wake => None,
+                _ = &mut wake, if cancellable => None,
             }
         };
         match result {
@@ -245,7 +270,9 @@ impl MsSession {
     /// plain SELECT is capped by the server instead.
     async fn run(&mut self, sql: &str, params: Option<&[Param]>, max_rows: usize) -> Result<Vec<StatementOutcome>> {
         let words = crate::split::mssql_words(sql);
-        if words.windows(2).any(|w| w[0] == "SET" && w[1] == "ROWCOUNT") {
+        let module = crate::split::starts_batch_object(sql);
+        // In a procedure body it limits that procedure's statements only.
+        if !module && words.windows(2).any(|w| w[0] == "SET" && w[1] == "ROWCOUNT") {
             return Err(AppError::unsupported(
                 "SET ROWCOUNT isn't supported here: it would also limit the app's own queries. Use TOP (n) instead.",
             ));
@@ -261,7 +288,6 @@ impl MsSession {
                 ),
             ));
         }
-        let module = crate::split::starts_batch_object(sql);
         // A plain SELECT is capped by the server: it stops after the rows we keep (+1 to know).
         let cap = !module && is_plain_select(sql);
         let mut prefix = String::new();
@@ -968,6 +994,10 @@ impl Session for MsSession {
 
     /// Asked after every batch (engine.rs `sync_transaction`): notes the database too, which
     /// `USE` may have changed, for a reconnect to come back to.
+    fn take_connection_reset(&mut self) -> bool {
+        std::mem::take(&mut self.reset)
+    }
+
     async fn in_transaction(&mut self) -> Result<bool> {
         let rs = self.rows("SELECT @@TRANCOUNT, DB_NAME()", &[]).await?;
         let row = rs.rows.first().map(|r| TextRow(r));
@@ -978,7 +1008,7 @@ impl Session for MsSession {
     }
 
     async fn query(&mut self, sql: &str, params: &[Param], max_rows: usize) -> Result<RowSet> {
-        let mut rs = self.rows(sql, params).await?;
+        let mut rs = self.read_rows(sql, params, true).await?;
         if rs.rows.len() > max_rows {
             rs.rows.truncate(max_rows);
             rs.truncated = true;

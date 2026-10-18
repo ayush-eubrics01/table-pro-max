@@ -2955,9 +2955,105 @@ async fn sql_server_sessions_keep_their_state(
     }
     engine.close_session(&ro_info.session_id).await;
 
+    // A non-breaking space (pasted SQL) still separates words for those checks.
+    let ro_info = engine.open_session(&ro, password, None, ConnectOptions::default()).await.unwrap();
+    let r = engine
+        .run_script(
+            &ro_info.session_id,
+            "SELECT 1 AS a;\u{a0}COMMIT;\u{a0}SELECT @@TRANCOUNT",
+            RunOptions::default(),
+            None,
+        )
+        .await;
+    assert!(
+        match r {
+            Err(e) => e.kind == ErrorKind::PolicyViolation,
+            Ok(r) => r.statements[0].error.as_ref().is_some_and(|e| e.kind == ErrorKind::PolicyViolation),
+        },
+        "NBSP before COMMIT"
+    );
+    engine.close_session(&ro_info.session_id).await;
+    let r = engine.run_script(sid, "SET\u{a0}ROWCOUNT 1", opts.clone(), None).await.unwrap();
+    assert!(r.statements[0].error.is_some(), "NBSP in SET ROWCOUNT");
+
+    // A cancel that arrives after the statement finished never costs the user's transaction
+    // silently: either the transaction is still open, or the statement says what was reset.
+    run(engine, sid, "BEGIN TRANSACTION; UPDATE tpm_it_ms_s SET v = 5 WHERE id = 1").await;
+    for i in 0..30u64 {
+        let task = format!("late-{i}");
+        let e2 = engine.clone();
+        let (sid2, task2) = (sid.to_string(), task.clone());
+        let h = tokio::spawn(async move {
+            e2.run_script(
+                &sid2,
+                "SELECT TOP 300 name FROM sys.all_objects",
+                RunOptions { task_id: Some(task2), ..Default::default() },
+                None,
+            )
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(i % 15)).await;
+        let _ = engine.cancel_task(&task).await;
+        let r = h.await.unwrap().unwrap();
+        let open = one(run(engine, sid, "SELECT @@TRANCOUNT").await) == "1";
+        let said = r.statements.iter().any(|s| {
+            s.error.as_ref().is_some_and(|e| e.detail.as_deref().unwrap_or_default().contains("opened again"))
+        });
+        assert!(open || said, "round {i}: the transaction ended without a word: {:?}", r.statements);
+        if !open {
+            run(engine, sid, "BEGIN TRANSACTION; UPDATE tpm_it_ms_s SET v = 5 WHERE id = 1").await;
+        }
+    }
+    run(engine, sid, "ROLLBACK").await;
+
+    // A cancel for a run waiting on the session stops that run, not the one running.
+    let (e2, sid2) = (engine.clone(), sid.to_string());
+    let a = tokio::spawn(async move {
+        e2.run_script(
+            &sid2,
+            "WAITFOR DELAY '00:00:02'; SELECT 1",
+            RunOptions { task_id: Some("ms-a".into()), ..Default::default() },
+            None,
+        )
+        .await
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (e3, sid3) = (engine.clone(), sid.to_string());
+    let b = tokio::spawn(async move {
+        e3.run_script(
+            &sid3,
+            "WAITFOR DELAY '00:00:03'; SELECT 2",
+            RunOptions { task_id: Some("ms-b".into()), ..Default::default() },
+            None,
+        )
+        .await
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    engine.cancel_task("ms-b").await.unwrap();
+    let (ra, rb) = (a.await.unwrap().unwrap(), b.await.unwrap().unwrap());
+    assert!(
+        ra.statements.iter().all(|s| s.error.is_none()) && !ra.cancelled,
+        "the running one finishes: {:?}",
+        ra.statements
+    );
+    assert!(rb.cancelled, "the waiting one is cancelled");
+    assert!(rb.statements.iter().all(|s| s.rows.is_none()), "and does not run: {:?}", rb.statements);
+
     // Planning a restore point does not wait on another session's lock.
     let store = Arc::new(tpm_core::storage::Storage::open_in_memory().unwrap());
-    engine.set_restore_store(store);
+    engine.set_restore_store(store.clone());
+    // A COMMIT that ran keeps its points, even when the batch fails afterwards.
+    run(engine, sid, "BEGIN TRANSACTION").await;
+    let r = engine.run_script(sid, "DELETE FROM tpm_it_ms_s WHERE id = 3", opts.clone(), None).await.unwrap();
+    let pending = r.statements[0].restore.clone().and_then(|n| n.point_id).expect("a restore point");
+    let r = engine.run_script(sid, "COMMIT; SELECT 1/0", opts.clone(), None).await.unwrap();
+    assert!(r.statements[0].error.is_some());
+    use tpm_core::restore::RestoreStore;
+    assert_eq!(
+        store.get(&pending).map(|p| p.status).ok(),
+        Some(tpm_core::restore::RestoreStatus::Kept),
+        "committed: kept"
+    );
     let other = engine.open_session(profile, password, None, ConnectOptions::default()).await.unwrap();
     run(engine, &other.session_id, "BEGIN TRANSACTION; UPDATE tpm_it_ms_s SET v = 9 WHERE id = 2").await;
     let t0 = Instant::now();

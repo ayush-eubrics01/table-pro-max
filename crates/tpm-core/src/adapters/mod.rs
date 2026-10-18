@@ -93,6 +93,12 @@ pub trait Session: Send {
         Ok(false)
     }
 
+    /// Whether the connection was opened again since the last call (SQL Server, after a cancel),
+    /// which ended any transaction it had.
+    fn take_connection_reset(&mut self) -> bool {
+        false
+    }
+
     /// Runs an application-generated, parameterised query returning rows as text.
     async fn query(&mut self, sql: &str, params: &[Param], max_rows: usize) -> Result<RowSet>;
 

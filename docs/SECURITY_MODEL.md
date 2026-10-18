@@ -40,8 +40,9 @@ databases themselves.
   tables or some administrative statements.
 * **SQL Server read-only** has no session setting to rely on: each batch runs inside a
   transaction that is always rolled back, behind the analyzer, which allows only reads (no
-  procedure calls or dynamic SQL); batches with COMMIT, ROLLBACK, IMPLICIT_TRANSACTIONS or a
-  pass-through query (OPENQUERY, OPENROWSET, OPENDATASOURCE) are refused by the session. Effects outside the transaction log are not undone (a
+  procedure calls or dynamic SQL); batches with COMMIT, ROLLBACK, IMPLICIT_TRANSACTIONS,
+  ANSI_DEFAULTS or a pass-through query (OPENQUERY, OPENROWSET, OPENDATASOURCE) are refused by the
+  session, whatever Unicode spacing surrounds them. Effects outside the transaction log are not undone (a
   sequence's `NEXT VALUE FOR`, for instance). For a guaranteed read-only connection, use a login
   whose only rights are `db_datareader`.
 * **SQL Server sign-in is always encrypted**, but with TLS set to Disable the server's

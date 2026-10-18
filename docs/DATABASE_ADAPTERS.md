@@ -152,16 +152,21 @@ checks `@@autocommit`, and the engine also tracks the `BEGIN`/`COMMIT`/`ROLLBACK
   `TOP`. Cancels and timeouts send the attention signal. tiberius 0.13.0 does not wait for the
   server's acknowledgement when it comes in a separate message (prisma/tiberius#459, fix in #460),
   so after a cancel the connection is opened again on the database it was using: #temp tables,
-  variables, SET options and an open transaction are lost, and the cancel message says so. App
-  queries (catalog, restore planning) can be cancelled too; the restore size estimate reads with
-  `NOLOCK` so it never waits behind another session's transaction.
+  variables, SET options and an open transaction are lost; the cancel message says so and names
+  the database, and the engine drops restore points made in that transaction. In practice every
+  cancel and timeout reconnects until tiberius is fixed. A cancel reaches the connection only
+  while that run's statement holds it (engine `cancel_task`), so one aimed at a finished statement
+  or at a run still waiting never interrupts the app's own follow-up queries. Capture reads and
+  pages can be cancelled; catalog queries can't. The restore size estimate reads with `NOLOCK`
+  so it never waits behind another session's transaction.
 * A batch that fails part-way reports the error only: result sets before it are not shown, though
   statements before it ran (and, outside a transaction, were committed). `GO n` (repeat a batch)
   is not supported.
 * Read-only: each batch runs as `BEGIN TRANSACTION; … ; ROLLBACK`, on top of the analyzer, which
   refuses everything but reads (procedure calls and dynamic SQL included). Batches that could end
   that transaction or reach past it are refused: `COMMIT`, `ROLLBACK`, `IMPLICIT_TRANSACTIONS`,
-  `OPENQUERY`, `OPENROWSET`, `OPENDATASOURCE`. Effects outside the
+  `ANSI_DEFAULTS`, `OPENQUERY`, `OPENROWSET`, `OPENDATASOURCE`. Words are split on any character
+  that isn't a letter, digit or `_@#$`, so a non-breaking space (pasted SQL) can't hide one. Effects outside the
   database's transaction log (a sequence's `NEXT VALUE FOR`, mail) are not undone; for full
   protection use a login with read-only rights (`db_datareader`). `ApplicationIntent=ReadOnly`
   is sent too, which routes to a readable secondary where there is one.

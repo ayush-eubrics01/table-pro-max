@@ -87,6 +87,29 @@ fn is_word_byte(c: u8) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, b'_' | b'@' | b'#' | b'$') || c >= 0x80
 }
 
+/// Letters and digits in any script, and `_ @ # $`. Anything else separates words, including
+/// the non-breaking and other Unicode spaces SQL Server reads as blanks (pasted SQL has them).
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '_' | '@' | '#' | '$')
+}
+
+/// The character at byte `i`, which callers keep on a character boundary.
+fn char_at(s: &str, i: usize) -> char {
+    s[i..].chars().next().unwrap_or(' ')
+}
+
+/// Where the word starting at `i` ends.
+fn word_end(s: &str, mut i: usize, to: usize) -> usize {
+    while i < to {
+        let c = char_at(s, i);
+        if !is_word_char(c) {
+            break;
+        }
+        i += c.len_utf8();
+    }
+    i.min(to)
+}
+
 /// A `GO` line starting at `i` (the line's first non-blank byte): `GO`, then only blanks or a
 /// `--` comment. Returns where the next line starts.
 fn go_line(bytes: &[u8], i: usize) -> Option<usize> {
@@ -138,18 +161,18 @@ fn mssql_batches(input: &str) -> Vec<StatementSpan> {
 fn word_after(input: &str, mut i: usize, to: usize) -> String {
     let bytes = input.as_bytes();
     while i < to {
-        if bytes[i].is_ascii_whitespace() {
-            i += 1;
-        } else if matches!(bytes[i], b'-' | b'/')
+        let c = char_at(input, i);
+        if matches!(bytes[i], b'-' | b'/')
             && let Some(j) = mssql_skip(bytes, i)
         {
             i = j.min(to);
+        } else if c.is_whitespace() || (!c.is_ascii() && !is_word_char(c)) {
+            i += c.len_utf8();
         } else {
             break;
         }
     }
-    let end = (i..to).find(|&j| !is_word_byte(bytes[j])).unwrap_or(to);
-    input[i..end].to_ascii_uppercase()
+    input[i..word_end(input, i, to)].to_ascii_uppercase()
 }
 
 /// A statement SQL Server only takes as the first in its batch (CREATE VIEW, PROCEDURE, FUNCTION,
@@ -171,12 +194,12 @@ fn leading_words(input: &str, start: usize, to: usize) -> Vec<String> {
     while i < to && words.len() < 4 {
         if let Some(j) = mssql_skip(bytes, i) {
             i = j;
-        } else if is_word_byte(bytes[i]) {
-            let w = word_after(input, i, to);
-            i += w.len().max(1);
-            words.push(w);
+        } else if is_word_char(char_at(input, i)) {
+            let end = word_end(input, i, to);
+            words.push(input[i..end].to_ascii_uppercase());
+            i = end;
         } else {
-            i += 1;
+            i += char_at(input, i).len_utf8();
         }
     }
     words
@@ -204,12 +227,12 @@ pub(crate) fn mssql_words(sql: &str) -> Vec<String> {
     while i < bytes.len() {
         if let Some(j) = mssql_skip(bytes, i) {
             i = j;
-        } else if is_word_byte(bytes[i]) {
-            let end = (i..bytes.len()).find(|&j| !is_word_byte(bytes[j])).unwrap_or(bytes.len());
+        } else if is_word_char(char_at(sql, i)) {
+            let end = word_end(sql, i, bytes.len());
             words.push(sql[i..end].to_ascii_uppercase());
             i = end;
         } else {
-            i += 1;
+            i += char_at(sql, i).len_utf8();
         }
     }
     words
@@ -227,8 +250,8 @@ fn mssql_statements(input: &str, from: usize, to: usize) -> Vec<StatementSpan> {
             continue;
         }
         let b = bytes[i];
-        if is_word_byte(b) {
-            let end = (i..to).find(|&j| !is_word_byte(bytes[j])).unwrap_or(to);
+        if is_word_char(char_at(input, i)) {
+            let end = word_end(input, i, to);
             let after_dot = i > 0 && bytes[i - 1] == b'.';
             if !after_dot {
                 if module.is_none() {
@@ -257,7 +280,7 @@ fn mssql_statements(input: &str, from: usize, to: usize) -> Vec<StatementSpan> {
             (start, module) = (i, None);
             continue;
         }
-        i += 1;
+        i += char_at(input, i).len_utf8();
     }
     push_span(input, start, to, &mut out);
     out
@@ -457,6 +480,12 @@ mod tests {
         assert_eq!(at("DELETE"), "DELETE FROM t");
         assert_eq!(at("COMMIT"), "COMMIT");
         // A comment between BEGIN and TRAN still makes it a statement, not a block.
+        assert_eq!(
+            mssql_words("SELECT 1;\u{a0}COMMIT;\u{3000}SET\u{a0}ROWCOUNT 1 -- é\n[x y] N'z' é1"),
+            ["SELECT", "1", "COMMIT", "SET", "ROWCOUNT", "1", "N", "é1"]
+        );
+        let nb = "BEGIN\u{a0}TRAN; DELETE FROM t WHERE id = 1; SELECT 1";
+        assert_eq!(statement_at(nb, Dialect::Mssql, nb.len()).unwrap().sql, "SELECT 1");
         let c = "BEGIN /*c*/ TRAN; DELETE FROM t WHERE id = 1; COMMIT; SELECT 1";
         assert_eq!(statement_at(c, Dialect::Mssql, c.len()).unwrap().sql, "SELECT 1");
         let spans_ok = statement_at(s, Dialect::Mssql, s.find("DELETE").unwrap()).unwrap();

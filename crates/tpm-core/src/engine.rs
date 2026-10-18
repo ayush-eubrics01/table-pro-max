@@ -76,6 +76,9 @@ struct SessionHandle {
     /// A statement failed inside that transaction on PostgreSQL or DuckDB, so a COMMIT will roll
     /// it back (until a successful ROLLBACK TO SAVEPOINT).
     txn_failed: AtomicBool,
+    /// The cancel flag of the run whose statement holds the session now: a cancel reaches the
+    /// driver only for that run, never one waiting its turn or the app's own follow-up queries.
+    running: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 struct RunningTask {
@@ -526,6 +529,7 @@ impl Engine {
             open_txn: AtomicBool::new(false),
             pending_restore: Mutex::new(Vec::new()),
             txn_failed: AtomicBool::new(false),
+            running: Mutex::new(None),
         });
         lock(&self.sessions).insert(info.session_id.clone(), handle);
         Ok(info)
@@ -733,7 +737,15 @@ impl Engine {
         let captures = if opts.keep_restore_points == Some(false) {
             vec![CaptureState::Off; analysis.statements.len()]
         } else {
-            self.plan_restore_points(&handle, &analysis, limits, &cancelled, &with_params).await
+            // A cancel may interrupt planning's reads (a slow count), except on SQL Server, where
+            // that would reopen the connection; its estimate reads don't wait on locks anyway.
+            let interruptible = handle.profile.driver != crate::config::Driver::Mssql;
+            if interruptible {
+                *lock(&handle.running) = Some(cancelled.clone());
+            }
+            let planned = self.plan_restore_points(&handle, &analysis, limits, &cancelled, &with_params).await;
+            *lock(&handle.running) = None;
+            planned
         };
         if cancelled.load(Ordering::SeqCst) {
             lock(&self.tasks).remove(&task_id);
@@ -1197,14 +1209,19 @@ impl Engine {
     /// committing (TRY … COMMIT … CATCH … ROLLBACK counts as committed: a kept point that turns
     /// out unneeded is refused by the restore's conflict check, a deleted one is gone).
     async fn sync_transaction(&self, handle: &Arc<SessionHandle>, stmt: &crate::safety::StatementAnalysis, ok: bool) {
-        let open =
-            self.with_session(&handle.info.session_id, |s| Box::pin(async move { s.in_transaction().await })).await;
-        let Ok(now) = open else { return };
+        let open = self
+            .with_session(&handle.info.session_id, |s| {
+                Box::pin(async move { Ok((s.in_transaction().await?, s.take_connection_reset())) })
+            })
+            .await;
+        let Ok((now, reset)) = open else { return };
         let was = handle.open_txn.swap(now, Ordering::SeqCst);
         if was && !now {
+            // Reopened (after a cancel): the transaction was rolled back with the old connection.
+            // Otherwise a COMMIT that ran keeps them, even when the batch failed after it.
             let words = crate::split::mssql_words(&stmt.sql);
-            let rolled_back = words.iter().any(|w| w == "ROLLBACK") && !words.iter().any(|w| w == "COMMIT");
-            self.settle_pending(handle, ok && !rolled_back);
+            let (commit, rollback) = (words.iter().any(|w| w == "COMMIT"), words.iter().any(|w| w == "ROLLBACK"));
+            self.settle_pending(handle, !reset && (commit || (ok && !rollback)));
         }
         handle.txn_failed.store(false, Ordering::SeqCst);
     }
@@ -1279,14 +1296,22 @@ impl Engine {
     ) -> Result<(Vec<StatementOutcome>, Option<Captured>)> {
         let canceller = lock(&handle.canceller).clone();
         let sql_owned = sql.to_string();
+        let (holder, flag) = (handle.clone(), cancelled.clone());
         let fut = self.with_session(&handle.info.session_id, move |s| {
             Box::pin(async move {
-                match (capture, params) {
+                // Cancelled while waiting for the session: don't start.
+                if flag.load(Ordering::SeqCst) {
+                    return Err(AppError::cancelled());
+                }
+                *lock(&holder.running) = Some(flag);
+                let r = match (capture, params) {
                     // Bound values: the adapter runs the statement as `execute` would, with binds.
                     (_, Some((sql, values))) => s.execute_params(&sql, &values, max_rows).await.map(|o| (o, None)),
                     (Some(job), None) => run_captured(s, &sql_owned, max_rows, job).await.map(|(o, c)| (o, Some(c))),
                     (None, None) => s.execute(&sql_owned, max_rows).await.map(|o| (o, None)),
-                }
+                };
+                *lock(&holder.running) = None;
+                r
             })
         });
         tokio::pin!(fut);
@@ -1434,8 +1459,15 @@ impl Engine {
                 None => return Ok(false),
             }
         };
-        let canceller = lock(&self.handle(&session_id)?.canceller).clone();
-        canceller.cancel().await?;
+        // Only the run that holds the session is interrupted; one still waiting for it, or between
+        // statements, stops at its next check of the flag.
+        let handle = self.handle(&session_id)?;
+        let flag = lock(&self.tasks).get(task_id).map(|t| t.cancelled.clone());
+        let holds = matches!((lock(&handle.running).as_ref(), &flag), (Some(r), Some(f)) if Arc::ptr_eq(r, f));
+        if holds {
+            let canceller = lock(&handle.canceller).clone();
+            canceller.cancel().await?;
+        }
         Ok(true)
     }
 
