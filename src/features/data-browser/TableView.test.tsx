@@ -82,6 +82,21 @@ describe("TableView", () => {
     expect(browse.args.request).toMatchObject({ schema: "public", table: "users", offset: 0 });
   });
 
+  it("edits a field in the row inspector, with the same pending and commit flow", async () => {
+    renderView();
+    fireEvent.mouseDown((await screen.findByText("ada@example.com")).closest(".grid-cell")!);
+    fireEvent.click(screen.getByRole("button", { name: "Toggle row details" }));
+    const email = within(await screen.findByRole("complementary", { name: "Row details" })).getByRole("textbox", { name: "email" });
+    fireEvent.change(email, { target: { value: "inspected@example.com" } });
+    fireEvent.blur(email);
+    expect(await screen.findByText("1 pending change")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Review and commit" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Commit changes" }));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "apply_changes")).toBe(true));
+    const set = calls.find((c) => c.cmd === "apply_changes")!.args.changes as ChangeSet;
+    expect(set.changes[0]).toMatchObject({ type: "update", key: [{ column: "id", value: "1" }], edits: [{ column: "email", value: { kind: "value", value: "inspected@example.com" } }] });
+  });
+
   it("keeps edits pending until reviewed, then commits a parameterised change set", async () => {
     renderView();
     const editor = await openEditor("ada@example.com");
@@ -228,6 +243,8 @@ describe("large values in opened tables", () => {
           return { sql: "UPDATE …", statementCount: 1, atomic: true };
         case "apply_changes":
           return { counts: [1], restore: [] };
+        case "rows_as_text":
+          return `copied as ${(args as { request: { options: { format: string } } }).request.options.format}`;
         default:
           return null;
       }
@@ -373,6 +390,25 @@ describe("large values in opened tables", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "Export selected rows…" }));
     expect(await screen.findByRole("dialog", { name: /Export/ })).toBeInTheDocument();
     expect(calls.some((c) => c.cmd === "fetch_column")).toBe(false); // already loaded by the copies above
+  });
+
+  it("copies rows as JSON or INSERT statements, with deferred values loaded first", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: write }, configurable: true });
+    page = [["2", "two", NL, NL]];
+    view();
+    await screen.findAllByText("Not loaded");
+    await menuOnRow("two");
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Copy rows as JSON" }));
+    await waitFor(() => expect(write).toHaveBeenLastCalledWith("copied as json"));
+    const json = calls.find((c) => c.cmd === "rows_as_text")!.args as unknown as { request: { columns: { name: string }[]; rows: unknown[][]; options: Record<string, unknown> } };
+    expect(json.request.rows).toEqual([["2", "two", "short", null]]);
+    expect(json.request.columns.map((c) => c.name)).toEqual(["id", "title", "body", "doc"]);
+    await menuOnRow("two");
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Copy rows as INSERT" }));
+    await waitFor(() => expect(write).toHaveBeenLastCalledWith("copied as sql"));
+    const sql = calls.filter((c) => c.cmd === "rows_as_text").at(-1)!.args as unknown as { request: { options: Record<string, unknown> } };
+    expect(sql.request.options).toMatchObject({ format: "sql", sqlSchema: "public", sqlTable: "docs", dialect: "postgres", sqlBatch: 1, header: false });
   });
 
   it("Export selected rows loads Not loaded values before the dialog opens", async () => {

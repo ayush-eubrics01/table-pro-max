@@ -12,7 +12,8 @@ import { Overlays } from "../components/Overlays";
 import { Home } from "../features/connections/Home";
 import { ConnectingDialog } from "../features/connections/ConnectingDialog";
 import { exclusive } from "../lib/exclusive";
-import { connectRedisWithPrompt, connectWithPrompt } from "../features/connections/connectFlow";
+import { connectRedisWithPrompt } from "../features/connections/connectFlow";
+import { listenConnectProgress, openTracked } from "../features/connections/connecting";
 import { OpenAnything } from "../features/command-palette/OpenAnything";
 import { SettingsDialog } from "../features/settings/SettingsDialog";
 import { FirstRunUpdatePrompt } from "../features/updates/FirstRunUpdatePrompt";
@@ -51,9 +52,8 @@ export function App() {
             const r = await connectRedisWithPrompt(profile);
             return r ? useWorkspaces.getState().openRedis(profile, r.sessionId, r.info) : null;
           }
-          const session = await connectWithPrompt(profile);
-          if (!session) return null;
-          return await useWorkspaces.getState().open(profile, session);
+          // Steps in the connecting dialog, and Cancel.
+          return await openTracked(profile);
         } catch (e) {
           notifyError(e, `Could not connect to ${profile.name}`);
           return null;
@@ -125,6 +125,12 @@ export function App() {
   useEffect(() => {
     if (isMainWindow && restoreDone && restoreSetting) scheduleSave(workspaces, activeId);
   }, [workspaces, activeId, restoreSetting, restoreDone, isMainWindow]);
+
+  // Steps of the connection being opened, for the connecting dialog.
+  useEffect(() => {
+    const off = listenConnectProgress();
+    return () => void off.then((f) => f()).catch(() => undefined);
+  }, []);
 
   // Health: ping each open connection every 30 seconds.
   useEffect(() => {

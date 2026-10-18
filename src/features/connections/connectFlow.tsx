@@ -69,7 +69,13 @@ export async function resolveConnectError(err: BackendError, profile: Connection
 export async function connectWithPrompt(
   profile: ConnectionProfile,
   database?: string | null,
-  options: { readOnly?: boolean; lockProduction?: boolean } = {},
+  options: {
+    readOnly?: boolean;
+    lockProduction?: boolean;
+    connectId?: string;
+    /** Stops asking for passwords once the attempt was cancelled. */
+    cancelled?: () => boolean;
+  } = {},
 ): Promise<SessionInfo | null> {
   let secrets: Secrets = { password: null, sshSecret: null };
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -81,9 +87,11 @@ export async function connectWithPrompt(
         rememberForSession: secrets.password !== null || secrets.sshSecret !== null,
         readOnly: options.readOnly ?? false,
         lockProduction: options.lockProduction,
+        connectId: options.connectId,
       });
     } catch (e) {
       const err = toError(e);
+      if (options.cancelled?.()) throw err;
       const next = await resolveConnectError(err, profile, secrets);
       if (!next) {
         if (err.code === "password_required" || err.code === "ssh_secret_required" || err.code === "ssh_unknown_host") return null;

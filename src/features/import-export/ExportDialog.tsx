@@ -49,7 +49,8 @@ export function ExportDialog({ source, onClose }: { source: ExportSource; onClos
     const base = source.kind === "table" ? source.request.table : "export";
     const path = await saveDialog({ defaultPath: `${base}.${ext}`, filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
     if (!path) return;
-    const options: ExportOptions = { format, delimiter, header, nullText, sqlTable, dialect: source.dialect, sqlBatch: 100 };
+    // The header box is shown for CSV only; for SQL it is the "Exported by" comment, always written.
+    const options: ExportOptions = { format, delimiter, header: format === "csv" ? header : true, nullText, sqlTable, dialect: source.dialect, sqlBatch: 100 };
     const id = uid();
     setJobId(id);
     setError(null);

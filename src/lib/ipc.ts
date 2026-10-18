@@ -115,6 +115,8 @@ export const api = {
       readOnly?: boolean;
       /** Open production read-only (true) or writable (false); omitted follows the setting. */
       lockProduction?: boolean;
+      /** Id for "connect-progress" events and `cancelConnect`. */
+      connectId?: string;
     } = {},
   ) =>
     call<SessionInfo>("connect", {
@@ -126,9 +128,12 @@ export const api = {
         rememberForSession: opts.rememberForSession ?? false,
         readOnly: opts.readOnly ?? false,
         lockProduction: opts.lockProduction ?? null,
+        connectId: opts.connectId ?? null,
       },
     }),
   disconnect: (sessionId: string) => call<void>("disconnect", { sessionId }),
+  /** Stops a connection attempt; false when it already finished. */
+  cancelConnect: (connectId: string) => call<boolean>("cancel_connect", { connectId }),
   reconnect: (sessionId: string, password?: string | null, sshSecret?: string | null) =>
     call<SessionInfo>("reconnect", { sessionId, password: password ?? null, sshSecret: sshSecret ?? null }),
   exportConnections: (path: string, ids: string[] | null) => call<number>("export_connections", { path, ids }),
@@ -198,6 +203,9 @@ export const api = {
     call<number>("export_result", { resultId, path, options }),
   exportTable: (sessionId: string, source: BrowseRequest, path: string, options: ExportOptions, jobId: string) =>
     call<number>("export_table", { request: { sessionId, source, path, options, jobId } }),
+  /** Rows as JSON or INSERT text for the clipboard (cells as the grid holds them, fully loaded). */
+  rowsAsText: (columns: { name: string; typeName: string }[], rows: Cell[][], options: ExportOptions) =>
+    call<string>("rows_as_text", { request: { columns, rows, options } }),
   exportRows: (columns: { name: string; typeName: string }[], rows: (string | null)[][], path: string, options: ExportOptions) =>
     call<number>("export_rows", { request: { columns, rows, path, options } }),
   previewImport: (path: string, options: ImportOptions) => call<ImportPreview>("preview_import", { path, options }),

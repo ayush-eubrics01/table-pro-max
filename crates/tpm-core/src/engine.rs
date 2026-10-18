@@ -131,6 +131,20 @@ fn approx_row_bytes(row: &Row) -> usize {
         .sum()
 }
 
+/// A step of opening a session, reported while connecting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectStep {
+    /// Opening the SSH tunnel.
+    Tunnel,
+    /// TCP, TLS and signing in (one driver call).
+    Connect,
+    /// Reading the server's version and current database.
+    ServerInfo,
+}
+
+pub type ConnectStepFn = Arc<dyn Fn(ConnectStep) + Send + Sync>;
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunOptions {
@@ -302,6 +316,8 @@ pub struct Engine {
     redis: Mutex<HashMap<String, Arc<tokio::sync::Mutex<crate::redis_kv::RedisSession>>>>,
     /// Where restore points are kept (the app's local storage); without one, none are made.
     restore_store: Mutex<Option<Arc<dyn crate::restore::RestoreStore>>>,
+    /// Connection attempts that can be cancelled, by the caller's id.
+    connects: Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
 }
 
 impl Default for Engine {
@@ -327,6 +343,7 @@ impl Engine {
             known_hosts: None,
             redis: Mutex::new(HashMap::new()),
             restore_store: Mutex::new(None),
+            connects: Mutex::new(HashMap::new()),
         }
     }
 
@@ -361,11 +378,19 @@ impl Engine {
         password: Option<&str>,
         ssh_secret: Option<&str>,
         options: &ConnectOptions,
+        on_step: Option<&ConnectStepFn>,
     ) -> Result<(Box<dyn Session>, Option<crate::ssh::Tunnel>)> {
+        let step = |s| {
+            if let Some(f) = on_step {
+                f(s)
+            }
+        };
         profile.validate()?;
         let Some(ssh) = &profile.ssh else {
-            return Ok((adapters::connect(profile, password, options).await?, None));
+            step(ConnectStep::Connect);
+            return Ok((within_connect_timeout(profile, adapters::connect(profile, password, options)).await?, None));
         };
+        step(ConnectStep::Tunnel);
         let known = self.known_hosts.clone().ok_or_else(|| AppError::internal("SSH known hosts are not configured"))?;
         let tunnel = crate::ssh::open_tunnel(
             ssh,
@@ -377,11 +402,55 @@ impl Engine {
         )
         .await?;
         let opts = ConnectOptions { tunnel_port: Some(tunnel.local_port), ..options.clone() };
-        let session = adapters::connect(profile, password, &opts).await?;
+        step(ConnectStep::Connect);
+        let session = within_connect_timeout(profile, adapters::connect(profile, password, &opts)).await?;
         Ok((session, Some(tunnel)))
     }
 
     // ---- sessions ----------------------------------------------------------------
+
+    /// `open_session`, reporting each step to `on_step`; `connect_id` lets `cancel_connect` stop it.
+    pub async fn open_session_tracked(
+        &self,
+        profile: &ConnectionProfile,
+        password: Option<&str>,
+        ssh_secret: Option<&str>,
+        options: ConnectOptions,
+        connect_id: Option<&str>,
+        on_step: Option<ConnectStepFn>,
+    ) -> Result<SessionInfo> {
+        let open = self.open_session_inner(profile, password, ssh_secret, options, on_step.as_ref());
+        let Some(id) = connect_id else { return open.await };
+        // Forgotten when this returns (or panics); a Cancel sent before now is kept as a permit.
+        let _registration = self.prepare_connect(id);
+        let Some(cancel) = lock(&self.connects).get(id).cloned() else { return open.await };
+        // Cancelling drops the attempt: a half-open TCP, TLS or SSH connection is closed, and the
+        // session is registered only once it is complete.
+        let result = tokio::select! {
+            biased;
+            r = open => r,
+            _ = cancel.notified() => Err(AppError::new(ErrorKind::Cancelled, "Connecting was cancelled")),
+        };
+        result
+    }
+
+    /// Makes `connect_id` cancellable before the attempt starts (while the caller reads the
+    /// keychain): a Cancel meanwhile stops the attempt as soon as it starts. Forgotten on drop.
+    pub fn prepare_connect(&self, connect_id: &str) -> ConnectRegistration<'_> {
+        lock(&self.connects).entry(connect_id.to_string()).or_insert_with(|| Arc::new(tokio::sync::Notify::new()));
+        ConnectRegistration { engine: self, id: connect_id.to_string() }
+    }
+
+    /// Stops a connection attempt started with this id. False when none is running.
+    pub fn cancel_connect(&self, connect_id: &str) -> bool {
+        match lock(&self.connects).get(connect_id) {
+            Some(cancel) => {
+                cancel.notify_one();
+                true
+            }
+            None => false,
+        }
+    }
 
     pub async fn open_session(
         &self,
@@ -389,6 +458,17 @@ impl Engine {
         password: Option<&str>,
         ssh_secret: Option<&str>,
         options: ConnectOptions,
+    ) -> Result<SessionInfo> {
+        self.open_session_tracked(profile, password, ssh_secret, options, None, None).await
+    }
+
+    async fn open_session_inner(
+        &self,
+        profile: &ConnectionProfile,
+        password: Option<&str>,
+        ssh_secret: Option<&str>,
+        options: ConnectOptions,
+        on_step: Option<&ConnectStepFn>,
     ) -> Result<SessionInfo> {
         // Production opens read-only until the user allows writes; the database session enforces it
         // (DuckDB: the policy only, see `driver_profile`).
@@ -403,8 +483,11 @@ impl Engine {
             profile
         };
         let connect_as = driver_profile(profile, writes_locked);
-        let (mut session, tunnel) = self.connect_through(&connect_as, password, ssh_secret, &options).await?;
-        let server = session.server_info().await?;
+        let (mut session, tunnel) = self.connect_through(&connect_as, password, ssh_secret, &options, on_step).await?;
+        if let Some(f) = on_step {
+            f(ConnectStep::ServerInfo);
+        }
+        let server = within_connect_timeout(profile, session.server_info()).await?;
         let info = SessionInfo {
             session_id: uuid::Uuid::new_v4().to_string(),
             connection_id: profile.id.clone(),
@@ -449,7 +532,8 @@ impl Engine {
     ) -> Result<SessionInfo> {
         let handle = self.handle(session_id)?;
         let connect_as = driver_profile(&handle.profile, handle.info.writes_locked);
-        let (new_session, tunnel) = self.connect_through(&connect_as, password, ssh_secret, &handle.options).await?;
+        let (new_session, tunnel) =
+            self.connect_through(&connect_as, password, ssh_secret, &handle.options, None).await?;
         *lock(&handle.canceller) = new_session.canceller();
         *lock(&handle.tunnel) = tunnel;
         let old = {
@@ -2467,6 +2551,36 @@ fn is_fatal(e: &AppError) -> bool {
 /// transaction inside our own, so the rows read are exactly the rows changed; before rows, the
 /// statement, after rows (UPDATE), commit. A read that fails leaves the statement to run without
 /// a restore point; the statement's own failure rolls everything back.
+/// Keeps a connect id cancellable until dropped (see `Engine::prepare_connect`).
+pub struct ConnectRegistration<'a> {
+    engine: &'a Engine,
+    id: String,
+}
+
+impl Drop for ConnectRegistration<'_> {
+    fn drop(&mut self) {
+        lock(&self.engine.connects).remove(&self.id);
+    }
+}
+
+/// How long a step of connecting may take: the connection's timeout for servers, none for local
+/// files (opening a large DuckDB file or waiting on a SQLite lock is not a dead server).
+fn connect_time_limit(profile: &ConnectionProfile) -> Option<Duration> {
+    (!profile.driver.is_file_based()).then(|| Duration::from_secs(profile.connect_timeout_secs.max(1)))
+}
+
+/// Bounds a step of connecting by the connection's timeout. The drivers' own timeouts cover only
+/// the TCP connection, so a server that accepts and never answers would otherwise wait forever.
+async fn within_connect_timeout<T>(
+    profile: &ConnectionProfile,
+    step: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    let Some(limit) = connect_time_limit(profile) else { return step.await };
+    tokio::time::timeout(limit, step).await.unwrap_or_else(|_| {
+        Err(AppError::new(ErrorKind::Timeout, format!("The server did not answer within {}s", limit.as_secs())))
+    })
+}
+
 /// The profile the driver opens the session with. DuckDB opens one instance per file, either
 /// read-only or writable, so a production file locked to reads opens writable underneath (the
 /// read-only policy refuses writes) and Allow writes can share the instance.
@@ -3025,6 +3139,17 @@ mod schema_tests {
         assert_eq!(capture_lock(Driver::Postgres, CaptureKind::Update, &st).unwrap(), None);
         assert_eq!(capture_lock(Driver::Duckdb, CaptureKind::Truncate, &st).unwrap(), None);
         assert_eq!(capture_lock(Driver::Mysql, CaptureKind::DropTable, &st).unwrap(), None);
+    }
+
+    #[test]
+    fn local_files_have_no_connect_timeout() {
+        let mut p = ConnectionProfile::new("f", Driver::Sqlite);
+        assert_eq!(connect_time_limit(&p), None);
+        p.driver = Driver::Duckdb;
+        assert_eq!(connect_time_limit(&p), None);
+        p.driver = Driver::Postgres;
+        p.connect_timeout_secs = 7;
+        assert_eq!(connect_time_limit(&p), Some(Duration::from_secs(7)));
     }
 
     #[test]

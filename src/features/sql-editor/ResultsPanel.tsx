@@ -4,7 +4,8 @@ import { committedMessage, useRestore } from "../../stores/restore";
 import type { Cell, ColumnInfo, Dialect, ScriptResult, SessionInfo, StatementResult, TableStructure } from "../../types/backend";
 import { api } from "../../lib/ipc";
 import { formatCount, formatDuration, pluralize } from "../../lib/text";
-import { DataGrid, type CellPos } from "../data-grid/DataGrid";
+import { DataGrid, type CellPos, type GridSelection } from "../data-grid/DataGrid";
+import { canCopyRows, copyRowsAs } from "../import-export/copyRows";
 import { firstLink, linkFilter, resultLinks, type FkLink } from "../data-browser/fkLinks";
 import type { GroupNode } from "../filters/filterModel";
 import { ValueEditor } from "../value-editor/ValueEditor";
@@ -32,7 +33,9 @@ function ResultGrid({
   links,
   onOpenTable,
   onRunAgain,
+  dialect,
 }: {
+  dialect: Dialect;
   /** Repeats the run (an evicted result can only be read again that way). */
   onRunAgain?: () => void;
   st: StatementResult;
@@ -108,6 +111,61 @@ function ResultGrid({
     [st.resultId, rows],
   );
 
+  /** The selected rows as shown (pending edits laid over), with every value read in full. */
+  const fullRows = async (indexes: number[]): Promise<Cell[][]> => {
+    const have = new Map<number, Cell[]>();
+    const pages = new Set<number>();
+    for (const r of indexes) {
+      const row = rows[r];
+      if (row) have.set(r, row);
+      else pages.add(Math.floor(r / PAGE) * PAGE);
+    }
+    for (const p of pages) {
+      if (!st.resultId) break;
+      (await api.fetchRows(st.resultId, p, PAGE)).forEach((row, k) => have.set(p + k, row));
+    }
+    // Row by row, so long previews are read a row's worth at a time.
+    const out: Cell[][] = [];
+    for (const r of indexes) {
+      const row = have.get(r);
+      if (!row) throw new Error("A selected row could not be read; run the query again");
+      const full = await Promise.all(row.map((c, col) => (c !== null && isPartial(c) && st.resultId ? api.resultValue(st.resultId, r, col) : c)));
+      out.push(full.map((_, c) => displayCell(edits, applied, st, full, c)));
+    }
+    return out;
+  };
+
+  const resultColumns = (st.columns ?? []).map((c) => ({ name: c.name, typeName: c.typeName }));
+
+  /**
+   * INSERT target: the one table every column comes from, with its own column names (not the
+   * result's aliases). A column read twice, or several tables, give a placeholder table instead.
+   */
+  const insertTarget = () => {
+    const origins = (st.columns ?? []).map((c) => c.origin);
+    const first = origins[0];
+    const names = origins.map((o) => o?.column ?? "");
+    const one = first && origins.every((o) => o && o.schema === first.schema && o.table === first.table);
+    return one && new Set(names).size === names.length
+      ? { schema: first.schema, table: first.table, columns: resultColumns.map((c, i) => ({ ...c, name: names[i]! })) }
+      : { schema: null, table: "query_result", columns: resultColumns };
+  };
+
+  const copyItems = (sel: GridSelection) =>
+    (["json", "sql"] as const).map((format) => ({
+      label: format === "json" ? "Copy rows as JSON" : "Copy rows as INSERT",
+      disabled: sel.rows.length === 0,
+      onSelect: () => {
+        if (!canCopyRows(sel.rows.length)) return;
+        const target = insertTarget();
+        void fullRows(sel.rows)
+          .then((full) =>
+            copyRowsAs(format, format === "sql" ? target.columns : resultColumns, full, { dialect, schema: target.schema, table: target.table }),
+          )
+          .catch((e) => notifyError(e, "Could not copy"));
+      },
+    }));
+
   const valueReason =
     valueAt === null ? null : !editable ? "Query results can't be edited here" : readOnlyReason(st, rows[valueAt.row], valueAt.col, applied);
 
@@ -148,15 +206,16 @@ function ResultGrid({
         return hit && { label: hit.label, open: () => onOpenTable(hit.link.fk.refSchema, hit.link.fk.refTable, hit.filter) };
       }}
       contextItems={(sel) => {
-        if (!sel.active || !onOpenTable) return [];
-        const cells = getRow(sel.active.row);
-        const ls = links[sel.active.col] ?? [];
-        return ls.flatMap((link) => {
+        const active = sel.active;
+        const cells = active ? getRow(active.row) : undefined;
+        const ls = active && onOpenTable ? (links[active.col] ?? []) : [];
+        const refItems = ls.flatMap((link) => {
           const filter = cells ? linkFilter(link, cells) : null;
-          return filter
+          return filter && onOpenTable
             ? [{ label: ls.length > 1 ? `Open referenced row in ${link.fk.refTable}` : "Open referenced row", onSelect: () => onOpenTable(link.fk.refSchema, link.fk.refTable, filter) }]
             : [];
         });
+        return [...refItems, ...(refItems.length ? (["separator"] as const) : []), ...copyItems(sel)];
       }}
     />
     {valueAt && st.columns?.[valueAt.col] && (
@@ -380,6 +439,7 @@ export function ResultsPanel({
           <div className="split-h" style={{ minHeight: 0, flex: 1 }}>
             <div className="grid-area" style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0 }}>
               <ResultGrid
+                dialect={dialect}
                 st={current}
                 editable={editable}
                 edits={curEdits}

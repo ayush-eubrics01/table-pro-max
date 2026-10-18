@@ -1,11 +1,13 @@
 //! Connection profile management and session lifecycle.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 use tpm_core::adapters::ConnectOptions;
 use tpm_core::config::{ConnectionProfile, PasswordMode, ProfileBundle, parse_connection_url};
 use tpm_core::credentials::{CredentialStore, connection_account, ssh_account};
-use tpm_core::engine::SessionInfo;
+use tpm_core::engine::{ConnectStep, ConnectStepFn, SessionInfo};
 use tpm_core::error::{AppError, Result};
 use tpm_core::storage::StoredConnection;
 
@@ -222,22 +224,39 @@ pub struct ConnectRequest {
     /// state, for its query tabs and after Allow writes. `None` follows the setting (a new connection).
     #[serde(default)]
     pub lock_production: Option<bool>,
+    /// Caller-chosen id: progress events carry it, and `cancel_connect` stops the attempt.
+    #[serde(default)]
+    pub connect_id: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectProgress {
+    connect_id: String,
+    step: ConnectStep,
 }
 
 #[tauri::command]
-pub async fn connect(state: State<'_, AppState>, request: ConnectRequest) -> Result<SessionInfo> {
+pub async fn connect(app: AppHandle, state: State<'_, AppState>, request: ConnectRequest) -> Result<SessionInfo> {
     let mut profile = state.storage.get_connection(&request.connection_id)?;
     if request.read_only {
         profile.safety_mode = tpm_core::config::SafetyMode::ReadOnly;
     }
+    // Cancel counts from here, even while the keychain is being read.
+    let _cancellable = request.connect_id.as_deref().map(|id| state.engine.prepare_connect(id));
     let explicit = request.password.clone();
     let explicit_ssh = request.ssh_secret.clone();
     // The tunnel comes first, so ask for its secret before the database password.
     let ssh_secret = state.resolve_ssh_secret(&profile, explicit_ssh.clone()).await?;
     let password = state.resolve_password(&profile, explicit.clone()).await?;
+    let on_step: Option<ConnectStepFn> = request.connect_id.clone().map(|connect_id| {
+        Arc::new(move |step| {
+            let _ = app.emit("connect-progress", ConnectProgress { connect_id: connect_id.clone(), step });
+        }) as ConnectStepFn
+    });
     let info = state
         .engine
-        .open_session(
+        .open_session_tracked(
             &profile,
             password.as_deref(),
             ssh_secret.as_deref(),
@@ -246,6 +265,8 @@ pub async fn connect(state: State<'_, AppState>, request: ConnectRequest) -> Res
                 tunnel_port: None,
                 lock_production: request.lock_production.unwrap_or_else(|| production_read_only(&state)),
             },
+            request.connect_id.as_deref(),
+            on_step,
         )
         .await?;
     if request.remember_for_session {
@@ -264,6 +285,12 @@ pub async fn connect(state: State<'_, AppState>, request: ConnectRequest) -> Res
 /// Settings › Safety › "Open production connections read-only" (on unless turned off).
 fn production_read_only(state: &AppState) -> bool {
     !matches!(state.storage.get_setting("safety.productionReadOnly"), Ok(Some(serde_json::Value::Bool(false))))
+}
+
+/// Stops a connection attempt started with this id (the connecting dialog's Cancel).
+#[tauri::command]
+pub fn cancel_connect(state: State<'_, AppState>, connect_id: String) -> bool {
+    state.engine.cancel_connect(&connect_id)
 }
 
 #[tauri::command]

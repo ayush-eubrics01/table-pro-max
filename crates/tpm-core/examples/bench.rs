@@ -132,6 +132,7 @@ async fn main() {
             header: true,
             null_text: String::new(),
             sql_table: None,
+            sql_schema: None,
             dialect: None,
             sql_batch: 100,
         };

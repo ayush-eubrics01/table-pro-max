@@ -458,12 +458,17 @@ export interface AppInfo {
 
 export type ExportFormat = "csv" | "json" | "json_lines" | "sql" | "xlsx";
 
+/** A step of opening a connection, as the backend reports it ("connect-progress" events). */
+export type ConnectStep = "tunnel" | "connect" | "server_info";
+
 export interface ExportOptions {
   format: ExportFormat;
   delimiter: string;
   header: boolean;
   nullText: string;
   sqlTable: string | null;
+  /** Schema of `sqlTable`, kept apart so a dot in its name is not a separator. */
+  sqlSchema?: string | null;
   dialect: Dialect | null;
   sqlBatch: number;
 }
