@@ -576,6 +576,7 @@ async fn exercise(t: Target) {
     result_types(&engine, &sid, driver, &profile, t.password.as_deref()).await;
     text_equality(&engine, &sid, &t.schema, driver).await;
     copied_inserts_round_trip(&engine, &sid, driver).await;
+    query_parameters(&engine, &sid, driver).await;
 
     // --- cleanup ---
     run(&engine, &sid, "DROP TABLE tpm_it_items; DROP TABLE tpm_it_owners").await;
@@ -1243,6 +1244,56 @@ async fn result_types(
     assert_eq!(st.columns.as_ref().unwrap()[0].type_name, "jsonb", "read-only: {:?}", st.columns);
     assert_eq!(st.editing.as_ref().unwrap().read_only[0].reason, "Read-only connection");
     engine.close_session(&info.session_id).await;
+}
+
+/// `:name` placeholders are bound as values (never pasted into the SQL) on every database; a
+/// write with parameters keeps no restore point and asks first.
+async fn query_parameters(engine: &Arc<Engine>, sid: &str, driver: Driver) {
+    use std::collections::HashMap;
+    let store = Arc::new(tpm_core::storage::Storage::open_in_memory().unwrap());
+    engine.set_restore_store(store);
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_qp").await;
+    run(engine, sid, "CREATE TABLE tpm_it_qp (id integer PRIMARY KEY, name varchar(50))").await;
+    run(engine, sid, "INSERT INTO tpm_it_qp VALUES (1, 'a'), (2, 'it''s')").await;
+    let opts = |confirmed: bool, values: &[(&str, Option<&str>)]| RunOptions {
+        confirmed,
+        parameters: Some(values.iter().map(|(k, v)| (k.to_string(), v.map(str::to_string))).collect::<HashMap<_, _>>()),
+        ..Default::default()
+    };
+    let sql = "SELECT name FROM tpm_it_qp WHERE id = :id OR name = :name ORDER BY id";
+    let r = engine.run_script(sid, sql, opts(false, &[("id", Some("1")), ("name", Some("it's"))]), None).await.unwrap();
+    let rows = r.statements[0].rows.clone().unwrap_or_else(|| panic!("{driver:?}: {r:?}"));
+    assert_eq!(rows.iter().map(|r| text(&r[0]).to_string()).collect::<Vec<_>>(), ["a", "it's"], "{driver:?}");
+
+    let r = engine
+        .run_script(sid, "SELECT count(*) FROM tpm_it_qp WHERE name = :n", opts(false, &[("n", None)]), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        text(&r.statements[0].rows.as_ref().unwrap()[0][0]),
+        "0",
+        "{driver:?}: NULL is bound, not the text NULL"
+    );
+
+    let update = "UPDATE tpm_it_qp SET name = :name WHERE id = :id";
+    let err =
+        engine.run_script(sid, update, opts(false, &[("name", Some("b")), ("id", Some("1"))]), None).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::ConfirmationRequired, "{driver:?}: {err:?}");
+    assert!(err.detail.as_deref().unwrap_or("").contains("uses parameters"), "{driver:?}: {err:?}");
+    let r = engine.run_script(sid, update, opts(true, &[("name", Some("b")), ("id", Some("1"))]), None).await.unwrap();
+    let st = &r.statements[0];
+    assert!(st.error.is_none(), "{driver:?}: {:?}", st.error);
+    assert_eq!(st.rows_affected, Some(1), "{driver:?}");
+    assert_eq!(st.restore.as_ref().and_then(|n| n.reason.as_deref()), Some("uses parameters"), "{driver:?}");
+    let back = run(engine, sid, "SELECT name FROM tpm_it_qp WHERE id = 1").await;
+    assert_eq!(text(&back.statements[0].rows.as_ref().unwrap()[0][0]), "b", "{driver:?}");
+
+    let err = engine.run_script(sid, sql, opts(false, &[("id", Some("1"))]), None).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidConfig, "{driver:?}: {err:?}");
+    assert!(err.message.contains(":name"), "{}", err.message);
+    let r = run(engine, sid, "SELECT ':x' AS t").await;
+    assert_eq!(text(&r.statements[0].rows.as_ref().unwrap()[0][0]), ":x");
+    run(engine, sid, "DROP TABLE tpm_it_qp").await;
 }
 
 /// Rows copied as INSERT statements (as the grid copies them: cells from a query result) run on
