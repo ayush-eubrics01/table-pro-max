@@ -10,6 +10,19 @@ beforeEach(() => {
 });
 afterEach(() => clearMocks());
 
+describe("reach", () => {
+  it("starts the clock at the first step, not while a password prompt was open", () => {
+    useConnecting.setState({ id: "c1", reached: [], startedAt: 1, cancelled: false });
+    reach("c1", "connect");
+    const started = useConnecting.getState().startedAt;
+    expect(started).toBeGreaterThan(1);
+    reach("c1", "server_info");
+    expect(useConnecting.getState().startedAt).toBe(started);
+    reach("other", "schemas");
+    expect(useConnecting.getState().reached).toEqual(["connect", "server_info"]);
+  });
+});
+
 describe("openTracked", () => {
   it("connects with an id the progress events and Cancel use, and opens the workspace", async () => {
     const connects: Record<string, unknown>[] = [];

@@ -66,7 +66,7 @@ export function ConnectingDialog({ profile: p, onHide }: { profile: ConnectionPr
               </ol>
               <div className="connecting-wait">
                 <span className="hint" aria-label="Time spent connecting">
-                  {seconds} s · gives up after {p.connectTimeoutSecs} s
+                  {seconds} s · stops after {p.connectTimeoutSecs} s without an answer
                 </span>
                 <button className="btn btn-ghost" onClick={onHide}>
                   Hide

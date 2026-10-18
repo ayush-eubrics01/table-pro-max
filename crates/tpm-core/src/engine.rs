@@ -388,7 +388,7 @@ impl Engine {
         profile.validate()?;
         let Some(ssh) = &profile.ssh else {
             step(ConnectStep::Connect);
-            return Ok((adapters::connect(profile, password, options).await?, None));
+            return Ok((within_connect_timeout(profile, adapters::connect(profile, password, options)).await?, None));
         };
         step(ConnectStep::Tunnel);
         let known = self.known_hosts.clone().ok_or_else(|| AppError::internal("SSH known hosts are not configured"))?;
@@ -403,7 +403,7 @@ impl Engine {
         .await?;
         let opts = ConnectOptions { tunnel_port: Some(tunnel.local_port), ..options.clone() };
         step(ConnectStep::Connect);
-        let session = adapters::connect(profile, password, &opts).await?;
+        let session = within_connect_timeout(profile, adapters::connect(profile, password, &opts)).await?;
         Ok((session, Some(tunnel)))
     }
 
@@ -480,7 +480,7 @@ impl Engine {
         if let Some(f) = on_step {
             f(ConnectStep::ServerInfo);
         }
-        let server = session.server_info().await?;
+        let server = within_connect_timeout(profile, session.server_info()).await?;
         let info = SessionInfo {
             session_id: uuid::Uuid::new_v4().to_string(),
             connection_id: profile.id.clone(),
@@ -2544,6 +2544,18 @@ fn is_fatal(e: &AppError) -> bool {
 /// transaction inside our own, so the rows read are exactly the rows changed; before rows, the
 /// statement, after rows (UPDATE), commit. A read that fails leaves the statement to run without
 /// a restore point; the statement's own failure rolls everything back.
+/// Bounds a step of connecting by the connection's timeout. The drivers' own timeouts cover only
+/// the TCP connection, so a server that accepts and never answers would otherwise wait forever.
+async fn within_connect_timeout<T>(
+    profile: &ConnectionProfile,
+    step: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    let secs = profile.connect_timeout_secs.max(1);
+    tokio::time::timeout(Duration::from_secs(secs), step)
+        .await
+        .unwrap_or_else(|_| Err(AppError::new(ErrorKind::Timeout, format!("The server did not answer within {secs}s"))))
+}
+
 /// The profile the driver opens the session with. DuckDB opens one instance per file, either
 /// read-only or writable, so a production file locked to reads opens writable underneath (the
 /// read-only policy refuses writes) and Allow writes can share the instance.

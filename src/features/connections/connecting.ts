@@ -19,9 +19,14 @@ interface ConnectingState {
 
 export const useConnecting = create<ConnectingState>(() => ({ id: null, reached: [], startedAt: 0, cancelled: false }));
 
-/** Records a step of the attempt `id` (ignored once another attempt has started). */
+/**
+ * Records a step of the attempt `id` (ignored once another attempt has started). The clock starts
+ * at the first step, so time spent in a password prompt is not counted.
+ */
 export function reach(id: string, phase: ConnectPhase) {
-  useConnecting.setState((s) => (s.id !== id || s.reached.includes(phase) ? s : { reached: [...s.reached, phase] }));
+  useConnecting.setState((s) =>
+    s.id !== id || s.reached.includes(phase) ? s : { reached: [...s.reached, phase], ...(s.reached.length === 0 ? { startedAt: Date.now() } : {}) },
+  );
 }
 
 /** Follows the backend's "connect-progress" events (once, at startup). */

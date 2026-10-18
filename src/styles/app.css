@@ -2011,6 +2011,9 @@ pre,
   width: min(440px, calc(100vw - 32px));
   margin-top: 18vh;
 }
+.dialog.connecting .env-badge {
+  align-self: flex-start;
+}
 .connecting-title {
   margin: 6px 0 0;
   font-size: var(--text-lg);

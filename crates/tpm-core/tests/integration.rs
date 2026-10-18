@@ -1948,6 +1948,15 @@ async fn connect_progress_and_cancel() {
     assert_eq!(err.kind, ErrorKind::Cancelled, "{err:?}");
     assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
     assert_eq!(*steps.lock().unwrap(), vec![ConnectStep::Connect]);
+
+    // Without Cancel, the connection's timeout covers a server that never answers (the driver's
+    // own timeout covers only the TCP connection).
+    profile.connect_timeout_secs = 1;
+    let t0 = Instant::now();
+    let err = engine.open_session(&profile, Some("pw"), None, ConnectOptions::default()).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Timeout, "{err:?}");
+    assert!(t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
+    assert!(err.message.contains("1s"), "{}", err.message);
     held.abort();
 }
 

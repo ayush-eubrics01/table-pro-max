@@ -245,20 +245,22 @@ impl<W: Write + Send> RowSink for JsonSink<W> {
     fn write_rows(&mut self, rows: &[Row]) -> Result<()> {
         ensure_full_rows(rows)?;
         for row in rows {
-            let mut obj = serde_json::Map::with_capacity(self.columns.len());
-            for (name, cell) in self.columns.iter().zip(row) {
-                let v = match cell.to_export_string() {
-                    None => serde_json::Value::Null,
-                    Some(s) => serde_json::Value::String(s),
-                };
-                obj.insert(name.clone(), v);
+            // Written field by field: a serde_json map would sort the keys, not keep column order.
+            let mut obj = String::from("{");
+            for (i, (name, cell)) in self.columns.iter().zip(row).enumerate() {
+                if i > 0 {
+                    obj.push(',');
+                }
+                obj.push_str(&serde_json::to_string(name)?);
+                obj.push(':');
+                obj.push_str(&serde_json::to_string(&cell.to_export_string())?);
             }
+            obj.push('}');
             if self.lines {
-                serde_json::to_writer(&mut self.out, &obj)?;
-                self.out.write_all(b"\n").map_err(io_err)?;
+                writeln!(self.out, "{obj}").map_err(io_err)?;
             } else {
                 self.out.write_all(if self.first { b"\n  " } else { b",\n  " }).map_err(io_err)?;
-                serde_json::to_writer(&mut self.out, &obj)?;
+                self.out.write_all(obj.as_bytes()).map_err(io_err)?;
             }
             self.first = false;
         }
@@ -933,6 +935,26 @@ mod tests {
         assert!(cell_from_ui(&json!({ "$notLoaded": true })).is_err());
         assert!(cell_from_ui(&json!({ "$partial": "ab", "length": 10 })).is_err());
         assert!(cell_from_ui(&json!(5)).is_err());
+    }
+
+    #[test]
+    fn json_keeps_the_column_order() {
+        let cols =
+            vec![ColumnMeta::new("zeta", "text"), ColumnMeta::new("alpha", "text"), ColumnMeta::new("mid", "text")];
+        let rows = vec![vec![Cell::Text("z".into()), Cell::Null, Cell::Text("m\"q".into())]];
+        let opts = |format| ExportOptions {
+            format,
+            delimiter: ',',
+            header: false,
+            null_text: String::new(),
+            sql_table: None,
+            dialect: None,
+            sql_batch: 1,
+        };
+        let json = rows_as_text(&cols, &rows, &opts(ExportFormat::Json)).unwrap();
+        assert_eq!(json, "[\n  {\"zeta\":\"z\",\"alpha\":null,\"mid\":\"m\\\"q\"}\n]\n");
+        let lines = rows_as_text(&cols, &rows, &opts(ExportFormat::JsonLines)).unwrap();
+        assert_eq!(lines, "{\"zeta\":\"z\",\"alpha\":null,\"mid\":\"m\\\"q\"}\n");
     }
 
     #[test]
