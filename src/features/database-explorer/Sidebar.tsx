@@ -3,7 +3,7 @@ import { withNameConfirm } from "../connections/nameConfirm";
 import { Icon } from "../../components/Icon";
 import { createDashboard } from "../dashboards/DashboardView";
 import { uid } from "../../lib/text";
-import type { DashboardRecord, DbObject, ObjectKind, SavedQuery } from "../../types/backend";
+import type { DashboardRecord, DbObject, ObjectKind, Pin, SavedQuery } from "../../types/backend";
 import { api } from "../../lib/ipc";
 import { useWorkspaces, type Workspace } from "../../stores/workspaces";
 import { notify, notifyError } from "../../stores/ui";
@@ -43,7 +43,8 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
   const [filter, setFilter] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [databases, setDatabases] = useState<string[]>([]);
-  const [saved, setSaved] = useState<SavedQuery[]>([]);
+  const [saved, setSaved] = useState<SavedQuery[] | null>(null);
+  const [pins, setPins] = useState<Pin[]>([]);
   const [dashboards, setDashboards] = useState<DashboardRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -57,6 +58,10 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
     api
       .listSavedQueries()
       .then((q) => setSaved(q.filter((x) => x.connectionId === null || x.connectionId === ws.profile.id)))
+      .catch(() => setSaved([]));
+    api
+      .listPins(ws.profile.id)
+      .then((p) => setPins(p ?? []))
       .catch(() => undefined);
     api
       .listDashboards()
@@ -64,9 +69,45 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
       .catch(() => undefined);
   }, [ws.session.sessionId, ws.session.capabilities.multipleDatabases, ws.profile.id, ws.tabs.length]);
 
+  // Pinned objects of other schemas: load those schemas' lists to know whether they still exist.
+  useEffect(() => {
+    for (const schema of new Set(pins.filter((p) => p.kind !== "saved_query").map((p) => p.schema))) {
+      if (!useWorkspaces.getState().workspaces.find((w) => w.id === ws.id)?.objects[schema]) void loadObjects(ws.id, schema).catch(() => undefined);
+    }
+  }, [pins, ws.id, loadObjects]);
+
+  const isPinned = (pin: Pin) => pins.some((p) => p.kind === pin.kind && p.schema === pin.schema && p.name === pin.name);
+  const togglePin = async (pin: Pin) => {
+    try {
+      if (isPinned(pin)) await api.unpinObject(ws.profile.id, pin);
+      else await api.pinObject(ws.profile.id, pin);
+      setPins(await api.listPins(ws.profile.id));
+    } catch (e) {
+      notifyError(e, "Could not change the pinned objects");
+    }
+  };
+  const pinItem = (pin: Pin) => ({ label: isPinned(pin) ? "Unpin" : "Pin to top", onSelect: () => void togglePin(pin) });
+  const pinOf = (o: DbObject): Pin | null =>
+    o.kind === "table" || o.kind === "view" || o.kind === "materialized_view" ? { kind: o.kind, schema: o.schema, name: o.name } : null;
+
   const objects = ws.objects[ws.schema];
   const needle = filter.trim().toLowerCase();
   const visible = useMemo(() => (objects ?? []).filter((o) => !needle || o.name.toLowerCase().includes(needle)), [objects, needle]);
+
+  // Pinned rows in pin order. Whether one still exists is known once its list has loaded.
+  const pinnedRows = pins.flatMap((pin) => {
+    if (pin.kind === "saved_query") {
+      const q = saved?.find((x) => x.id === pin.name);
+      const label = q?.name ?? pin.name;
+      if (needle && !label.toLowerCase().includes(needle)) return [];
+      return [{ pin, label, missing: saved !== null && !q, open: () => q && openQuery(ws.id, { sql: q.sql, title: q.name, savedQueryId: q.id }) }];
+    }
+    if (needle && !pin.name.toLowerCase().includes(needle)) return [];
+    const list = ws.objects[pin.schema];
+    const missing = !!list && !list.some((o) => o.name === pin.name && (o.kind === pin.kind || (pin.kind === "table" && o.kind === "foreign_table")));
+    const kind: ObjectKind = pin.kind;
+    return [{ pin, label: pin.name, missing, open: () => openTable(ws.id, { schema: pin.schema, name: pin.name, kind }) }];
+  });
 
   const refresh = async () => {
     setLoading(true);
@@ -90,6 +131,7 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
       ...(relation
         ? [{ label: "Query in new tab", onSelect: () => openQuery(ws.id, { sql: `SELECT * FROM ${qualified(o)} LIMIT 100;`, title: o.name }) }]
         : []),
+      ...(pinOf(o) ? [pinItem(pinOf(o)!)] : []),
       "separator",
       { label: "Copy name", onSelect: () => void navigator.clipboard.writeText(o.name) },
       { label: "Copy qualified name", onSelect: () => void navigator.clipboard.writeText(qualified(o)) },
@@ -154,6 +196,32 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
         </div>
       </div>
       <div className="sidebar-tree" role="tree">
+        {pinnedRows.length > 0 && (
+          <div role="group" aria-label="Pinned">
+            <button className="tree-group" aria-expanded={!collapsed.pinned} aria-label={`Pinned (${pinnedRows.length})`} onClick={() => setCollapsed({ ...collapsed, pinned: !collapsed.pinned })}>
+              <Icon name={collapsed.pinned ? "chevron_right" : "keyboard_arrow_down"} size={14} />
+              <span className="label">Pinned</span>
+              <span className="count">{pinnedRows.length}</span>
+            </button>
+            {!collapsed.pinned &&
+              pinnedRows.map(({ pin, label, open, missing }) => (
+                <button
+                  key={`${pin.kind}:${pin.schema}:${pin.name}`}
+                  role="treeitem"
+                  className={`tree-item${missing ? " missing" : ""}`}
+                  aria-disabled={missing || undefined}
+                  title={missing ? `${label} was not found; it may have been renamed or dropped` : label}
+                  onClick={() => !missing && open()}
+                  onContextMenu={(e) => menu.open(e, [...(missing ? [] : [{ label: "Open", onSelect: open }]), pinItem(pin)])}
+                >
+                  {pin.kind === "saved_query" ? <Icon name="code_blocks" size={13} /> : <KindIcon kind={pin.kind} />}
+                  <span className="name">{label}</span>
+                  {pin.kind !== "saved_query" && pin.schema !== ws.schema && <span className="count">{pin.schema}</span>}
+                  {missing && <span className="count">Not found</span>}
+                </button>
+              ))}
+          </div>
+        )}
         {!objects && <div className="empty"><div className="spinner" /></div>}
         {GROUPS.map((g) => {
           const items = visible.filter((o) => g.kinds.includes(o.kind));
@@ -222,7 +290,7 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
               </button>
             ))}
         </div>
-        {saved.length > 0 && (
+        {saved && saved.length > 0 && (
           <div role="group">
             <button className="tree-group" aria-expanded={!collapsed.saved} aria-label={`Saved queries (${saved.length})`} onClick={() => setCollapsed({ ...collapsed, saved: !collapsed.saved })}>
               <Icon name={collapsed.saved ? "chevron_right" : "keyboard_arrow_down"} size={14} />
@@ -239,12 +307,15 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
                   onContextMenu={(e) =>
                     menu.open(e, [
                       { label: "Open", onSelect: () => openQuery(ws.id, { sql: s.sql, title: s.name, savedQueryId: s.id }) },
+                      pinItem({ kind: "saved_query", schema: "", name: s.id }),
                       {
                         label: "Delete saved query",
                         danger: true,
                         onSelect: async () => {
                           await api.deleteSavedQuery(s.id);
-                          setSaved((x) => x.filter((y) => y.id !== s.id));
+                          setSaved((x) => (x ?? []).filter((y) => y.id !== s.id));
+                          // Deleting a saved query also unpins it.
+                          setPins((x) => x.filter((p) => !(p.kind === "saved_query" && p.name === s.id)));
                         },
                       },
                     ])

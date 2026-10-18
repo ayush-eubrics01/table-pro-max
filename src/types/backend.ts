@@ -458,6 +458,13 @@ export interface AppInfo {
 
 export type ExportFormat = "csv" | "json" | "json_lines" | "sql" | "xlsx";
 
+/** Something pinned to the top of the sidebar: a table or view by schema and name, or a saved query by id. */
+export interface Pin {
+  kind: "table" | "view" | "materialized_view" | "saved_query";
+  schema: string;
+  name: string;
+}
+
 /** A step of opening a connection, as the backend reports it ("connect-progress" events). */
 export type ConnectStep = "tunnel" | "connect" | "server_info";
 

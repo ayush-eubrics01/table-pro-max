@@ -3,6 +3,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  Pin,
   Cell,
   FetchedCell,
   AiAnswer,
@@ -203,6 +204,9 @@ export const api = {
     call<number>("export_result", { resultId, path, options }),
   exportTable: (sessionId: string, source: BrowseRequest, path: string, options: ExportOptions, jobId: string) =>
     call<number>("export_table", { request: { sessionId, source, path, options, jobId } }),
+  listPins: (connectionId: string) => call<Pin[]>("list_pins", { connectionId }),
+  pinObject: (connectionId: string, pin: Pin) => call<void>("pin_object", { connectionId, pin }),
+  unpinObject: (connectionId: string, pin: Pin) => call<void>("unpin_object", { connectionId, pin }),
   /** Rows as JSON or INSERT text for the clipboard (cells as the grid holds them, fully loaded). */
   rowsAsText: (columns: { name: string; typeName: string }[], rows: Cell[][], options: ExportOptions) =>
     call<string>("rows_as_text", { request: { columns, rows, options } }),
