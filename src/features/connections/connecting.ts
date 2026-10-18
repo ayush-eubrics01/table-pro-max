@@ -56,7 +56,12 @@ export async function openTracked(profile: ConnectionProfile): Promise<string | 
   const id = uid();
   useConnecting.setState({ id, reached: [], startedAt: Date.now(), cancelled: false });
   try {
-    const session = await connectWithPrompt(profile, null, { connectId: id, cancelled: () => cancelled(id) });
+    const session = await connectWithPrompt(profile, null, {
+      connectId: id,
+      cancelled: () => cancelled(id),
+      // A retry (after a password prompt) starts its steps and clock again.
+      onAttempt: () => useConnecting.setState((s) => (s.id === id ? { reached: [], startedAt: Date.now() } : s)),
+    });
     if (!session) return null;
     if (cancelled(id)) {
       await api.disconnect(session.sessionId).catch(() => undefined);

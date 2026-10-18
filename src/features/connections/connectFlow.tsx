@@ -75,11 +75,14 @@ export async function connectWithPrompt(
     connectId?: string;
     /** Stops asking for passwords once the attempt was cancelled. */
     cancelled?: () => boolean;
+    /** Called before each try (the first, and each retry after a prompt). */
+    onAttempt?: () => void;
   } = {},
 ): Promise<SessionInfo | null> {
   let secrets: Secrets = { password: null, sshSecret: null };
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
+      options.onAttempt?.();
       return await api.connect(profile.id, {
         password: secrets.password,
         sshSecret: secrets.sshSecret,

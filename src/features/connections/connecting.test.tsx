@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { waitFor } from "@testing-library/react";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { cancelConnecting, openTracked, reach, useConnecting } from "./connecting";
 import { useWorkspaces } from "../../stores/workspaces";
@@ -97,6 +98,33 @@ describe("openTracked", () => {
     reject({ kind: "auth", message: "Password required", code: "password_required" });
     expect(await attempt).toBeNull();
     expect(useUi.getState().promptRequest).toBeNull();
+  });
+
+  it("a retry after a password prompt starts its steps and clock again", async () => {
+    useUi.setState({ promptRequest: null });
+    let calls = 0;
+    let atRetry: { reached: string[]; startedAt: number } | null = null;
+    mockIPC((cmd, args) => {
+      if (cmd === "connect") {
+        calls += 1;
+        const id = (args as { request: { connectId: string } }).request.connectId;
+        if (calls === 1) {
+          reach(id, "connect");
+          throw { kind: "auth", message: "Password authentication failed", code: "password_required" };
+        }
+        atRetry = { reached: [...useConnecting.getState().reached], startedAt: useConnecting.getState().startedAt };
+        return session;
+      }
+      return cmd.startsWith("list_") ? [] : null;
+    });
+    const attempt = openTracked({ ...profile, passwordMode: "ask" });
+    await waitFor(() => expect(useUi.getState().promptRequest).not.toBeNull());
+    await new Promise((r) => setTimeout(r, 20));
+    const promptClosedAt = Date.now();
+    useUi.getState().promptRequest!.resolve("secret");
+    expect(await attempt).toBeTruthy();
+    expect(atRetry!.reached).toEqual([]);
+    expect(atRetry!.startedAt).toBeGreaterThanOrEqual(promptClosedAt);
   });
 
   it("passes other errors on", async () => {

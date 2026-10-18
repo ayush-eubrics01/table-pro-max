@@ -239,7 +239,7 @@ struct JsonSink<W: Write> {
 
 impl<W: Write + Send> RowSink for JsonSink<W> {
     fn begin(&mut self, columns: &[ColumnMeta]) -> Result<()> {
-        self.columns = columns.iter().map(|c| c.name.clone()).collect();
+        self.columns = unique_keys(columns.iter().map(|c| c.name.as_str()));
         if !self.lines {
             self.out.write_all(b"[").map_err(io_err)?;
         }
@@ -275,6 +275,27 @@ impl<W: Write + Send> RowSink for JsonSink<W> {
         }
         self.out.flush().map_err(io_err)
     }
+}
+
+/// Object keys for these column names: a repeated name gets the first free `name_N`, so
+/// `SELECT a.id, b.id` keeps both values (a JSON reader would keep only the last of two "id").
+fn unique_keys<'a>(names: impl Iterator<Item = &'a str> + Clone) -> Vec<String> {
+    let taken: std::collections::HashSet<&str> = names.clone().collect();
+    let mut used = std::collections::HashSet::new();
+    names
+        .map(|name| {
+            if used.insert(name.to_string()) {
+                return name.to_string();
+            }
+            (2..)
+                .map(|n| format!("{name}_{n}"))
+                .find(|key| !used.contains(key) && !taken.contains(key.as_str()))
+                .inspect(|key| {
+                    used.insert(key.clone());
+                })
+                .unwrap_or_default()
+        })
+        .collect()
 }
 
 struct SqlSink<W: Write> {
@@ -978,6 +999,24 @@ mod tests {
         assert_eq!(json, "[\n  {\"zeta\":\"z\",\"alpha\":null,\"mid\":\"m\\\"q\"}\n]\n");
         let lines = rows_as_text(&cols, &rows, &opts(ExportFormat::JsonLines)).unwrap();
         assert_eq!(lines, "{\"zeta\":\"z\",\"alpha\":null,\"mid\":\"m\\\"q\"}\n");
+    }
+
+    #[test]
+    fn json_gives_repeated_column_names_their_own_keys() {
+        let cols = vec![ColumnMeta::new("id", "int"), ColumnMeta::new("id", "int"), ColumnMeta::new("id_2", "int")];
+        let rows = vec![vec![Cell::Text("1".into()), Cell::Text("2".into()), Cell::Text("3".into())]];
+        let opts = ExportOptions {
+            format: ExportFormat::JsonLines,
+            delimiter: ',',
+            header: false,
+            null_text: String::new(),
+            sql_table: None,
+            sql_schema: None,
+            dialect: None,
+            sql_batch: 1,
+        };
+        let json = rows_as_text(&cols, &rows, &opts).unwrap();
+        assert_eq!(json, "{\"id\":\"1\",\"id_3\":\"2\",\"id_2\":\"3\"}\n");
     }
 
     #[test]
