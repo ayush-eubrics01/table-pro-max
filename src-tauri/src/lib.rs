@@ -82,6 +82,7 @@ pub fn run() {
             commands::connections::reorder_connections,
             commands::connections::test_connection,
             commands::connections::connect,
+            commands::connections::cancel_connect,
             commands::connections::disconnect,
             commands::connections::reconnect,
             commands::connections::ping,

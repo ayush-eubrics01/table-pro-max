@@ -1899,6 +1899,58 @@ async fn production_safety() {
     engine.close_session(&info.session_id).await;
 }
 
+/// Connecting reports its steps, and Cancel stops a connection attempt that would otherwise wait for
+/// the timeout (a server that accepts the TCP connection and never answers).
+#[tokio::test(flavor = "multi_thread")]
+async fn connect_progress_and_cancel() {
+    use std::sync::Mutex;
+    use tpm_core::engine::ConnectStep;
+    let engine = Arc::new(Engine::new());
+    let steps = Arc::new(Mutex::new(Vec::new()));
+    let record = |steps: &Arc<Mutex<Vec<ConnectStep>>>| {
+        let steps = steps.clone();
+        Arc::new(move |s: ConnectStep| steps.lock().unwrap().push(s)) as tpm_core::engine::ConnectStepFn
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let t = sqlite_target(&dir);
+    let info = engine
+        .open_session_tracked(&t.profile, None, None, ConnectOptions::default(), Some("c0"), Some(record(&steps)))
+        .await
+        .unwrap();
+    assert_eq!(*steps.lock().unwrap(), vec![ConnectStep::Connect, ConnectStep::ServerInfo]);
+    engine.close_session(&info.session_id).await;
+    assert!(!engine.cancel_connect("c0"), "a finished connect is forgotten");
+
+    // A server that accepts and never answers.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let held = tokio::spawn(async move {
+        let mut open = Vec::new();
+        while let Ok((socket, _)) = listener.accept().await {
+            open.push(socket);
+        }
+    });
+    let mut profile = ConnectionProfile::new("hangs", Driver::Postgres);
+    profile.host = "127.0.0.1".into();
+    profile.port = Some(port);
+    profile.user = "u".into();
+    profile.database = "d".into();
+    profile.connect_timeout_secs = 60;
+    steps.lock().unwrap().clear();
+    let (e2, p2, rec) = (engine.clone(), profile.clone(), record(&steps));
+    let attempt = tokio::spawn(async move {
+        e2.open_session_tracked(&p2, Some("pw"), None, ConnectOptions::default(), Some("c1"), Some(rec)).await
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let t0 = Instant::now();
+    assert!(engine.cancel_connect("c1"));
+    let err = attempt.await.unwrap().unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Cancelled, "{err:?}");
+    assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
+    assert_eq!(*steps.lock().unwrap(), vec![ConnectStep::Connect]);
+    held.abort();
+}
+
 /// DuckDB opens one instance per file, read-only or writable: a production file locked to reads is
 /// opened writable underneath (the policy refuses writes), so Allow writes can open it too.
 #[tokio::test(flavor = "multi_thread")]
@@ -1985,7 +2037,17 @@ async fn ssh_tunnel() {
 
     // 2. After the user trusts it, queries run through the tunnel.
     engine.trust_ssh_host(ssh_host, ssh_port, &key_line).unwrap();
-    let info = engine.open_session(&profile, pw, Some(ssh_pass), ConnectOptions::default()).await.expect("tunnel");
+    let steps = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let rec = steps.clone();
+    let on_step: tpm_core::engine::ConnectStepFn = Arc::new(move |s| rec.lock().unwrap().push(s));
+    let info = engine
+        .open_session_tracked(&profile, pw, Some(ssh_pass), ConnectOptions::default(), Some("ssh-1"), Some(on_step))
+        .await
+        .expect("tunnel");
+    {
+        use tpm_core::engine::ConnectStep::*;
+        assert_eq!(*steps.lock().unwrap(), vec![Tunnel, Connect, ServerInfo]);
+    }
     let r = run(&engine, &info.session_id, "SELECT inet_server_addr()::text IS NOT NULL, current_database()").await;
     assert_eq!(text(&r.statements[0].rows.as_ref().unwrap()[0][1]), "tpm_test");
 
