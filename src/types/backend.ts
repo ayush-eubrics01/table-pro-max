@@ -262,6 +262,8 @@ export interface RunOptions {
   restoreMaxRows?: number;
   /** Size limit for one restore point, in MB; over it, none is kept. */
   restoreMaxMb?: number;
+  /** Values for `:name` (or `$1`) placeholders, bound as parameters; null binds NULL. */
+  parameters?: Record<string, string | null>;
 }
 
 export interface StatementResult {

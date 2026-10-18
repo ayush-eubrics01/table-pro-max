@@ -15,6 +15,7 @@ pub mod error;
 pub mod filter;
 pub mod large_values;
 pub mod model;
+pub mod params;
 pub mod redact;
 pub mod redis_kv;
 pub mod restore;

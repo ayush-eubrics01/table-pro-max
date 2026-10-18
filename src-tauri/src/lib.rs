@@ -119,6 +119,7 @@ pub fn run() {
             commands::query::object_definition,
             commands::query::split_sql,
             commands::query::statement_at_cursor,
+            commands::query::script_parameters,
             commands::query::analyze_sql,
             commands::query::run_query,
             commands::query::cancel_query,

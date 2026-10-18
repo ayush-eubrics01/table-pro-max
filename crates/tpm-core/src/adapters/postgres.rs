@@ -568,6 +568,77 @@ impl Session for PgSession {
         Ok(outcomes)
     }
 
+    async fn execute_params(&mut self, sql: &str, params: &[Param], max_rows: usize) -> Result<Vec<StatementOutcome>> {
+        let text_params: Vec<TextParam> = params.iter().map(|p| TextParam(p.as_deref())).collect();
+        let refs: Vec<&(dyn ToSql + Sync)> = text_params.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
+        let sql = sql.trim().trim_end_matches(';').trim_end();
+        let stmt = self.client.prepare(sql).await.map_err(map_error)?;
+        if stmt.columns().is_empty() {
+            let n = self.client.execute(&stmt, &refs).await.map_err(map_error)?;
+            return Ok(vec![StatementOutcome::Affected { rows_affected: n }]);
+        }
+        // The extended protocol returns binary values; let the server cast each column to text so
+        // values look exactly as in a run without parameters. A query is wrapped as a subquery, a
+        // write with RETURNING as a WITH; a statement neither takes (EXPLAIN, SHOW) runs as it is.
+        let columns: Vec<ColumnMeta> =
+            stmt.columns().iter().map(|c| ColumnMeta::new(c.name(), c.type_().name())).collect();
+        let aliases: Vec<String> = (1..=columns.len()).map(|i| format!("c{i}")).collect();
+        // Booleans print as t/f in text output, but cast to text as true/false.
+        let casts = aliases
+            .iter()
+            .zip(stmt.columns())
+            .map(|(a, c)| {
+                if *c.type_() == Type::BOOL {
+                    format!("CASE t.{a} WHEN true THEN 't' WHEN false THEN 'f' END")
+                } else {
+                    format!("t.{a}::text")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let list = aliases.join(", ");
+        let mut target = None;
+        // Only a query may be cancelled at the row cap: cancelling a write would roll it back.
+        let mut is_query = false;
+        for (query, wrapped) in [
+            (true, format!("SELECT {casts} FROM (\n{sql}\n) AS t({list})")),
+            (false, format!("WITH t({list}) AS (\n{sql}\n) SELECT {casts} FROM t")),
+        ] {
+            if let Ok(w) = self.client.prepare(&wrapped).await {
+                target = Some(w);
+                is_query = query;
+                break;
+            }
+        }
+        let target = target.unwrap_or(stmt);
+        let stream = self.client.query_raw(&target, refs).await.map_err(map_error)?;
+        pin_mut!(stream);
+        let mut rs = RowSet { columns, ..Default::default() };
+        let mut cancelled_for_cap = false;
+        while let Some(row) = stream.next().await {
+            let row = match row {
+                Ok(row) => row,
+                Err(e) if cancelled_for_cap && e.code() == Some(&SqlState::QUERY_CANCELED) => break,
+                Err(e) => return Err(map_error(e)),
+            };
+            if rs.rows.len() < max_rows {
+                rs.rows.push(
+                    (0..row.len())
+                        .map(|i| row.try_get::<_, PgCell>(i).map(|c| c.0).map_err(map_error))
+                        .collect::<Result<_>>()?,
+                );
+            } else if !rs.truncated {
+                rs.truncated = true;
+                if is_query {
+                    // Stop the server from producing rows we will not keep.
+                    cancelled_for_cap = true;
+                    let _ = self.canceller.cancel().await;
+                }
+            }
+        }
+        Ok(vec![StatementOutcome::Rows { rows: rs }])
+    }
+
     async fn query(&mut self, sql: &str, params: &[Param], max_rows: usize) -> Result<RowSet> {
         let text_params: Vec<TextParam> = params.iter().map(|p| TextParam(p.as_deref())).collect();
         let refs: Vec<&(dyn ToSql + Sync)> = text_params.iter().map(|p| p as &(dyn ToSql + Sync)).collect();

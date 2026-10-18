@@ -175,6 +175,10 @@ pub struct RunOptions {
     /// `Some(false)` runs without restore points (SQL files).
     #[serde(default)]
     pub keep_restore_points: Option<bool>,
+    /// Values for the statements' `:name` (or `$1`) placeholders, bound as parameters; `None`
+    /// binds NULL.
+    #[serde(default)]
+    pub parameters: Option<HashMap<String, Option<String>>>,
 }
 
 /// A statement's restore point, resolved against its table before the script runs.
@@ -713,6 +717,9 @@ impl Engine {
         if let PolicyDecision::Block { reason } = &analysis.decision {
             return Err(AppError::new(ErrorKind::PolicyViolation, reason));
         }
+        // Placeholders rewritten for the driver with their values, checked before anything runs.
+        let bound = bind_script(&analysis, handle.info.dialect, opts.parameters.as_ref())?;
+        let with_params: Vec<bool> = bound.iter().map(Option::is_some).collect();
         // The task exists from here on, so Cancel also stops planning.
         let task_id = opts.task_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -726,7 +733,7 @@ impl Engine {
         let captures = if opts.keep_restore_points == Some(false) {
             vec![CaptureState::Off; analysis.statements.len()]
         } else {
-            self.plan_restore_points(&handle, &analysis, limits, &cancelled).await
+            self.plan_restore_points(&handle, &analysis, limits, &cancelled, &with_params).await
         };
         if cancelled.load(Ordering::SeqCst) {
             lock(&self.tasks).remove(&task_id);
@@ -769,7 +776,7 @@ impl Engine {
                 // every read; inside the user's transaction it runs under a savepoint (see add_origins).
                 let want_origins = stmt.class == crate::safety::StatementClass::Read;
                 let state = if context_changed {
-                    self.plan_one(&handle, stmt, limits, &mut structures).await
+                    self.plan_one(&handle, stmt, limits, &mut structures, with_params[index]).await
                 } else {
                     captures[index].clone()
                 };
@@ -790,19 +797,21 @@ impl Engine {
                     }
                     CaptureState::Off => (None, None),
                 };
-                let mut res = match self.execute_one(&handle, &stmt.sql, max_rows, timeout_secs, &cancelled, job).await
-                {
-                    Ok((outcomes, captured)) => {
-                        if let Some(c) = captured {
-                            note = self.keep_restore_point(&handle, &stmt.sql, c);
+                let params = bound[index].clone();
+                let run_sql = params.as_ref().map_or(stmt.sql.as_str(), |(sql, _)| sql.as_str()).to_string();
+                let mut res =
+                    match self.execute_one(&handle, &stmt.sql, max_rows, timeout_secs, &cancelled, job, params).await {
+                        Ok((outcomes, captured)) => {
+                            if let Some(c) = captured {
+                                note = self.keep_restore_point(&handle, &stmt.sql, c);
+                            }
+                            Ok(outcomes)
                         }
-                        Ok(outcomes)
-                    }
-                    Err(e) => Err(e),
-                };
+                        Err(e) => Err(e),
+                    };
                 let mut origins_reported = true;
                 if want_origins && let Ok(outcomes) = &mut res {
-                    origins_reported = self.add_origins(&handle, &stmt.sql, outcomes).await;
+                    origins_reported = self.add_origins(&handle, &run_sql, outcomes).await;
                 }
                 self.track_transaction(&handle, stmt, res.is_ok());
                 if stmt.class == crate::safety::StatementClass::Session
@@ -825,6 +834,11 @@ impl Engine {
                         opts.large_value_chars.map(|n| n as usize),
                     ),
                     Err(mut e) => {
+                        // The server's position is in the rewritten SQL of a bound statement: mark
+                        // the whole statement instead of a wrong spot.
+                        if bound[index].is_some() {
+                            e.position = None;
+                        }
                         // Map the server's character position to a byte offset in the editor.
                         if let Some(p) = e.position {
                             let byte =
@@ -1074,6 +1088,7 @@ impl Engine {
         analysis: &ScriptAnalysis,
         limits: RestoreLimits,
         cancelled: &AtomicBool,
+        with_params: &[bool],
     ) -> Vec<CaptureState> {
         let mut out = vec![CaptureState::Off; analysis.statements.len()];
         if !self.restore_enabled(handle) {
@@ -1084,7 +1099,7 @@ impl Engine {
             if cancelled.load(Ordering::SeqCst) {
                 break;
             }
-            out[i] = self.plan_one(handle, stmt, limits, &mut structures).await;
+            out[i] = self.plan_one(handle, stmt, limits, &mut structures, with_params[i]).await;
         }
         out
     }
@@ -1095,6 +1110,7 @@ impl Engine {
         stmt: &crate::safety::StatementAnalysis,
         limits: RestoreLimits,
         structures: &mut HashMap<(String, String), TableStructure>,
+        with_params: bool,
     ) -> CaptureState {
         use crate::restore_plan::{PlanOutcome, plan_statement};
         if stmt.class < crate::safety::StatementClass::Write {
@@ -1103,6 +1119,11 @@ impl Engine {
         match plan_statement(&stmt.sql, handle.info.dialect) {
             PlanOutcome::None => CaptureState::Off,
             PlanOutcome::Unsupported(reason) => CaptureState::Skipped { reason, ask: true },
+            // Reading the rows would need the WHERE run with the parameters too; not done yet, and
+            // never run with the placeholders unbound (that would fail, and abort a transaction).
+            PlanOutcome::Capture(_) if with_params => {
+                CaptureState::Skipped { reason: "uses parameters".into(), ask: true }
+            }
             PlanOutcome::Capture(plan) => match self.resolve_capture(handle, plan, limits, structures).await {
                 Ok(Some(rc)) => CaptureState::Planned(Box::new(rc)),
                 Ok(None) => CaptureState::Off,
@@ -1208,6 +1229,7 @@ impl Engine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn execute_one(
         &self,
         handle: &Arc<SessionHandle>,
@@ -1216,14 +1238,17 @@ impl Engine {
         timeout_secs: u64,
         cancelled: &Arc<AtomicBool>,
         capture: Option<CaptureJob>,
+        params: Bound,
     ) -> Result<(Vec<StatementOutcome>, Option<Captured>)> {
         let canceller = lock(&handle.canceller).clone();
         let sql_owned = sql.to_string();
         let fut = self.with_session(&handle.info.session_id, move |s| {
             Box::pin(async move {
-                match capture {
-                    Some(job) => run_captured(s, &sql_owned, max_rows, job).await.map(|(o, c)| (o, Some(c))),
-                    None => s.execute(&sql_owned, max_rows).await.map(|o| (o, None)),
+                match (capture, params) {
+                    // Bound values: the adapter runs the statement as `execute` would, with binds.
+                    (_, Some((sql, values))) => s.execute_params(&sql, &values, max_rows).await.map(|o| (o, None)),
+                    (Some(job), None) => run_captured(s, &sql_owned, max_rows, job).await.map(|(o, c)| (o, Some(c))),
+                    (None, None) => s.execute(&sql_owned, max_rows).await.map(|o| (o, None)),
                 }
             })
         });
@@ -2356,6 +2381,7 @@ impl Engine {
                 timeout_secs,
                 &cancelled,
                 None,
+                None,
             )
             .await?
             .0;
@@ -2603,6 +2629,39 @@ fn driver_profile(policy: &ConnectionProfile, writes_locked: bool) -> std::borro
     } else {
         std::borrow::Cow::Borrowed(policy)
     }
+}
+
+/// A statement rewritten for the driver's placeholders, with the values to bind.
+type Bound = Option<(String, Vec<Param>)>;
+
+/// Each statement's SQL with its placeholders rewritten for the driver and the values to bind, or
+/// `None` when it has no placeholders or no values were sent. A placeholder without a value stops
+/// the run before it starts.
+fn bind_script(
+    analysis: &ScriptAnalysis,
+    dialect: Dialect,
+    values: Option<&HashMap<String, Option<String>>>,
+) -> Result<Vec<Bound>> {
+    // No values sent: run the SQL as written ("Run as written" in the parameters dialog).
+    let Some(values) = values else { return Ok(vec![None; analysis.statements.len()]) };
+    let mut out = Vec::with_capacity(analysis.statements.len());
+    for stmt in &analysis.statements {
+        let (sql, order) = crate::params::bind_parameters(&stmt.sql, dialect)?;
+        if order.is_empty() {
+            out.push(None);
+            continue;
+        }
+        let mut params = Vec::with_capacity(order.len());
+        for name in &order {
+            let shown = if name.starts_with('$') { name.clone() } else { format!(":{name}") };
+            let value = values
+                .get(name)
+                .ok_or_else(|| AppError::invalid_config(format!("No value for the parameter {shown}")))?;
+            params.push(value.clone());
+        }
+        out.push(Some((sql, params)));
+    }
+    Ok(out)
 }
 
 /// Whether these statements destroy data on a production connection, so a click is not enough.

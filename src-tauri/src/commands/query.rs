@@ -73,6 +73,12 @@ pub fn statement_at_cursor(sql: String, dialect: Dialect, cursor: usize) -> Opti
     statement_at(&sql, dialect, cursor)
 }
 
+/// The `:name` (or `$1`) parameters a script asks for, each once, in order.
+#[tauri::command]
+pub fn script_parameters(sql: String, dialect: Dialect) -> Result<Vec<String>> {
+    tpm_core::params::script_parameter_names(&sql, dialect)
+}
+
 #[tauri::command]
 pub fn analyze_sql(state: State<'_, AppState>, session_id: String, sql: String) -> Result<ScriptAnalysis> {
     state.engine.analyze(&session_id, &sql)
