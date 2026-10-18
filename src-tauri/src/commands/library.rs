@@ -4,7 +4,7 @@
 use tauri::State;
 use tpm_core::error::Result;
 use tpm_core::restore::{RestorePoint, RestorePointSummary, RestoreStore};
-use tpm_core::storage::{ColumnFetch, Dashboard, FetchMode, FilterPreset, HistoryEntry, SavedQuery};
+use tpm_core::storage::{ColumnFetch, Dashboard, FetchMode, FilterPreset, HistoryEntry, Pin, SavedQuery};
 
 use crate::state::AppState;
 
@@ -109,6 +109,22 @@ pub fn set_workspace(state: State<'_, AppState>, key: String, value: serde_json:
 #[tauri::command]
 pub fn prune_history(state: State<'_, AppState>, days: u32, max_entries: u32) -> Result<usize> {
     state.storage.prune_history(days, max_entries)
+}
+
+/// Objects pinned to the top of the sidebar for a connection, in pin order.
+#[tauri::command]
+pub fn list_pins(state: State<'_, AppState>, connection_id: String) -> Result<Vec<Pin>> {
+    state.storage.list_pins(&connection_id)
+}
+
+#[tauri::command]
+pub fn pin_object(state: State<'_, AppState>, connection_id: String, pin: Pin) -> Result<()> {
+    state.storage.pin(&connection_id, &pin)
+}
+
+#[tauri::command]
+pub fn unpin_object(state: State<'_, AppState>, connection_id: String, pin: Pin) -> Result<()> {
+    state.storage.unpin(&connection_id, &pin)
 }
 
 #[tauri::command]

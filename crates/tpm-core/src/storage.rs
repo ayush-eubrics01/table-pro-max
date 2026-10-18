@@ -97,6 +97,17 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX restore_points_conn ON restore_points (connection_id, created_at);
     "#,
+    // v4: objects pinned to the top of the sidebar, per connection (names only)
+    r#"
+    CREATE TABLE pinned_objects (
+        connection_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('table', 'view', 'materialized_view', 'saved_query')),
+        schema_name TEXT NOT NULL,
+        name TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        PRIMARY KEY (connection_id, kind, schema_name, name)
+    );
+    "#,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,6 +122,35 @@ pub enum FetchMode {
 pub struct ColumnFetch {
     pub column: String,
     pub mode: FetchMode,
+}
+
+/// What can be pinned to the top of the sidebar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PinKind {
+    Table,
+    View,
+    MaterializedView,
+    SavedQuery,
+}
+
+/// A pinned object of one connection: a table or view by schema and name, or a saved query by id
+/// (empty schema).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pin {
+    pub kind: PinKind,
+    pub schema: String,
+    pub name: String,
+}
+
+fn pin_kind(kind: PinKind) -> &'static str {
+    match kind {
+        PinKind::Table => "table",
+        PinKind::View => "view",
+        PinKind::MaterializedView => "materialized_view",
+        PinKind::SavedQuery => "saved_query",
+    }
 }
 
 pub struct Storage {
@@ -285,6 +325,7 @@ impl Storage {
         tx.execute("DELETE FROM connections WHERE id = ?1", [id])?;
         tx.execute("DELETE FROM column_fetch WHERE connection_id = ?1", [id])?;
         tx.execute("DELETE FROM restore_points WHERE connection_id = ?1", [id])?;
+        tx.execute("DELETE FROM pinned_objects WHERE connection_id = ?1", [id])?;
         tx.commit()?;
         Ok(())
     }
@@ -407,7 +448,50 @@ impl Storage {
     }
 
     pub fn delete_saved_query(&self, id: &str) -> Result<()> {
-        self.lock()?.execute("DELETE FROM saved_queries WHERE id = ?1", [id])?;
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM saved_queries WHERE id = ?1", [id])?;
+        tx.execute("DELETE FROM pinned_objects WHERE kind = 'saved_query' AND name = ?1", [id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    // ---- pinned objects (names only) --------------------------------------------------
+
+    /// A connection's pins, in the order they were pinned.
+    pub fn list_pins(&self, connection_id: &str) -> Result<Vec<Pin>> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT kind, schema_name, name FROM pinned_objects WHERE connection_id = ?1 ORDER BY position")?;
+        let rows = stmt.query_map([connection_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (kind, schema, name) = row?;
+            // An unknown kind (written by a newer version) is skipped, not an error.
+            if let Ok(kind) = serde_json::from_value(serde_json::Value::String(kind)) {
+                out.push(Pin { kind, schema, name });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Pins at the end of the list; pinning something already pinned changes nothing.
+    pub fn pin(&self, connection_id: &str, pin: &Pin) -> Result<()> {
+        self.lock()?.execute(
+            "INSERT OR IGNORE INTO pinned_objects (connection_id, kind, schema_name, name, position)
+             VALUES (?1, ?2, ?3, ?4, (SELECT coalesce(max(position), 0) + 1 FROM pinned_objects WHERE connection_id = ?1))",
+            params![connection_id, pin_kind(pin.kind), pin.schema, pin.name],
+        )?;
+        Ok(())
+    }
+
+    pub fn unpin(&self, connection_id: &str, pin: &Pin) -> Result<()> {
+        self.lock()?.execute(
+            "DELETE FROM pinned_objects WHERE connection_id = ?1 AND kind = ?2 AND schema_name = ?3 AND name = ?4",
+            params![connection_id, pin_kind(pin.kind), pin.schema, pin.name],
+        )?;
         Ok(())
     }
 
@@ -782,6 +866,28 @@ impl RestoreStore for Storage {
 mod tests {
     use super::*;
     use crate::config::{Driver, parse_connection_url};
+
+    #[test]
+    fn pins_keep_their_order_per_connection_and_go_with_what_they_point_at() {
+        let s = Storage::open_in_memory().unwrap();
+        let pin = |kind, schema: &str, name: &str| Pin { kind, schema: schema.into(), name: name.into() };
+        let orders = pin(PinKind::Table, "public", "orders");
+        let view = pin(PinKind::View, "sales", "by_month");
+        let query = pin(PinKind::SavedQuery, "", "q1");
+        for p in [&orders, &view, &query, &orders] {
+            s.pin("c1", p).unwrap();
+        }
+        s.pin("c2", &orders).unwrap();
+        assert_eq!(s.list_pins("c1").unwrap(), vec![orders.clone(), view.clone(), query.clone()]);
+        s.unpin("c1", &view).unwrap();
+        s.pin("c1", &view).unwrap();
+        assert_eq!(s.list_pins("c1").unwrap(), vec![orders.clone(), query.clone(), view.clone()]);
+        s.delete_saved_query("q1").unwrap();
+        assert_eq!(s.list_pins("c1").unwrap(), vec![orders.clone(), view.clone()]);
+        s.delete_connection("c1").unwrap();
+        assert!(s.list_pins("c1").unwrap().is_empty());
+        assert_eq!(s.list_pins("c2").unwrap(), vec![orders]);
+    }
 
     #[test]
     fn restore_points_are_saved_listed_purged_and_removed_with_the_connection() {
