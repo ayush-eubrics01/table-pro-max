@@ -156,9 +156,28 @@ pub fn bind_parameters(sql: &str, dialect: Dialect) -> Result<(String, Vec<Strin
     Ok((out, order))
 }
 
+/// The parameters a whole script asks for: each statement's names, each once, in order.
+pub fn script_parameter_names(sql: &str, dialect: Dialect) -> Result<Vec<String>> {
+    let mut names: Vec<String> = Vec::new();
+    for stmt in crate::split::split_statements(sql, dialect) {
+        for name in parameter_names(&stmt.sql, dialect)? {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    Ok(names)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_script_asks_for_each_name_once() {
+        let sql = "UPDATE t SET a = :a WHERE id = :id;\nSELECT * FROM t WHERE id = :id AND b = ':no'";
+        assert_eq!(script_parameter_names(sql, Dialect::Mysql).unwrap(), ["a", "id"]);
+    }
 
     #[test]
     fn named_placeholders_are_rewritten_for_each_driver() {

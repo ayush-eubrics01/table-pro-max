@@ -12,6 +12,7 @@ import { confirmAction, notify, notifyError, promptText } from "../../stores/ui"
 import { useSettings } from "../../stores/settings";
 import { useWorkspaces, type QueryTab as QueryTabModel, type Workspace } from "../../stores/workspaces";
 import { EnvBadge } from "../../components/EnvBadge";
+import { ParametersDialog, type ParameterValues } from "./ParametersDialog";
 import { ConfirmRunBody, needsName, withNameConfirm } from "../connections/nameConfirm";
 import { SqlEditor, type RunMode, type SqlEditorHandle } from "./SqlEditor";
 import { ResultsPanel } from "./ResultsPanel";
@@ -108,6 +109,9 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
   const [resultsDirty, setResultsDirty] = useState(false);
   // What produced the current results, so "Run again" repeats exactly that (a selection stays a selection).
   const lastRun = useRef<{ mode: RunMode; target: { sql: string; base: number } } | null>(null);
+  // Parameter values typed in this tab, offered again on the next run.
+  const paramValues = useRef<ParameterValues>({});
+  const [paramAsk, setParamAsk] = useState<{ names: string[]; resolve: (v: ParameterValues | null) => void } | null>(null);
   const reportDirty = useCallback(
     (d: boolean) => {
       setResultsDirty(d);
@@ -209,7 +213,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
     return () => clearTimeout(t);
   }, [tab.sql, ws.id, ws.schema, ws.columns, ws.objects, loadColumns]);
 
-  const run = async (mode: RunMode, confirmed = false, explicit?: { sql: string; base: number }, typed?: string) => {
+  const run = async (mode: RunMode, confirmed = false, explicit?: { sql: string; base: number }, typed?: string, given?: ParameterValues) => {
     if (running) return;
     const text = editor.current?.getText() ?? tab.sql;
     let target = explicit;
@@ -224,6 +228,24 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
       }
     }
     if (!target.sql.trim()) return;
+    // :name placeholders: ask for their values (bound, never written into the SQL).
+    let parameters = given;
+    if (!parameters) {
+      let names: string[] | null;
+      try {
+        names = (await api.scriptParameters(target.sql, ws.session.dialect)) ?? [];
+      } catch (e) {
+        notifyError(e, "Could not read the parameters");
+        return;
+      }
+      if (names.length) {
+        const asked = names;
+        const values = await new Promise<ParameterValues | null>((resolve) => setParamAsk({ names: asked, resolve }));
+        if (!values) return;
+        paramValues.current = { ...paramValues.current, ...values };
+        parameters = values;
+      }
+    }
     if (resultsDirty && !confirmed) {
       const ok = await confirmAction({
         title: "Discard pending result edits?",
@@ -255,6 +277,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
         largeValueChars: settings["grid.largeValueChars"],
         restoreMaxRows: settings["restore.maxRows"],
         restoreMaxMb: settings["restore.maxMb"],
+        parameters,
       });
       if (resultIds.current.length) void api.releaseResults(resultIds.current);
       resultIds.current = r.statements.flatMap((x) => (x.resultId ? [x.resultId] : []));
@@ -276,7 +299,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
           ...(byName ? { typeToConfirm: s.connectionName } : {}),
           body: <ConfirmRunBody session={s} detail={err.detail} />,
         });
-        if (ok) return run(mode, true, target, byName ? s.connectionName : undefined);
+        if (ok) return run(mode, true, target, byName ? s.connectionName : undefined, parameters);
         return;
       }
       // Writes are off only until allowed: say where to turn them on.
@@ -592,6 +615,20 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
           />
         )}
       </div>
+      {paramAsk && (
+        <ParametersDialog
+          names={paramAsk.names}
+          initial={paramValues.current}
+          onRun={(values) => {
+            paramAsk.resolve(values);
+            setParamAsk(null);
+          }}
+          onClose={() => {
+            paramAsk.resolve(null);
+            setParamAsk(null);
+          }}
+        />
+      )}
     </div>
   );
 }

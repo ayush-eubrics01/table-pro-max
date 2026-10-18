@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { WorkspaceView } from "./WorkspaceView";
 import { Overlays } from "../components/Overlays";
@@ -357,5 +357,36 @@ describe("production safety: SQL files", () => {
     await waitFor(() => expect(runs).toHaveLength(2));
     expect(runs[1]).toMatchObject({ confirmed: true, typedConfirmation: "Local PG" });
     expect(await screen.findByText(/dump.sql: 3 statements/)).toBeInTheDocument();
+  });
+});
+
+describe("query parameters", () => {
+  it("asks for :name values before running, binds them (NULL too), and remembers them for the tab", async () => {
+    const runs: Record<string, unknown>[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "connect") return session;
+      if (cmd === "statement_at_cursor") return { sql: "select * from users where id = :id and name = :name", start: 0, end: 52 };
+      if (cmd === "script_parameters") return ["id", "name"];
+      if (cmd === "run_query") {
+        runs.push((args as { options: Record<string, unknown> }).options);
+        return { taskId: "t", cancelled: false, durationMs: 1, statements: [{ index: 0, sql: "select 1", start: 0, end: 8, durationMs: 1, truncated: false, rowsAffected: 0 }] };
+      }
+      return cmd.startsWith("list_") || cmd.startsWith("search_") ? [] : null;
+    });
+    renderWs(ws({ kind: "query", id: "q70", title: "Query 70", sql: "select * from users where id = :id and name = :name", savedQueryId: null, dirty: false }));
+    fireEvent.click(screen.getByRole("button", { name: /Run all/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Query parameters" });
+    fireEvent.change(within(dialog).getByLabelText(":id"), { target: { value: "7" } });
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: "NULL for :name" }));
+    expect(within(dialog).getByLabelText(":name")).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Run" }));
+    await waitFor(() => expect(runs).toHaveLength(1));
+    expect(runs[0]!.parameters).toEqual({ id: "7", name: null });
+    fireEvent.click(screen.getByRole("button", { name: /Run all/ }));
+    const again = await screen.findByRole("dialog", { name: "Query parameters" });
+    expect(within(again).getByLabelText(":id")).toHaveValue("7");
+    fireEvent.click(within(again).getByRole("button", { name: "Cancel" }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(runs).toHaveLength(1);
   });
 });

@@ -155,6 +155,8 @@ export const api = {
 
   // SQL
   splitSql: (sql: string, dialect: Dialect) => call<StatementSpan[]>("split_sql", { sql, dialect }),
+  /** The `:name` (or `$1`) parameters a script asks for, each once, in order. */
+  scriptParameters: (sql: string, dialect: Dialect) => call<string[]>("script_parameters", { sql, dialect }),
   statementAtCursor: (sql: string, dialect: Dialect, cursor: number) =>
     call<StatementSpan | null>("statement_at_cursor", { sql, dialect, cursor }),
   analyzeSql: (sessionId: string, sql: string) => call<ScriptAnalysis>("analyze_sql", { sessionId, sql }),
