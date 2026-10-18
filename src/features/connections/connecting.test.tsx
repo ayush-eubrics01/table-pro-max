@@ -3,6 +3,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { cancelConnecting, openTracked, reach, useConnecting } from "./connecting";
 import { useWorkspaces } from "../../stores/workspaces";
 import { profile, session } from "../../test/fixtures";
+import { useUi } from "../../stores/ui";
 
 beforeEach(() => {
   useConnecting.setState({ id: null, reached: [], startedAt: 0, cancelled: false });
@@ -80,6 +81,22 @@ describe("openTracked", () => {
     expect(await attempt).toBeNull();
     expect(calls.some((c) => c.cmd === "disconnect" && c.args.sessionId === session.sessionId)).toBe(true);
     expect(useWorkspaces.getState().workspaces).toHaveLength(0);
+  });
+
+  it("never asks for a password once cancelled, even if the late answer wants one", async () => {
+    useUi.setState({ promptRequest: null });
+    let reject = (_: unknown) => undefined as void;
+    mockIPC((cmd) => {
+      if (cmd === "connect") return new Promise((_, r) => (reject = r));
+      if (cmd === "cancel_connect") return false; // the attempt had not started in the backend yet
+      return null;
+    });
+    const attempt = openTracked(profile);
+    await new Promise((r) => setTimeout(r, 0));
+    await cancelConnecting();
+    reject({ kind: "auth", message: "Password required", code: "password_required" });
+    expect(await attempt).toBeNull();
+    expect(useUi.getState().promptRequest).toBeNull();
   });
 
   it("passes other errors on", async () => {

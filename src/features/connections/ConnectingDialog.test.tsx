@@ -55,6 +55,15 @@ describe("ConnectingDialog", () => {
     expect(screen.getAllByRole("listitem").map((li) => li.getAttribute("data-state"))).toEqual(["active", "waiting", "waiting"]);
   });
 
+  it("promises a time limit only for servers, not local files", () => {
+    useConnecting.setState({ id: "c1", reached: ["connect"], startedAt: Date.now(), cancelled: false });
+    const { unmount } = render(<ConnectingDialog profile={profile} onHide={() => undefined} />);
+    expect(screen.getByLabelText("Time spent connecting")).toHaveTextContent(/stops after 10 s/);
+    unmount();
+    render(<ConnectingDialog profile={{ ...profile, driver: "sqlite", filePath: "/tmp/a.db" }} onHide={() => undefined} />);
+    expect(screen.getByLabelText("Time spent connecting")).not.toHaveTextContent(/stops after/);
+  });
+
   it("Cancel and Escape stop the attempt in the backend", () => {
     const cancels: unknown[] = [];
     mockIPC((cmd, args) => {

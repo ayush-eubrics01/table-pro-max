@@ -408,7 +408,7 @@ describe("large values in opened tables", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "Copy rows as INSERT" }));
     await waitFor(() => expect(write).toHaveBeenLastCalledWith("copied as sql"));
     const sql = calls.filter((c) => c.cmd === "rows_as_text").at(-1)!.args as unknown as { request: { options: Record<string, unknown> } };
-    expect(sql.request.options).toMatchObject({ format: "sql", sqlTable: "public.docs", dialect: "postgres", sqlBatch: 1, header: false });
+    expect(sql.request.options).toMatchObject({ format: "sql", sqlSchema: "public", sqlTable: "docs", dialect: "postgres", sqlBatch: 1, header: false });
   });
 
   it("Export selected rows loads Not loaded values before the dialog opens", async () => {

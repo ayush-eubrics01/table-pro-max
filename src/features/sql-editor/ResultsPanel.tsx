@@ -5,7 +5,7 @@ import type { Cell, ColumnInfo, Dialect, ScriptResult, SessionInfo, StatementRes
 import { api } from "../../lib/ipc";
 import { formatCount, formatDuration, pluralize } from "../../lib/text";
 import { DataGrid, type CellPos, type GridSelection } from "../data-grid/DataGrid";
-import { copyRowsAs } from "../import-export/copyRows";
+import { canCopyRows, copyRowsAs } from "../import-export/copyRows";
 import { firstLink, linkFilter, resultLinks, type FkLink } from "../data-browser/fkLinks";
 import type { GroupNode } from "../filters/filterModel";
 import { ValueEditor } from "../value-editor/ValueEditor";
@@ -124,38 +124,46 @@ function ResultGrid({
       if (!st.resultId) break;
       (await api.fetchRows(st.resultId, p, PAGE)).forEach((row, k) => have.set(p + k, row));
     }
-    return Promise.all(
-      indexes.map(async (r) => {
-        const row = have.get(r);
-        if (!row) throw new Error("A selected row could not be read; run the query again");
-        const full = await Promise.all(row.map((c, col) => (c !== null && isPartial(c) && st.resultId ? api.resultValue(st.resultId, r, col) : c)));
-        return full.map((_, c) => displayCell(edits, applied, st, full, c));
-      }),
-    );
+    // Row by row, so long previews are read a row's worth at a time.
+    const out: Cell[][] = [];
+    for (const r of indexes) {
+      const row = have.get(r);
+      if (!row) throw new Error("A selected row could not be read; run the query again");
+      const full = await Promise.all(row.map((c, col) => (c !== null && isPartial(c) && st.resultId ? api.resultValue(st.resultId, r, col) : c)));
+      out.push(full.map((_, c) => displayCell(edits, applied, st, full, c)));
+    }
+    return out;
   };
 
-  /** INSERT target: the one table every column comes from, else a placeholder name. */
-  const sourceTable = () => {
+  const resultColumns = (st.columns ?? []).map((c) => ({ name: c.name, typeName: c.typeName }));
+
+  /**
+   * INSERT target: the one table every column comes from, with its own column names (not the
+   * result's aliases). A column read twice, or several tables, give a placeholder table instead.
+   */
+  const insertTarget = () => {
     const origins = (st.columns ?? []).map((c) => c.origin);
     const first = origins[0];
-    return first && origins.every((o) => o && o.schema === first.schema && o.table === first.table) ? `${first.schema}.${first.table}` : "query_result";
+    const names = origins.map((o) => o?.column ?? "");
+    const one = first && origins.every((o) => o && o.schema === first.schema && o.table === first.table);
+    return one && new Set(names).size === names.length
+      ? { schema: first.schema, table: first.table, columns: resultColumns.map((c, i) => ({ ...c, name: names[i]! })) }
+      : { schema: null, table: "query_result", columns: resultColumns };
   };
 
   const copyItems = (sel: GridSelection) =>
     (["json", "sql"] as const).map((format) => ({
       label: format === "json" ? "Copy rows as JSON" : "Copy rows as INSERT",
       disabled: sel.rows.length === 0,
-      onSelect: () =>
+      onSelect: () => {
+        if (!canCopyRows(sel.rows.length)) return;
+        const target = insertTarget();
         void fullRows(sel.rows)
           .then((full) =>
-            copyRowsAs(
-              format,
-              (st.columns ?? []).map((c) => ({ name: c.name, typeName: c.typeName })),
-              full,
-              { dialect, table: sourceTable() },
-            ),
+            copyRowsAs(format, format === "sql" ? target.columns : resultColumns, full, { dialect, schema: target.schema, table: target.table }),
           )
-          .catch((e) => notifyError(e, "Could not copy")),
+          .catch((e) => notifyError(e, "Could not copy"));
+      },
     }));
 
   const valueReason =

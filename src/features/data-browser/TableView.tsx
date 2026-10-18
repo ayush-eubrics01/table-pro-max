@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { copyRowsAs } from "../import-export/copyRows";
+import { canCopyRows, copyRowsAs } from "../import-export/copyRows";
 import { Icon } from "../../components/Icon";
 import type { BrowseResult, Cell, ColumnFetch, FetchMode, SessionInfo, SortSpec, TableStructure } from "../../types/backend";
 import { api, toError, type BackendError } from "../../lib/ipc";
@@ -516,13 +516,14 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
         label: format === "json" ? "Copy rows as JSON" : "Copy rows as INSERT",
         disabled: sel.rows.length === 0,
         onSelect: () =>
+          canCopyRows(sel.rows.length) &&
           void fullRows(sel.rows)
             .then((full) =>
               copyRowsAs(
                 format,
                 columns.map((c) => ({ name: c.name, typeName: c.dataType })),
                 full,
-                { dialect: session.dialect, table: `${schema}.${table}` },
+                { dialect: session.dialect, schema, table },
               ),
             )
             .catch((e) => notifyError(e, "Could not copy")),

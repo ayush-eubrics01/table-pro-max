@@ -242,6 +242,8 @@ pub async fn connect(app: AppHandle, state: State<'_, AppState>, request: Connec
     if request.read_only {
         profile.safety_mode = tpm_core::config::SafetyMode::ReadOnly;
     }
+    // Cancel counts from here, even while the keychain is being read.
+    let _cancellable = request.connect_id.as_deref().map(|id| state.engine.prepare_connect(id));
     let explicit = request.password.clone();
     let explicit_ssh = request.ssh_secret.clone();
     // The tunnel comes first, so ask for its secret before the database password.

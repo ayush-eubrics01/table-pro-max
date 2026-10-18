@@ -68,6 +68,9 @@ pub struct ExportOptions {
     /// Table name used in INSERT statements for SQL exports.
     #[serde(default)]
     pub sql_table: Option<String>,
+    /// Schema of that table, kept apart so a dot in its name is not taken as a separator.
+    #[serde(default)]
+    pub sql_schema: Option<String>,
     #[serde(default)]
     pub dialect: Option<Dialect>,
     /// Rows per INSERT statement in SQL exports.
@@ -289,10 +292,11 @@ impl<W: Write> SqlSink<W> {
     fn new(out: W, opts: &ExportOptions) -> Result<Self> {
         let dialect = opts.dialect.unwrap_or(Dialect::Postgres);
         let table = opts.sql_table.clone().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| "exported".into());
-        // A dotted name is treated as schema.table.
-        let table = match table.split_once('.') {
-            Some((s, t)) => dialect.qualified(Some(s), t)?,
-            None => dialect.quote_ident(&table)?,
+        let table = match (opts.sql_schema.as_deref().filter(|s| !s.is_empty()), table.split_once('.')) {
+            (Some(schema), _) => dialect.qualified(Some(schema), &table)?,
+            // Without a separate schema, a dotted name is treated as schema.table.
+            (None, Some((s, t))) => dialect.qualified(Some(s), t)?,
+            (None, None) => dialect.quote_ident(&table)?,
         };
         Ok(Self {
             out,
@@ -846,6 +850,7 @@ mod tests {
             header: true,
             null_text: String::new(),
             sql_table: Some("public.items".into()),
+            sql_schema: None,
             dialect: Some(Dialect::Postgres),
             sql_batch: 100,
         };
@@ -895,6 +900,7 @@ mod tests {
             header: false,
             null_text: String::new(),
             sql_table: Some("public.items".into()),
+            sql_schema: None,
             dialect: Some(Dialect::Postgres),
             sql_batch: 1,
         };
@@ -938,6 +944,22 @@ mod tests {
     }
 
     #[test]
+    fn a_separate_schema_keeps_dots_in_its_name() {
+        let opts = ExportOptions {
+            format: ExportFormat::Sql,
+            delimiter: ',',
+            header: false,
+            null_text: String::new(),
+            sql_table: Some("t".into()),
+            sql_schema: Some("a.b".into()),
+            dialect: Some(Dialect::Postgres),
+            sql_batch: 1,
+        };
+        let sql = rows_as_text(&[ColumnMeta::new("x", "text")], &[vec![Cell::Null]], &opts).unwrap();
+        assert_eq!(sql, "INSERT INTO \"a.b\".\"t\" (\"x\") VALUES (NULL);\n");
+    }
+
+    #[test]
     fn json_keeps_the_column_order() {
         let cols =
             vec![ColumnMeta::new("zeta", "text"), ColumnMeta::new("alpha", "text"), ColumnMeta::new("mid", "text")];
@@ -948,6 +970,7 @@ mod tests {
             header: false,
             null_text: String::new(),
             sql_table: None,
+            sql_schema: None,
             dialect: None,
             sql_batch: 1,
         };

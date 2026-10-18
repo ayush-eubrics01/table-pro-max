@@ -421,8 +421,9 @@ impl Engine {
     ) -> Result<SessionInfo> {
         let open = self.open_session_inner(profile, password, ssh_secret, options, on_step.as_ref());
         let Some(id) = connect_id else { return open.await };
-        let cancel = Arc::new(tokio::sync::Notify::new());
-        lock(&self.connects).insert(id.to_string(), cancel.clone());
+        // Forgotten when this returns (or panics); a Cancel sent before now is kept as a permit.
+        let _registration = self.prepare_connect(id);
+        let Some(cancel) = lock(&self.connects).get(id).cloned() else { return open.await };
         // Cancelling drops the attempt: a half-open TCP, TLS or SSH connection is closed, and the
         // session is registered only once it is complete.
         let result = tokio::select! {
@@ -430,8 +431,14 @@ impl Engine {
             r = open => r,
             _ = cancel.notified() => Err(AppError::new(ErrorKind::Cancelled, "Connecting was cancelled")),
         };
-        lock(&self.connects).remove(id);
         result
+    }
+
+    /// Makes `connect_id` cancellable before the attempt starts (while the caller reads the
+    /// keychain): a Cancel meanwhile stops the attempt as soon as it starts. Forgotten on drop.
+    pub fn prepare_connect(&self, connect_id: &str) -> ConnectRegistration<'_> {
+        lock(&self.connects).entry(connect_id.to_string()).or_insert_with(|| Arc::new(tokio::sync::Notify::new()));
+        ConnectRegistration { engine: self, id: connect_id.to_string() }
     }
 
     /// Stops a connection attempt started with this id. False when none is running.
@@ -2544,16 +2551,34 @@ fn is_fatal(e: &AppError) -> bool {
 /// transaction inside our own, so the rows read are exactly the rows changed; before rows, the
 /// statement, after rows (UPDATE), commit. A read that fails leaves the statement to run without
 /// a restore point; the statement's own failure rolls everything back.
+/// Keeps a connect id cancellable until dropped (see `Engine::prepare_connect`).
+pub struct ConnectRegistration<'a> {
+    engine: &'a Engine,
+    id: String,
+}
+
+impl Drop for ConnectRegistration<'_> {
+    fn drop(&mut self) {
+        lock(&self.engine.connects).remove(&self.id);
+    }
+}
+
+/// How long a step of connecting may take: the connection's timeout for servers, none for local
+/// files (opening a large DuckDB file or waiting on a SQLite lock is not a dead server).
+fn connect_time_limit(profile: &ConnectionProfile) -> Option<Duration> {
+    (!profile.driver.is_file_based()).then(|| Duration::from_secs(profile.connect_timeout_secs.max(1)))
+}
+
 /// Bounds a step of connecting by the connection's timeout. The drivers' own timeouts cover only
 /// the TCP connection, so a server that accepts and never answers would otherwise wait forever.
 async fn within_connect_timeout<T>(
     profile: &ConnectionProfile,
     step: impl std::future::Future<Output = Result<T>>,
 ) -> Result<T> {
-    let secs = profile.connect_timeout_secs.max(1);
-    tokio::time::timeout(Duration::from_secs(secs), step)
-        .await
-        .unwrap_or_else(|_| Err(AppError::new(ErrorKind::Timeout, format!("The server did not answer within {secs}s"))))
+    let Some(limit) = connect_time_limit(profile) else { return step.await };
+    tokio::time::timeout(limit, step).await.unwrap_or_else(|_| {
+        Err(AppError::new(ErrorKind::Timeout, format!("The server did not answer within {}s", limit.as_secs())))
+    })
 }
 
 /// The profile the driver opens the session with. DuckDB opens one instance per file, either
@@ -3114,6 +3139,17 @@ mod schema_tests {
         assert_eq!(capture_lock(Driver::Postgres, CaptureKind::Update, &st).unwrap(), None);
         assert_eq!(capture_lock(Driver::Duckdb, CaptureKind::Truncate, &st).unwrap(), None);
         assert_eq!(capture_lock(Driver::Mysql, CaptureKind::DropTable, &st).unwrap(), None);
+    }
+
+    #[test]
+    fn local_files_have_no_connect_timeout() {
+        let mut p = ConnectionProfile::new("f", Driver::Sqlite);
+        assert_eq!(connect_time_limit(&p), None);
+        p.driver = Driver::Duckdb;
+        assert_eq!(connect_time_limit(&p), None);
+        p.driver = Driver::Postgres;
+        p.connect_timeout_secs = 7;
+        assert_eq!(connect_time_limit(&p), Some(Duration::from_secs(7)));
     }
 
     #[test]

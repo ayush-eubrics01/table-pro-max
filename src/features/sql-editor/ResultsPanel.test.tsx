@@ -6,6 +6,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { session } from "../../test/fixtures";
 import { ResultsPanel } from "./ResultsPanel";
 import { useRestore } from "../../stores/restore";
+import { useUi } from "../../stores/ui";
 import type { ChangeSet, ScriptResult, StatementResult } from "../../types/backend";
 
 afterEach(cleanup);
@@ -363,7 +364,7 @@ describe("ResultsPanel: copy rows", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "Copy rows as INSERT" }));
     await waitFor(() => expect(write).toHaveBeenCalledWith("copied"));
     expect(requests[0]!.rows).toEqual([["7", "the full bio"]]);
-    expect(requests[0]!.options).toMatchObject({ format: "sql", sqlTable: "public.users", dialect: "postgres", sqlBatch: 1 });
+    expect(requests[0]!.options).toMatchObject({ format: "sql", sqlSchema: "public", sqlTable: "users", dialect: "postgres", sqlBatch: 1 });
     fireEvent.contextMenu(cell);
     fireEvent.click(await screen.findByRole("menuitem", { name: "Copy rows as JSON" }));
     await waitFor(() => expect(requests).toHaveLength(2));
@@ -398,6 +399,66 @@ describe("ResultsPanel: copy rows", () => {
     expect(fetched).toContain(1000);
     expect(requests[0]!.rows).toHaveLength(1001);
     expect(requests[0]!.rows.at(-1)).toEqual(["1001", "later"]);
+  });
+
+  it("INSERT names the source columns, not the result's aliases, and falls back when a column repeats", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: write }, configurable: true });
+    const requests: { columns: { name: string }[]; options: Record<string, unknown> }[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "rows_as_text") requests.push((args as { request: { columns: { name: string }[]; options: Record<string, unknown> } }).request);
+      return cmd === "rows_as_text" ? "copied" : null;
+    });
+    const aliased = (second: string): ScriptResult => {
+      const r = result(true);
+      const st = r.statements[0]!;
+      r.statements[0] = {
+        ...st,
+        columns: [
+          { name: "user_id", typeName: "int4", origin: origin("id") },
+          { name: "about", typeName: "text", origin: origin(second) },
+        ],
+        rows: [["7", "short"]],
+      };
+      return r;
+    };
+    const { unmount } = render(<ResultsPanel result={aliased("bio")} running={false} dialect="postgres" />);
+    const copy = async () => {
+      const cell = (await screen.findByText("7")).closest(".grid-cell")!;
+      fireEvent.mouseDown(cell);
+      fireEvent.contextMenu(cell);
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Copy rows as INSERT" }));
+    };
+    await copy();
+    await waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]!.columns.map((c) => c.name)).toEqual(["id", "bio"]);
+    expect(requests[0]!.options).toMatchObject({ sqlSchema: "public", sqlTable: "users" });
+    unmount();
+    render(<ResultsPanel result={aliased("id")} running={false} dialect="postgres" />);
+    await copy();
+    await waitFor(() => expect(requests).toHaveLength(2));
+    expect(requests[1]!.columns.map((c) => c.name)).toEqual(["user_id", "about"]);
+    expect(requests[1]!.options).toMatchObject({ sqlSchema: null, sqlTable: "query_result" });
+  });
+
+  it("refuses to copy more rows than it can, before reading any", async () => {
+    useUi.setState({ toasts: [] });
+    const calls: string[] = [];
+    mockIPC((cmd) => {
+      calls.push(cmd);
+      return null;
+    });
+    const big = result(true);
+    big.statements[0] = { ...big.statements[0]!, rows: [["1", "b"]], totalRows: 150_000 };
+    render(<ResultsPanel result={big} running={false} dialect="postgres" />);
+    const grid = await screen.findByRole("grid");
+    const first = (await screen.findAllByText("1")).map((e) => e.closest(".grid-cell")).find(Boolean)!;
+    fireEvent.mouseDown(first);
+    fireEvent.keyDown(grid, { key: "a", ctrlKey: true });
+    fireEvent.contextMenu(first);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Copy rows as JSON" }));
+    await waitFor(() => expect(useUi.getState().toasts.map((t) => t.message).join()).toMatch(/150,000 rows.*export/i));
+    expect(calls.filter((c) => c === "fetch_rows" || c === "rows_as_text")).toEqual([]);
   });
 
   it("names the INSERT target query_result when the rows don't come from one table", async () => {

@@ -1667,6 +1667,7 @@ async fn transfer_roundtrip(engine: &Arc<Engine>, sid: &str, schema: &str, drive
             header: true,
             null_text: String::new(),
             sql_table: Some("tpm_it_copy".into()),
+            sql_schema: None,
             dialect: Some(driver.dialect()),
             sql_batch: 2,
         };
@@ -1754,6 +1755,7 @@ async fn transfer_roundtrip(engine: &Arc<Engine>, sid: &str, schema: &str, drive
             header: true,
             null_text: String::new(),
             sql_table: None,
+            sql_schema: None,
             dialect: None,
             sql_batch: 100,
         },
@@ -1920,6 +1922,17 @@ async fn connect_progress_and_cancel() {
     assert_eq!(*steps.lock().unwrap(), vec![ConnectStep::Connect, ConnectStep::ServerInfo]);
     engine.close_session(&info.session_id).await;
     assert!(!engine.cancel_connect("c0"), "a finished connect is forgotten");
+
+    // Cancel arrives before the attempt starts (the app still reading the keychain): it still counts.
+    let reg = engine.prepare_connect("c2");
+    assert!(engine.cancel_connect("c2"));
+    let err = engine
+        .open_session_tracked(&t.profile, None, None, ConnectOptions::default(), Some("c2"), None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Cancelled);
+    drop(reg);
+    assert!(!engine.cancel_connect("c2"), "forgotten once the command is done");
 
     // A server that accepts and never answers.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

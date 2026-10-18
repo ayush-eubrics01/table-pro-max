@@ -3,11 +3,11 @@ import { listen } from "@tauri-apps/api/event";
 import { api, toError } from "../../lib/ipc";
 import { uid } from "../../lib/text";
 import { useWorkspaces } from "../../stores/workspaces";
-import type { ConnectionProfile } from "../../types/backend";
+import type { ConnectionProfile, ConnectStep } from "../../types/backend";
 import { connectWithPrompt } from "./connectFlow";
 
-/** Steps of opening a connection: the backend reports the first three, the app adds "schemas". */
-export type ConnectPhase = "tunnel" | "connect" | "server_info" | "schemas";
+/** Steps of opening a connection: the backend reports its own, the app adds "schemas". */
+export type ConnectPhase = ConnectStep | "schemas";
 
 interface ConnectingState {
   /** The attempt in progress (its id is sent with the connect request). */
@@ -31,7 +31,7 @@ export function reach(id: string, phase: ConnectPhase) {
 
 /** Follows the backend's "connect-progress" events (once, at startup). */
 export function listenConnectProgress(): Promise<() => void> {
-  return listen<{ connectId: string; step: ConnectPhase }>("connect-progress", (e) => reach(e.payload.connectId, e.payload.step));
+  return listen<{ connectId: string; step: ConnectStep }>("connect-progress", (e) => reach(e.payload.connectId, e.payload.step));
 }
 
 /** Cancel in the connecting dialog: stops the attempt in the backend and drops whatever it opens. */
@@ -56,7 +56,7 @@ export async function openTracked(profile: ConnectionProfile): Promise<string | 
   const id = uid();
   useConnecting.setState({ id, reached: [], startedAt: Date.now(), cancelled: false });
   try {
-    const session = await connectWithPrompt(profile, null, { connectId: id });
+    const session = await connectWithPrompt(profile, null, { connectId: id, cancelled: () => cancelled(id) });
     if (!session) return null;
     if (cancelled(id)) {
       await api.disconnect(session.sessionId).catch(() => undefined);
