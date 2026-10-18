@@ -5,6 +5,7 @@ import type { ConnectionProfile, StoredConnection } from "../../types/backend";
 import { Home } from "./Home";
 import { useConnections } from "../../stores/connections";
 import { profile } from "../../test/fixtures";
+import { DEFAULT_SETTINGS, useSettings } from "../../stores/settings";
 
 const conn = (over: Partial<ConnectionProfile>, lastUsedAt: string | null = null, sortOrder = 0): StoredConnection => ({
   profile: { ...profile, ...over },
@@ -32,6 +33,18 @@ afterEach(() => {
 const headings = () => screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent?.replace(/\d+$/, "").trim());
 
 describe("Home", () => {
+  it("says a production connection opens read-only while that setting is on", () => {
+    useConnections.setState({ connections: [conn({ id: "p2", name: "Orders prod", environment: "production", group: null, safetyMode: "confirm_destructive" })] } as never);
+    useSettings.setState({ settings: { ...DEFAULT_SETTINGS, "safety.productionReadOnly": true } });
+    const { unmount } = render(<Home appInfo={null} connecting={null} onConnect={() => undefined} />);
+    const card = () => screen.getByRole("button", { name: "Connect to Orders prod" }).closest(".conn-card") as HTMLElement;
+    expect(within(card()).getByText(/Opens read-only/)).toBeInTheDocument();
+    unmount();
+    useSettings.setState({ settings: { ...DEFAULT_SETTINGS, "safety.productionReadOnly": false } });
+    render(<Home appInfo={null} connecting={null} onConnect={() => undefined} />);
+    expect(within(card()).queryByText(/Opens read-only/)).not.toBeInTheDocument();
+  });
+
   it("groups connections by environment, production first", () => {
     render(<Home appInfo={null} connecting={null} onConnect={() => undefined} />);
     expect(headings()).toEqual(["Production", "Staging", "Testing", "Development", "Local"]);

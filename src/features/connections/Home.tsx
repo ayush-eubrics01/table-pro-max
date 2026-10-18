@@ -4,6 +4,7 @@ import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialo
 import { api } from "../../lib/ipc";
 import type { AppInfo, ConnectionProfile, Environment, StoredConnection } from "../../types/backend";
 import { useConnections } from "../../stores/connections";
+import { useSettings } from "../../stores/settings";
 import { ENV_ORDER, driverLabel, driverShort, envLabel, envStyle, isFileDriver } from "../../lib/env";
 import { EnvBadge } from "../../components/EnvBadge";
 import { ContextMenu, useContextMenu } from "../../components/Menu";
@@ -33,6 +34,7 @@ function target(p: ConnectionProfile): string {
 
 export function Home({ appInfo, onConnect, connecting }: Props) {
   const connections = useConnections((s) => s.connections);
+  const productionReadOnly = useSettings((s) => s.settings["safety.productionReadOnly"]);
   const { remove, duplicate } = useConnections.getState();
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortKey>("manual");
@@ -177,7 +179,7 @@ export function Home({ appInfo, onConnect, connecting }: Props) {
             </h2>
             <div className="conn-cards">
               {items.map(({ profile: p, lastUsedAt }) => {
-                const facts = [p.group?.trim() || "No group", p.ssh ? "SSH tunnel" : null, p.safetyMode === "read_only" ? "Opens read-only" : null].filter(
+                const facts = [p.group?.trim() || "No group", p.ssh ? "SSH tunnel" : null, p.safetyMode === "read_only" || (productionReadOnly && p.environment === "production") ? "Opens read-only" : null].filter(
                   Boolean,
                 );
                 return (

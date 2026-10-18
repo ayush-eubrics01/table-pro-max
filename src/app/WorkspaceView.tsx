@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../components/Icon";
-import { EnvBadge } from "../components/EnvBadge";
 import { useWorkspaces, type Tab, type Workspace } from "../stores/workspaces";
 import { useRestore } from "../stores/restore";
 import { RestorePanel } from "../features/restore/RestorePanel";
@@ -18,6 +17,7 @@ import { api } from "../lib/ipc";
 import { envColorVar, envLabel, envStyle, safetyLabel } from "../lib/env";
 import { confirmAction, notifyError } from "../stores/ui";
 import { connectWithPrompt, reconnectWithPrompt } from "../features/connections/connectFlow";
+import { ConnectionLine } from "../features/connections/nameConfirm";
 
 export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean }) {
   const { closeTab, openQuery, openTable, update } = useWorkspaces.getState();
@@ -195,11 +195,7 @@ export async function changeWriteAccess(ws: Workspace, allow: boolean) {
       title: `Allow writes on ${s.connectionName}?`,
       body: (
         <>
-          <div className="field-row" style={{ alignItems: "center" }}>
-            <EnvBadge env={s.environment} />
-            <strong>{s.connectionName}</strong>
-            <span className="hint mono">{s.target}</span>
-          </div>
+          <ConnectionLine session={s} />
           <p style={{ margin: 0 }}>
             Statements and edits can change this production database until you go back to read-only or close the connection. Query tabs reconnect on their next run, and a transaction open in
             one is rolled back.

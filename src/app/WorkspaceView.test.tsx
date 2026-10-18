@@ -294,3 +294,18 @@ describe("production safety: write access", () => {
     expect(connects[1]!.allowWrites).toBe(true);
   });
 });
+
+describe("production safety: locked", () => {
+  it("a write refused on a production connection opened read-only points to Allow writes", async () => {
+    const locked = { ...session, readOnly: true, writesLocked: true, safetyMode: "read_only" as const };
+    mockIPC((cmd) => {
+      if (cmd === "connect") return locked;
+      if (cmd === "statement_at_cursor") return { sql: "delete from users", start: 0, end: 17 };
+      if (cmd === "run_query") throw { kind: "policy_violation", message: "This connection is read-only. DELETE without a WHERE clause removes every row: delete from users" };
+      return cmd.startsWith("list_") || cmd.startsWith("search_") ? [] : null;
+    });
+    renderWs({ ...ws({ kind: "query", id: "q50", title: "Query 50", sql: "delete from users", savedQueryId: null, dirty: false }), session: locked });
+    fireEvent.click(screen.getByRole("button", { name: /Run all/ }));
+    expect(await screen.findByText(/This connection is read-only.*Choose Allow writes in the status bar to change data\./)).toBeInTheDocument();
+  });
+});

@@ -185,6 +185,11 @@ pre,
 .field-row > .field {
   flex: 1;
 }
+/* A long file path or host in a confirmation wraps instead of widening the dialog. */
+.confirm-target {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .hint {
   font-size: var(--text-sm);
   color: var(--text-faint);

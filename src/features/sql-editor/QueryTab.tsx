@@ -270,7 +270,8 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
         if (ok) return run(mode, true, target, byName ? s.connectionName : undefined);
         return;
       }
-      setError(err.message);
+      // Writes are off only until allowed: say where to turn them on.
+      setError(err.kind === "policy_violation" && s.writesLocked ? `${err.message} Choose Allow writes in the status bar to change data.` : err.message);
     } finally {
       setRunning(null);
       setHistoryKey((k) => k + 1);

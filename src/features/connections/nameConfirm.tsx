@@ -3,15 +3,22 @@ import { toError } from "../../lib/ipc";
 import { confirmAction } from "../../stores/ui";
 import type { SessionInfo } from "../../types/backend";
 
+/** The connection a confirmation is about: environment, name and target (long paths wrap). */
+export function ConnectionLine({ session }: { session: SessionInfo }) {
+  return (
+    <div className="field-row" style={{ alignItems: "center" }}>
+      <EnvBadge env={session.environment} />
+      <strong>{session.connectionName}</strong>
+      <span className="hint mono confirm-target">{session.target}</span>
+    </div>
+  );
+}
+
 /** Where a confirmed statement will run, and what it may do. */
 export function ConfirmRunBody({ session, detail }: { session: SessionInfo; detail?: string | null }) {
   return (
     <>
-      <div className="field-row" style={{ alignItems: "center" }}>
-        <EnvBadge env={session.environment} />
-        <strong>{session.connectionName}</strong>
-        <span className="hint mono">{session.target}</span>
-      </div>
+      <ConnectionLine session={session} />
       <p style={{ margin: 0 }}>These statements may change or destroy data:</p>
       <pre className="code-block" style={{ maxHeight: 240 }}>
         {detail}
