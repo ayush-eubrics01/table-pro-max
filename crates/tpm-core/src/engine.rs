@@ -317,7 +317,7 @@ pub struct Engine {
     /// Where restore points are kept (the app's local storage); without one, none are made.
     restore_store: Mutex<Option<Arc<dyn crate::restore::RestoreStore>>>,
     /// Connection attempts that can be cancelled, by the caller's id.
-    connects: Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
+    connects: Mutex<HashMap<String, Arc<ConnectCancel>>>,
 }
 
 impl Default for Engine {
@@ -421,23 +421,27 @@ impl Engine {
     ) -> Result<SessionInfo> {
         let open = self.open_session_inner(profile, password, ssh_secret, options, on_step.as_ref());
         let Some(id) = connect_id else { return open.await };
-        // Forgotten when this returns (or panics); a Cancel sent before now is kept as a permit.
+        // Forgotten when this returns (or panics).
         let _registration = self.prepare_connect(id);
         let Some(cancel) = lock(&self.connects).get(id).cloned() else { return open.await };
+        let cancelled = || Err(AppError::new(ErrorKind::Cancelled, "Connecting was cancelled"));
+        // Cancelled before it began (the caller was still reading the keychain): don't connect.
+        if cancel.requested.load(Ordering::SeqCst) {
+            return cancelled();
+        }
         // Cancelling drops the attempt: a half-open TCP, TLS or SSH connection is closed, and the
-        // session is registered only once it is complete.
-        let result = tokio::select! {
+        // session is registered only once it is complete. A connect that finished first wins.
+        tokio::select! {
             biased;
             r = open => r,
-            _ = cancel.notified() => Err(AppError::new(ErrorKind::Cancelled, "Connecting was cancelled")),
-        };
-        result
+            _ = cancel.wake.notified() => cancelled(),
+        }
     }
 
     /// Makes `connect_id` cancellable before the attempt starts (while the caller reads the
     /// keychain): a Cancel meanwhile stops the attempt as soon as it starts. Forgotten on drop.
     pub fn prepare_connect(&self, connect_id: &str) -> ConnectRegistration<'_> {
-        lock(&self.connects).entry(connect_id.to_string()).or_insert_with(|| Arc::new(tokio::sync::Notify::new()));
+        lock(&self.connects).entry(connect_id.to_string()).or_default();
         ConnectRegistration { engine: self, id: connect_id.to_string() }
     }
 
@@ -445,7 +449,8 @@ impl Engine {
     pub fn cancel_connect(&self, connect_id: &str) -> bool {
         match lock(&self.connects).get(connect_id) {
             Some(cancel) => {
-                cancel.notify_one();
+                cancel.requested.store(true, Ordering::SeqCst);
+                cancel.wake.notify_one();
                 true
             }
             None => false,
@@ -2551,6 +2556,14 @@ fn is_fatal(e: &AppError) -> bool {
 /// transaction inside our own, so the rows read are exactly the rows changed; before rows, the
 /// statement, after rows (UPDATE), commit. A read that fails leaves the statement to run without
 /// a restore point; the statement's own failure rolls everything back.
+/// A cancellable connection attempt: the request is remembered (for an attempt not started yet)
+/// and wakes one that is running.
+#[derive(Default)]
+struct ConnectCancel {
+    requested: AtomicBool,
+    wake: tokio::sync::Notify,
+}
+
 /// Keeps a connect id cancellable until dropped (see `Engine::prepare_connect`).
 pub struct ConnectRegistration<'a> {
     engine: &'a Engine,
