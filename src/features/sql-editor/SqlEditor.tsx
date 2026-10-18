@@ -7,7 +7,8 @@ import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap, c
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { syntaxHighlighting, bracketMatching, indentOnInput, HighlightStyle } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
-import type { Dialect } from "../../types/backend";
+import type { Dialect, Snippet } from "../../types/backend";
+import { snippetSource } from "./snippets";
 
 export type RunMode = "current" | "all";
 
@@ -31,6 +32,8 @@ interface Props {
   defaultSchema?: string;
   fontSize: number;
   wordWrap: boolean;
+  /** Offered in the completions by trigger word, next to the SQL ones. */
+  snippets?: Snippet[];
   onChange: (text: string) => void;
   onRun: (mode: RunMode) => void;
   onFormat: () => void;
@@ -53,6 +56,13 @@ const errorField = StateField.define<DecorationSet>({
   },
   provide: (f) => EditorView.decorations.from(f),
 });
+
+/** Snippet completions as language data, so they join the SQL completions instead of replacing them. */
+// The source is made once per list: completion state matches sources by identity.
+const snippetData = (snippets: Snippet[]) => {
+  const source = snippetSource(snippets);
+  return EditorState.languageData.of(() => [{ autocomplete: source }]);
+};
 
 export const EDITOR_HIGHLIGHT = HighlightStyle.define([
   { tag: [t.keyword, t.operatorKeyword, t.modifier, t.controlKeyword], color: "var(--syn-keyword)", fontWeight: "500" },
@@ -96,6 +106,7 @@ export function SqlEditor(props: Props) {
   const view = useRef<EditorView | null>(null);
   const langComp = useRef(new Compartment());
   const wrapComp = useRef(new Compartment());
+  const snipComp = useRef(new Compartment());
   // Keep latest callbacks without rebuilding the editor.
   const cb = useRef(props);
   cb.current = props;
@@ -131,6 +142,7 @@ export function SqlEditor(props: Props) {
           keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...completionKeymap, indentWithTab]),
           langComp.current.of(sql({ dialect: dialectFor(dialect, mariadb), schema, defaultSchema, upperCaseKeywords: true })),
           wrapComp.current.of(wordWrap ? EditorView.lineWrapping : []),
+          snipComp.current.of(snippetData(cb.current.snippets ?? [])),
           errorField,
           theme,
           EditorView.updateListener.of((u) => {
@@ -158,6 +170,11 @@ export function SqlEditor(props: Props) {
   useEffect(() => {
     view.current?.dispatch({ effects: wrapComp.current.reconfigure(wordWrap ? EditorView.lineWrapping : []) });
   }, [wordWrap]);
+
+  const snippets = props.snippets;
+  useEffect(() => {
+    view.current?.dispatch({ effects: snipComp.current.reconfigure(snippetData(snippets ?? [])) });
+  }, [snippets]);
 
   // External value changes (e.g. opening a saved query) replace the document.
   useEffect(() => {

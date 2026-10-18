@@ -13,6 +13,7 @@ import { useSettings } from "../../stores/settings";
 import { useWorkspaces, type QueryTab as QueryTabModel, type Workspace } from "../../stores/workspaces";
 import { EnvBadge } from "../../components/EnvBadge";
 import { ParametersDialog, type ParameterValues } from "./ParametersDialog";
+import { useSnippets } from "../../stores/snippets";
 import { ConfirmRunBody, needsName, withNameConfirm } from "../connections/nameConfirm";
 import { SqlEditor, type RunMode, type SqlEditorHandle } from "./SqlEditor";
 import { ResultsPanel } from "./ResultsPanel";
@@ -95,6 +96,10 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
   const sessionRef = useRef<SessionInfo | null>(null);
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [running, setRunning] = useState<{ taskId: string; done: number } | null>(null);
+  const snippets = useSnippets((s) => s.snippets);
+  useEffect(() => {
+    if (!useSnippets.getState().loaded) void useSnippets.getState().load().catch(() => undefined);
+  }, []);
   const [result, setResult] = useState<ScriptResult | null>(null);
   const [explain, setExplain] = useState<ExplainResult | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -563,6 +568,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
               defaultSchema={ws.schema}
               fontSize={settings["editor.fontSize"]}
               wordWrap={settings["editor.wordWrap"]}
+              snippets={snippets}
               onChange={(sql) => updateTab(ws.id, tab.id, { sql, dirty: true })}
               onRun={(m) => void run(m)}
               onFormat={format}

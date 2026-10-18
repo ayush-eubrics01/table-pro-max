@@ -8,7 +8,7 @@ Milestones follow the engineering plan. Status reflects the code in this reposit
 | 1 | Desktop foundation: Tauri shell, React/TS, logging, errors, metadata storage and migrations, navigation shell, themes, Linux dev run | Done (Linux run verified under Xvfb) |
 | 2 | PostgreSQL vertical slice: profiles, secure credentials, connect, browse schemas/tables, SELECT, paging, errors, integration tests | Done |
 | 3 | Editing and query safety: inline edits, pending changes, preview, commit/discard, safety levels, transaction tests | Done |
-| 4 | SQL editor productivity: completion, formatting, saved queries, history, tabs, cancel, timeouts | Done except snippets (query parameters done) |
+| 4 | SQL editor productivity: completion, formatting, saved queries, history, tabs, cancel, timeouts | Done |
 | 5 | MySQL/MariaDB and SQLite | Done (integration verified; UI verified on MySQL and SQLite) |
 | 6 | Advanced data tools: filters, schema editing, quick open, explain, import/export | Done |
 | 7 | Metrics board: dashboards, charts, SQL widgets with bounded concurrency | Done |
@@ -18,8 +18,7 @@ Milestones follow the engineering plan. Status reflects the code in this reposit
 
 ## Next up (in order)
 1. Launch the Windows and macOS installers on real machines; code signing when certificates exist.
-2. Snippets (query parameters are done).
-3. Optional local MCP server (off by default, read-only by default).
-4. SQL Server adapter (`tiberius`).
-5. TLS test fixture; automated UI end-to-end in CI (tauri-driver on Linux runners).
-6. macOS Intel build; auto-update (signed update manifests only).
+2. Optional local MCP server (off by default, read-only by default).
+3. SQL Server adapter (`tiberius`).
+4. TLS test fixture; automated UI end-to-end in CI (tauri-driver on Linux runners).
+5. macOS Intel build; auto-update (signed update manifests only).
