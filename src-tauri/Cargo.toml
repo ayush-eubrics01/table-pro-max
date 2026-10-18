@@ -16,7 +16,9 @@ tauri-build = { version = "2.7", features = [] }
 tpm-core = { path = "../crates/tpm-core" }
 tauri = { version = "2.12", features = [] }
 tauri-plugin-dialog = "2.8"
-tauri-plugin-updater = { version = "2.13.3", default-features = false, features = ["rustls-tls", "zip"] }
+# No "zip" feature: it only unpacks Windows .zip and Linux .AppImage.tar.gz bundles, and we ship plain
+# installers (macOS .app.tar.gz uses tar/flate2 either way). See DECISIONS D16.
+tauri-plugin-updater = { version = "2.13.3", default-features = false, features = ["rustls-tls"] }
 tauri-plugin-opener = "2.7.1"
 tokio.workspace = true
 tokio-util.workspace = true

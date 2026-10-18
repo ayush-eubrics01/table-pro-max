@@ -108,3 +108,15 @@ signature to its version, and downgrades are refused. Rejected: our own updater 
 get wrong), silent background downloads (conflicts with the privacy promise), package managers
 only (most users install from the release page). Consequences: the network rule now names
 the update check, and the signing key must be backed up and rotated if it leaks (RELEASING.md).
+
+## D16. The zip extraction advisories (RUSTSEC-2026-0367, -0368, -0369)
+`zip` before 9.0 follows symlinks and keeps SUID/SGID bits when it extracts an archive. Three
+dependencies pull in older versions and none has moved to 9 yet. The only copy that could run in
+the app was the updater's, which extracts Windows `.zip` and Linux `.AppImage.tar.gz` bundles; we
+ship plain `.exe`, `.msi` and `.AppImage` files (macOS `.app.tar.gz` goes through `tar` and
+`flate2` without that feature), so the updater's `zip` feature is off and that copy is gone. The
+other two never extract: `libduckdb-sys` (build dependency) extracts only in its non-bundled
+download path, and we build DuckDB bundled; `rust_xlsxwriter` writes `.xlsx` files and reads a zip
+only to look up a theme file by name, which we never ask for. The advisories are ignored in
+`.cargo/audit.toml` with these reasons. Revisit when those crates move to zip 9, and before
+shipping update bundles in a zip.

@@ -9,4 +9,15 @@ ignore = [
     # does not give a network attacker the many timed operations the attack needs; host key
     # checks use public-key operations only. See DECISIONS D14.
     "RUSTSEC-2023-0071",
+    # RUSTSEC-2026-0367, -0368, -0369 (zip: ZipArchive/ZipStreamReader::extract follow symlinks and
+    # keep SUID bits; fixed in zip 9, which no dependency uses yet). See DECISIONS D16. Remaining
+    # copies never extract an archive in the app:
+    # - zip 6 is a build dependency of libduckdb-sys, which only extracts a zip when it downloads a
+    #   prebuilt library; we build DuckDB with `bundled`, so that code is not compiled;
+    # - zip 8 is used by rust_xlsxwriter to write .xlsx files (it reads a zip only for a theme file,
+    #   by name, which we never ask for).
+    # The updater's copy (zip 4, runtime) is removed by turning off its "zip" feature.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
 ]
