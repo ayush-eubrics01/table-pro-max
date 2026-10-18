@@ -398,15 +398,25 @@ impl Session for SqliteSession {
     }
 
     async fn execute(&mut self, sql: &str, max_rows: usize) -> Result<Vec<StatementOutcome>> {
+        self.execute_params(sql, &[], max_rows).await
+    }
+
+    async fn execute_params(&mut self, sql: &str, params: &[Param], max_rows: usize) -> Result<Vec<StatementOutcome>> {
         let sql = sql.to_string();
+        let params = params.to_vec();
         self.with_conn(move |c| {
             let mut stmt = c.prepare(&sql).map_err(map_error)?;
+            // A statement with result columns (a query, or a write with RETURNING) is read row by
+            // row; stepping it runs it once.
             if stmt.column_count() == 0 {
+                for (i, p) in params.iter().enumerate() {
+                    stmt.raw_bind_parameter(i + 1, p).map_err(map_error)?;
+                }
                 let n = stmt.raw_execute().map_err(map_error)?;
                 return Ok(vec![StatementOutcome::Affected { rows_affected: n as u64 }]);
             }
             drop(stmt);
-            let rows = run_query(c, &sql, &[], max_rows)?;
+            let rows = run_query(c, &sql, &params, max_rows)?;
             Ok(vec![StatementOutcome::Rows { rows }])
         })
         .await

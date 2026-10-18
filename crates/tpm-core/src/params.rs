@@ -37,6 +37,22 @@ fn skip_quoted(b: &[u8], start: usize, quote: u8, backslash: bool) -> usize {
 /// Placeholders outside strings, quoted names, comments and dollar-quoted bodies. `::` casts,
 /// `a[lo:hi]` slices and MySQL `:=` are not placeholders.
 fn holes(sql: &str, dialect: Dialect) -> Vec<(usize, usize, Hole)> {
+    // Bodies of prepared statements and routines have their own `$1`s and are not run with values.
+    let head: String = sql.trim_start().chars().take(40).collect::<String>().to_ascii_uppercase();
+    let head = head.split_whitespace().collect::<Vec<_>>().join(" ");
+    if [
+        "PREPARE ",
+        "DO ",
+        "CREATE FUNCTION",
+        "CREATE PROCEDURE",
+        "CREATE OR REPLACE FUNCTION",
+        "CREATE OR REPLACE PROCEDURE",
+    ]
+    .iter()
+    .any(|p| head.starts_with(p))
+    {
+        return Vec::new();
+    }
     let b = sql.as_bytes();
     let n = b.len();
     let mut out = Vec::new();
@@ -54,12 +70,19 @@ fn holes(sql: &str, dialect: Dialect) -> Vec<(usize, usize, Hole)> {
             }
             b'"' => i = skip_quoted(b, i, b'"', dialect == Dialect::Mysql),
             b'`' if dialect != Dialect::Postgres => i = skip_quoted(b, i, b'`', false),
-            b'-' if next == Some(b'-') => i = sql[i..].find('\n').map_or(n, |k| i + k),
+            // MySQL starts a `--` comment only before whitespace (`5--3` is arithmetic).
+            b'-' if next == Some(b'-')
+                && (dialect != Dialect::Mysql || b.get(i + 2).is_none_or(|c| c.is_ascii_whitespace())) =>
+            {
+                i = sql[i..].find('\n').map_or(n, |k| i + k)
+            }
             b'#' if dialect == Dialect::Mysql => i = sql[i..].find('\n').map_or(n, |k| i + k),
-            b'/' if next == Some(b'*') => i = sql[i + 2..].find("*/").map_or(n, |k| i + 2 + k + 2),
+            b'/' if next == Some(b'*') => i = comment_end(b, i, dialect == Dialect::Postgres),
             b'$' if dialect == Dialect::Postgres => {
                 let mut j = i + 1;
-                if next.is_some_and(|c| c.is_ascii_digit()) {
+                // `a$1` is a name, not a placeholder.
+                let after_name = i > 0 && is_ident(b[i - 1]);
+                if next.is_some_and(|c| c.is_ascii_digit()) && !after_name {
                     while j < n && b[j].is_ascii_digit() {
                         j += 1;
                     }
@@ -83,7 +106,16 @@ fn holes(sql: &str, dialect: Dialect) -> Vec<(usize, usize, Hole)> {
             b':' if next == Some(b':') => i += 2,
             b':' => {
                 let prev = if i > 0 { b[i - 1] } else { b' ' };
-                if !is_ident(prev) && prev != b']' && next.is_some_and(|c| c.is_ascii_alphabetic() || c == b'_') {
+                // Not after a name or `]` (`a[lo:hi]`), a quote (`{'a':x}` struct keys) or a `[`
+                // that opens a slice (`arr[:n]`); an ARRAY[ constructor takes values.
+                let before = sql[..i].trim_end();
+                let slice = before.ends_with('[')
+                    && !before[..before.len() - 1].trim_end().to_ascii_uppercase().ends_with("ARRAY");
+                if !is_ident(prev)
+                    && !matches!(prev, b']' | b'\'' | b'"')
+                    && !slice
+                    && next.is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
+                {
                     let mut j = i + 1;
                     while j < n && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
                         j += 1;
@@ -98,6 +130,27 @@ fn holes(sql: &str, dialect: Dialect) -> Vec<(usize, usize, Hole)> {
         }
     }
     out
+}
+
+/// The end of a `/* */` comment starting at `start`; PostgreSQL nests them.
+fn comment_end(b: &[u8], start: usize, nested: bool) -> usize {
+    let mut depth = 0;
+    let mut j = start;
+    while j + 1 < b.len() {
+        if b[j] == b'/' && b[j + 1] == b'*' {
+            depth += 1;
+            j += 2;
+        } else if b[j] == b'*' && b[j + 1] == b'/' {
+            depth -= 1;
+            j += 2;
+            if depth == 0 || !nested {
+                return j;
+            }
+        } else {
+            j += 1;
+        }
+    }
+    b.len()
 }
 
 fn mixed() -> AppError {
@@ -217,6 +270,27 @@ mod tests {
         let my = "SELECT `a:b`, @v := 1, 'it\\'s :x', \"y:z\" # :c\nFROM t";
         assert!(parameter_names(my, Dialect::Mysql).unwrap().is_empty(), "{:?}", parameter_names(my, Dialect::Mysql));
         assert_eq!(parameter_names("SELECT 'a''b' || :name", Dialect::Sqlite).unwrap(), ["name"]);
+    }
+
+    #[test]
+    fn slices_struct_keys_prepared_bodies_and_comments_are_left_alone() {
+        let none =
+            |sql: &str, d| assert!(parameter_names(sql, d).unwrap().is_empty(), "{sql}: {:?}", parameter_names(sql, d));
+        none("SELECT arr[:n], arr[1:n] FROM t", Dialect::Postgres);
+        none("SELECT {'a':col, \"b\":2} FROM t", Dialect::Postgres); // DuckDB struct literal
+        none("SELECT a$1 FROM t", Dialect::Postgres);
+        none("PREPARE p(int) AS SELECT * FROM t WHERE id = $1", Dialect::Postgres);
+        none("create or replace function f(a int) returns int language sql as $$ select :x $$", Dialect::Postgres);
+        none("CREATE FUNCTION f() RETURNS int BEGIN ATOMIC SELECT $1; END", Dialect::Postgres);
+        none("SELECT 1 /* outer /* inner */ :x */", Dialect::Postgres);
+        // MySQL: `--` starts a comment only before whitespace.
+        assert_eq!(parameter_names("SELECT 5--3 + :n", Dialect::Mysql).unwrap(), ["n"]);
+        none("SELECT 1 -- :n", Dialect::Mysql);
+        // A placeholder right after an opening bracket of a call or list still counts.
+        assert_eq!(
+            parameter_names("SELECT f(:a), ARRAY[:b, :c], array [ :d ]", Dialect::Postgres).unwrap(),
+            ["a", "b", "c", "d"]
+        );
     }
 
     #[test]

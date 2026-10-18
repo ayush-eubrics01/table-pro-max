@@ -388,5 +388,10 @@ describe("query parameters", () => {
     fireEvent.click(within(again).getByRole("button", { name: "Cancel" }));
     await new Promise((r) => setTimeout(r, 20));
     expect(runs).toHaveLength(1);
+    // "Run as written" sends no values: the SQL runs exactly as typed.
+    fireEvent.click(screen.getByRole("button", { name: /Run all/ }));
+    fireEvent.click(within(await screen.findByRole("dialog", { name: "Query parameters" })).getByRole("button", { name: "Run as written" }));
+    await waitFor(() => expect(runs).toHaveLength(2));
+    expect(runs[1]!.parameters).toBeUndefined();
   });
 });

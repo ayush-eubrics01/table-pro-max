@@ -799,18 +799,16 @@ impl Engine {
                 };
                 let params = bound[index].clone();
                 let run_sql = params.as_ref().map_or(stmt.sql.as_str(), |(sql, _)| sql.as_str()).to_string();
-                let mut res = match self
-                    .execute_one(&handle, &stmt.sql, max_rows, timeout_secs, &cancelled, job, params, want_origins)
-                    .await
-                {
-                    Ok((outcomes, captured)) => {
-                        if let Some(c) = captured {
-                            note = self.keep_restore_point(&handle, &stmt.sql, c);
+                let mut res =
+                    match self.execute_one(&handle, &stmt.sql, max_rows, timeout_secs, &cancelled, job, params).await {
+                        Ok((outcomes, captured)) => {
+                            if let Some(c) = captured {
+                                note = self.keep_restore_point(&handle, &stmt.sql, c);
+                            }
+                            Ok(outcomes)
                         }
-                        Ok(outcomes)
-                    }
-                    Err(e) => Err(e),
-                };
+                        Err(e) => Err(e),
+                    };
                 let mut origins_reported = true;
                 if want_origins && let Ok(outcomes) = &mut res {
                     origins_reported = self.add_origins(&handle, &run_sql, outcomes).await;
@@ -836,6 +834,11 @@ impl Engine {
                         opts.large_value_chars.map(|n| n as usize),
                     ),
                     Err(mut e) => {
+                        // The server's position is in the rewritten SQL of a bound statement: mark
+                        // the whole statement instead of a wrong spot.
+                        if bound[index].is_some() {
+                            e.position = None;
+                        }
                         // Map the server's character position to a byte offset in the editor.
                         if let Some(p) = e.position {
                             let byte =
@@ -1235,24 +1238,14 @@ impl Engine {
         cancelled: &Arc<AtomicBool>,
         capture: Option<CaptureJob>,
         params: Option<(String, Vec<Param>)>,
-        returns_rows: bool,
     ) -> Result<(Vec<StatementOutcome>, Option<Captured>)> {
         let canceller = lock(&handle.canceller).clone();
         let sql_owned = sql.to_string();
         let fut = self.with_session(&handle.info.session_id, move |s| {
             Box::pin(async move {
                 match (capture, params) {
-                    // Bound values: reads through the parameterised query, writes through apply.
-                    (_, Some((sql, values))) if returns_rows => {
-                        s.query(&sql, &values, max_rows).await.map(|rows| (vec![StatementOutcome::Rows { rows }], None))
-                    }
-                    (_, Some((sql, values))) => {
-                        let counts = s.apply(&[ParamStatement::new(sql, values)], false).await?;
-                        Ok((
-                            vec![StatementOutcome::Affected { rows_affected: counts.first().copied().unwrap_or(0) }],
-                            None,
-                        ))
-                    }
+                    // Bound values: the adapter runs the statement as `execute` would, with binds.
+                    (_, Some((sql, values))) => s.execute_params(&sql, &values, max_rows).await.map(|o| (o, None)),
                     (Some(job), None) => run_captured(s, &sql_owned, max_rows, job).await.map(|(o, c)| (o, Some(c))),
                     (None, None) => s.execute(&sql_owned, max_rows).await.map(|o| (o, None)),
                 }
@@ -2388,7 +2381,6 @@ impl Engine {
                 &cancelled,
                 None,
                 None,
-                true,
             )
             .await?
             .0;
@@ -2639,12 +2631,15 @@ fn driver_profile(policy: &ConnectionProfile, writes_locked: bool) -> std::borro
 }
 
 /// Each statement's SQL with its placeholders rewritten for the driver and the values to bind, or
-/// `None` when it has no placeholders. A placeholder without a value stops the run before it starts.
+/// `None` when it has no placeholders or no values were sent. A placeholder without a value stops
+/// the run before it starts.
 fn bind_script(
     analysis: &ScriptAnalysis,
     dialect: Dialect,
     values: Option<&HashMap<String, Option<String>>>,
 ) -> Result<Vec<Option<(String, Vec<Param>)>>> {
+    // No values sent: run the SQL as written ("Run as written" in the parameters dialog).
+    let Some(values) = values else { return Ok(vec![None; analysis.statements.len()]) };
     let mut out = Vec::with_capacity(analysis.statements.len());
     for stmt in &analysis.statements {
         let (sql, order) = crate::params::bind_parameters(&stmt.sql, dialect)?;
@@ -2656,7 +2651,7 @@ fn bind_script(
         for name in &order {
             let shown = if name.starts_with('$') { name.clone() } else { format!(":{name}") };
             let value = values
-                .and_then(|v| v.get(name))
+                .get(name)
                 .ok_or_else(|| AppError::invalid_config(format!("No value for the parameter {shown}")))?;
             params.push(value.clone());
         }

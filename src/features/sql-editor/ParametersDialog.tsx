@@ -14,11 +14,14 @@ export function ParametersDialog({
   names,
   initial,
   onRun,
+  onRunAsWritten,
   onClose,
 }: {
   names: string[];
   initial: ParameterValues;
   onRun: (values: ParameterValues) => void;
+  /** Runs the SQL exactly as typed, binding nothing (when the `:` was not meant as a parameter). */
+  onRunAsWritten: () => void;
   onClose: () => void;
 }) {
   const [values, setValues] = useState<ParameterValues>(() => Object.fromEntries(names.map((n) => [n, n in initial ? initial[n]! : ""])));
@@ -30,6 +33,9 @@ export function ParametersDialog({
       onClose={onClose}
       footer={
         <>
+          <button className="btn btn-ghost" style={{ marginRight: "auto" }} onClick={onRunAsWritten} title="Run the SQL exactly as typed, without values">
+            Run as written
+          </button>
           <button className="btn btn-cancel" onClick={onClose}>
             Cancel
           </button>

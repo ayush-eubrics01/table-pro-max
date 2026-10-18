@@ -207,6 +207,17 @@ fn binary_row(row: mysql_async::Row, cols: &[Column]) -> Row {
         .collect()
 }
 
+/// Fractional seconds as the server prints them: as many digits as the column declares
+/// (`datetime(3)` → `.678`), or all six when the column is unknown and there is a fraction.
+fn fraction(us: u32, col: Option<&Column>) -> String {
+    let digits = match col {
+        Some(c) => usize::from(c.decimals()).min(6),
+        None if us > 0 => 6,
+        None => 0,
+    };
+    if digits == 0 { String::new() } else { format!(".{}", &format!("{us:06}")[..digits]) }
+}
+
 fn value_to_cell(v: Value, col: Option<&Column>) -> Cell {
     match v {
         Value::NULL => Cell::Null,
@@ -227,20 +238,14 @@ fn value_to_cell(v: Value, col: Option<&Column>) -> Cell {
             });
             if date_only {
                 Cell::Text(format!("{y:04}-{m:02}-{d:02}"))
-            } else if us > 0 {
-                Cell::Text(format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}:{s:02}.{us:06}"))
             } else {
-                Cell::Text(format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}:{s:02}"))
+                Cell::Text(format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}:{s:02}{}", fraction(us, col)))
             }
         }
         Value::Time(neg, days, h, mi, s, us) => {
             let hours = days * 24 + h as u32;
             let sign = if neg { "-" } else { "" };
-            if us > 0 {
-                Cell::Text(format!("{sign}{hours:02}:{mi:02}:{s:02}.{us:06}"))
-            } else {
-                Cell::Text(format!("{sign}{hours:02}:{mi:02}:{s:02}"))
-            }
+            Cell::Text(format!("{sign}{hours:02}:{mi:02}:{s:02}{}", fraction(us, col)))
         }
     }
 }
@@ -567,6 +572,39 @@ impl Session for MySession {
         }
         drop(result);
         Ok(outcomes)
+    }
+
+    async fn execute_params(&mut self, sql: &str, params: &[Param], max_rows: usize) -> Result<Vec<StatementOutcome>> {
+        let canceller = self.canceller.clone();
+        let params: Vec<Value> = params.iter().map(to_value).collect();
+        let mut result = self.conn.exec_iter(sql, params).await.map_err(map_error)?;
+        let cols = result.columns().unwrap_or_else(|| Arc::from(Vec::<Column>::new()));
+        if cols.is_empty() {
+            let n = result.affected_rows();
+            drop(result);
+            return Ok(vec![StatementOutcome::Affected { rows_affected: n }]);
+        }
+        let mut rs = RowSet { columns: columns_meta(&cols), ..Default::default() };
+        let mut cancelled_for_cap = false;
+        loop {
+            match result.next().await {
+                Ok(Some(row)) => {
+                    if rs.rows.len() < max_rows {
+                        rs.rows.push(binary_row(row, &cols));
+                    } else if !rs.truncated {
+                        // Stop the server from producing rows we will not keep.
+                        rs.truncated = true;
+                        cancelled_for_cap = true;
+                        let _ = canceller.cancel().await;
+                    }
+                }
+                Ok(None) => break,
+                Err(e) if cancelled_for_cap && is_interrupted(&e) => break,
+                Err(e) => return Err(map_error(e)),
+            }
+        }
+        drop(result);
+        Ok(vec![StatementOutcome::Rows { rows: rs }])
     }
 
     async fn query(&mut self, sql: &str, params: &[Param], max_rows: usize) -> Result<RowSet> {

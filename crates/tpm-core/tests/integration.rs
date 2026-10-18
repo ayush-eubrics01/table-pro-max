@@ -577,6 +577,7 @@ async fn exercise(t: Target) {
     text_equality(&engine, &sid, &t.schema, driver).await;
     copied_inserts_round_trip(&engine, &sid, driver).await;
     query_parameters(&engine, &sid, driver).await;
+    bound_results_match_plain_runs(&engine, &sid, driver).await;
 
     // --- cleanup ---
     run(&engine, &sid, "DROP TABLE tpm_it_items; DROP TABLE tpm_it_owners").await;
@@ -1294,6 +1295,88 @@ async fn query_parameters(engine: &Arc<Engine>, sid: &str, driver: Driver) {
     let r = run(engine, sid, "SELECT ':x' AS t").await;
     assert_eq!(text(&r.statements[0].rows.as_ref().unwrap()[0][0]), ":x");
     run(engine, sid, "DROP TABLE tpm_it_qp").await;
+}
+
+/// A statement run with bound parameters shows exactly what the same statement shows without them
+/// (every column type the database renders as text), keeps RETURNING rows, and stops at the row cap.
+async fn bound_results_match_plain_runs(engine: &Arc<Engine>, sid: &str, driver: Driver) {
+    use std::collections::HashMap;
+    let (ddl, row) = match driver {
+        Driver::Postgres => (
+            "CREATE TABLE tpm_it_bt (id integer PRIMARY KEY, n numeric(10,2), ts timestamp, tz timestamptz, d date, \
+             u uuid, iv interval, ip inet, arr integer[], j jsonb, b bytea, f float8, ok boolean, t text)",
+            "(1, 12.50, '2026-01-02 03:04:05.678', '2026-01-02 03:04:05+00', '2026-01-02', \
+             'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', '1 day 02:03:04', '10.0.0.1/24', '{1,2}', '{\"a\": [1, 2]}', '\\xdead', 1.5, true, 'x')",
+        ),
+        Driver::Mysql | Driver::Mariadb => (
+            "CREATE TABLE tpm_it_bt (id integer PRIMARY KEY, n decimal(10,2), ts datetime(3), d date, tm time, f double, \
+             j json, b varbinary(8), t varchar(20))",
+            "(1, 12.50, '2026-01-02 03:04:05.678', '2026-01-02', '03:04:05', 1.5, '{\"a\": [1, 2]}', X'DEAD', 'x')",
+        ),
+        Driver::Duckdb => (
+            "CREATE TABLE tpm_it_bt (id integer PRIMARY KEY, n decimal(10,2), ts timestamp, d date, l integer[], \
+             st struct(a integer), b blob, f double, t varchar)",
+            "(1, 12.50, '2026-01-02 03:04:05.678', '2026-01-02', [1, 2], {'a': 1}, '\\xDE\\xAD'::BLOB, 1.5, 'x')",
+        ),
+        _ => ("CREATE TABLE tpm_it_bt (id integer PRIMARY KEY, n real, b blob, t text)", "(1, 12.5, X'DEAD', 'x')"),
+    };
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_bt").await;
+    run(engine, sid, ddl).await;
+    run(engine, sid, &format!("INSERT INTO tpm_it_bt VALUES {row}")).await;
+    let with = |values: &[(&str, &str)], max_rows: Option<usize>| RunOptions {
+        confirmed: true,
+        max_rows,
+        parameters: Some(values.iter().map(|(k, v)| (k.to_string(), Some(v.to_string()))).collect::<HashMap<_, _>>()),
+        ..Default::default()
+    };
+    let plain = run(engine, sid, "SELECT * FROM tpm_it_bt WHERE id = 1").await;
+    let bound = engine
+        .run_script(sid, "SELECT * FROM tpm_it_bt WHERE id = :id", with(&[("id", "1")], None), None)
+        .await
+        .unwrap();
+    let (p, b) = (&plain.statements[0], &bound.statements[0]);
+    assert!(b.error.is_none(), "{driver:?}: {:?}", b.error);
+    let names = |st: &tpm_core::engine::StatementResult| {
+        st.columns.as_ref().unwrap().iter().map(|c| c.name.clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(names(b), names(p), "{driver:?}");
+    assert_eq!(b.rows, p.rows, "{driver:?}");
+
+    // RETURNING rows come back (MySQL has no RETURNING).
+    if driver != Driver::Mysql {
+        let r = engine
+            .run_script(
+                sid,
+                "INSERT INTO tpm_it_bt (id, t) VALUES (:id, :t) RETURNING id, t",
+                with(&[("id", "2"), ("t", "y")], None),
+                None,
+            )
+            .await
+            .unwrap();
+        let st = &r.statements[0];
+        assert!(st.error.is_none(), "{driver:?}: {:?}", st.error);
+        let rows = st.rows.clone().unwrap_or_else(|| panic!("{driver:?}: no rows {st:?}"));
+        assert_eq!(
+            rows.iter().map(|r| (text(&r[0]).to_string(), text(&r[1]).to_string())).collect::<Vec<_>>(),
+            [("2".to_string(), "y".to_string())],
+            "{driver:?}"
+        );
+    } else {
+        run(engine, sid, "INSERT INTO tpm_it_bt (id, t) VALUES (2, 'y')").await;
+    }
+    run(engine, sid, "INSERT INTO tpm_it_bt (id, t) VALUES (3, 'z')").await;
+    // The row cap holds on the bound path too.
+    let r = engine
+        .run_script(sid, "SELECT id FROM tpm_it_bt WHERE id > :min ORDER BY id", with(&[("min", "0")], Some(1)), None)
+        .await
+        .unwrap();
+    let st = &r.statements[0];
+    assert!(st.error.is_none(), "{driver:?}: {:?}", st.error);
+    assert_eq!(st.rows.as_ref().map(|r| r.len()), Some(1), "{driver:?}");
+    assert!(st.truncated, "{driver:?}");
+    let after = run(engine, sid, "SELECT count(*) FROM tpm_it_bt").await;
+    assert_eq!(text(&after.statements[0].rows.as_ref().unwrap()[0][0]), "3", "{driver:?}: the session still works");
+    run(engine, sid, "DROP TABLE tpm_it_bt").await;
 }
 
 /// Rows copied as INSERT statements (as the grid copies them: cells from a query result) run on

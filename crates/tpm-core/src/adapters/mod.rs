@@ -74,6 +74,11 @@ pub trait Session: Send {
     /// `max_rows` are not fetched and the row set is marked truncated.
     async fn execute(&mut self, sql: &str, max_rows: usize) -> Result<Vec<StatementOutcome>>;
 
+    /// `execute` with bound parameters (the user's `:name` values, rewritten to the driver's
+    /// placeholders): the same rendering, row cap and rows-or-count outcome, decided by the
+    /// prepared statement rather than by guessing from its text.
+    async fn execute_params(&mut self, sql: &str, params: &[Param], max_rows: usize) -> Result<Vec<StatementOutcome>>;
+
     /// Base-table origin and type name of each column the statement returns, by position,
     /// without running it. Drivers that report these while executing (MySQL, SQLite) or cannot
     /// at all (DuckDB) keep the default.

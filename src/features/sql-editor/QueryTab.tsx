@@ -111,7 +111,8 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
   const lastRun = useRef<{ mode: RunMode; target: { sql: string; base: number } } | null>(null);
   // Parameter values typed in this tab, offered again on the next run.
   const paramValues = useRef<ParameterValues>({});
-  const [paramAsk, setParamAsk] = useState<{ names: string[]; resolve: (v: ParameterValues | null) => void } | null>(null);
+  // The dialog's answer: values, "raw" (run as written) or null (cancelled).
+  const [paramAsk, setParamAsk] = useState<{ names: string[]; resolve: (v: ParameterValues | "raw" | null) => void } | null>(null);
   const reportDirty = useCallback(
     (d: boolean) => {
       setResultsDirty(d);
@@ -214,7 +215,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
   }, [tab.sql, ws.id, ws.schema, ws.columns, ws.objects, loadColumns]);
 
   const run = async (mode: RunMode, confirmed = false, explicit?: { sql: string; base: number }, typed?: string, given?: ParameterValues) => {
-    if (running) return;
+    if (running || paramAsk) return;
     const text = editor.current?.getText() ?? tab.sql;
     let target = explicit;
     if (!target) {
@@ -240,10 +241,12 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
       }
       if (names.length) {
         const asked = names;
-        const values = await new Promise<ParameterValues | null>((resolve) => setParamAsk({ names: asked, resolve }));
+        const values = await new Promise<ParameterValues | "raw" | null>((resolve) => setParamAsk({ names: asked, resolve }));
         if (!values) return;
-        paramValues.current = { ...paramValues.current, ...values };
-        parameters = values;
+        if (values !== "raw") {
+          paramValues.current = { ...paramValues.current, ...values };
+          parameters = values;
+        }
       }
     }
     if (resultsDirty && !confirmed) {
@@ -372,6 +375,10 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
       sql = span?.sql ?? "";
     }
     if (!sql.trim()) return;
+    if (((await api.scriptParameters(sql, ws.session.dialect).catch(() => [])) ?? []).length) {
+      notify("EXPLAIN can't take parameter values yet. Put values in place of the :name placeholders to see the plan.", "info");
+      return;
+    }
     const s = await ensureSession();
     if (!s) return;
     try {
@@ -621,6 +628,10 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
           initial={paramValues.current}
           onRun={(values) => {
             paramAsk.resolve(values);
+            setParamAsk(null);
+          }}
+          onRunAsWritten={() => {
+            paramAsk.resolve("raw");
             setParamAsk(null);
           }}
           onClose={() => {

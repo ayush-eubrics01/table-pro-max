@@ -437,7 +437,12 @@ impl Session for DuckSession {
     }
 
     async fn execute(&mut self, sql: &str, max_rows: usize) -> Result<Vec<StatementOutcome>> {
+        self.execute_params(sql, &[], max_rows).await
+    }
+
+    async fn execute_params(&mut self, sql: &str, params: &[Param], max_rows: usize) -> Result<Vec<StatementOutcome>> {
         let sql = sql.trim().trim_end_matches(';').to_string();
+        let params = params.to_vec();
         let read_only = self.read_only;
         self.with_conn(move |c| {
             guarded(c, read_only, |c| {
@@ -447,7 +452,7 @@ impl Session for DuckSession {
                     // an interrupt) is final so a statement never executes twice.
                     let wrapped = format!("SELECT COLUMNS(*)::VARCHAR FROM ({sql})");
                     if let Ok(mut stmt) = c.prepare(&wrapped) {
-                        let mut rows = run_prepared(&mut stmt, &[], max_rows)?;
+                        let mut rows = run_prepared(&mut stmt, &params, max_rows)?;
                         drop(stmt);
                         if let Some(types) = describe_types(c, &sql) {
                             for (col, ty) in rows.columns.iter_mut().zip(types) {
@@ -457,7 +462,7 @@ impl Session for DuckSession {
                         return Ok(vec![StatementOutcome::Rows { rows }]);
                     }
                 }
-                let rows = run(c, &sql, &[], max_rows)?;
+                let rows = run(c, &sql, &params, max_rows)?;
                 // DDL returns no columns; DML returns a single "Count" column.
                 if rows.columns.is_empty() {
                     return Ok(vec![StatementOutcome::Affected { rows_affected: 0 }]);
