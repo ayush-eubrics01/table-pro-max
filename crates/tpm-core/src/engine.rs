@@ -1229,6 +1229,7 @@ impl Engine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn execute_one(
         &self,
         handle: &Arc<SessionHandle>,
@@ -1237,7 +1238,7 @@ impl Engine {
         timeout_secs: u64,
         cancelled: &Arc<AtomicBool>,
         capture: Option<CaptureJob>,
-        params: Option<(String, Vec<Param>)>,
+        params: Bound,
     ) -> Result<(Vec<StatementOutcome>, Option<Captured>)> {
         let canceller = lock(&handle.canceller).clone();
         let sql_owned = sql.to_string();
@@ -2630,6 +2631,9 @@ fn driver_profile(policy: &ConnectionProfile, writes_locked: bool) -> std::borro
     }
 }
 
+/// A statement rewritten for the driver's placeholders, with the values to bind.
+type Bound = Option<(String, Vec<Param>)>;
+
 /// Each statement's SQL with its placeholders rewritten for the driver and the values to bind, or
 /// `None` when it has no placeholders or no values were sent. A placeholder without a value stops
 /// the run before it starts.
@@ -2637,7 +2641,7 @@ fn bind_script(
     analysis: &ScriptAnalysis,
     dialect: Dialect,
     values: Option<&HashMap<String, Option<String>>>,
-) -> Result<Vec<Option<(String, Vec<Param>)>>> {
+) -> Result<Vec<Bound>> {
     // No values sent: run the SQL as written ("Run as written" in the parameters dialog).
     let Some(values) = values else { return Ok(vec![None; analysis.statements.len()]) };
     let mut out = Vec::with_capacity(analysis.statements.len());
