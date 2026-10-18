@@ -70,6 +70,33 @@ pub async fn export_result(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RowsTextRequest {
+    pub columns: Vec<tpm_core::model::ColumnMeta>,
+    /// Grid cells as the UI holds them (text, null, or complete binary values).
+    pub rows: Vec<Vec<serde_json::Value>>,
+    pub options: ExportOptions,
+}
+
+/// Selected grid rows as JSON or INSERT statements, for the clipboard (nothing is written to disk).
+#[tauri::command]
+pub async fn rows_as_text(request: RowsTextRequest) -> Result<String> {
+    if request.rows.len() > 100_000 {
+        return Err(AppError::invalid_config("Too many rows to copy; export them instead"));
+    }
+    tokio::task::spawn_blocking(move || {
+        let rows = request
+            .rows
+            .iter()
+            .map(|r| r.iter().map(tpm_core::transfer::cell_from_ui).collect::<Result<tpm_core::model::Row>>())
+            .collect::<Result<Vec<_>>>()?;
+        tpm_core::transfer::rows_as_text(&request.columns, &rows, &request.options)
+    })
+    .await
+    .map_err(|e| AppError::internal(e.to_string()))?
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExportRowsRequest {
     pub columns: Vec<tpm_core::model::ColumnMeta>,
     /// Rows as displayed (text or NULL); bounded by the grid's page size.

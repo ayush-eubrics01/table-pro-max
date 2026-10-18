@@ -132,6 +132,62 @@ pub fn open_sink(path: &Path, opts: &ExportOptions) -> Result<Box<dyn RowSink>> 
     })
 }
 
+/// Rows as text in a text export format (JSON, JSON lines, CSV or SQL INSERTs), for the clipboard.
+/// The same code writes export files, so values are quoted and escaped the same way.
+pub fn rows_as_text(columns: &[ColumnMeta], rows: &[Row], opts: &ExportOptions) -> Result<String> {
+    let buf = SharedBuf::default();
+    let mut sink: Box<dyn RowSink> = match opts.format {
+        ExportFormat::Csv => Box::new(CsvSink::new(buf.clone(), opts)),
+        ExportFormat::Json => Box::new(JsonSink { out: buf.clone(), columns: vec![], first: true, lines: false }),
+        ExportFormat::JsonLines => Box::new(JsonSink { out: buf.clone(), columns: vec![], first: true, lines: true }),
+        ExportFormat::Sql => Box::new(SqlSink::new(buf.clone(), opts)?),
+        ExportFormat::Xlsx => return Err(AppError::invalid_config("Excel is not a text format")),
+    };
+    sink.begin(columns)?;
+    sink.write_rows(rows)?;
+    sink.finish()?;
+    let bytes = std::mem::take(&mut *buf.0.lock().map_err(|_| AppError::internal("copy buffer poisoned"))?);
+    String::from_utf8(bytes).map_err(|e| AppError::internal(e.to_string()))
+}
+
+/// A grid cell as the UI holds it (text, null, or `{"$bytes": hex, "size": n}`), for copying. A
+/// binary value the UI has only in part, or a value not loaded yet, is refused.
+pub fn cell_from_ui(value: &serde_json::Value) -> Result<Cell> {
+    use serde_json::Value;
+    match value {
+        Value::Null => Ok(Cell::Null),
+        Value::String(s) => Ok(Cell::Text(s.clone())),
+        Value::Object(m) => {
+            let Some(hex_text) = m.get("$bytes").and_then(Value::as_str) else {
+                return Err(AppError::invalid_config("Load every value before copying the rows"));
+            };
+            let bytes =
+                hex::decode(hex_text).map_err(|_| AppError::invalid_config("A binary value is not valid hex"))?;
+            if m.get("size").and_then(Value::as_u64) != Some(bytes.len() as u64) {
+                return Err(AppError::invalid_config(
+                    "A binary value over 4 KB is shown only in part, so it can't be copied; export the rows instead",
+                ));
+            }
+            Ok(Cell::Bytes(bytes))
+        }
+        _ => Err(AppError::invalid_config("Unexpected value in the copied rows")),
+    }
+}
+
+/// An in-memory writer the sinks can own while the caller keeps the bytes.
+#[derive(Clone, Default)]
+struct SharedBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl Write for SharedBuf {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().map_err(|_| std::io::Error::other("copy buffer poisoned"))?.extend_from_slice(data);
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 fn io_err(e: impl std::fmt::Display) -> AppError {
     AppError::file(format!("Write failed: {e}"))
 }
@@ -223,6 +279,8 @@ struct SqlSink<W: Write> {
     columns: String,
     batch: usize,
     pending: Vec<String>,
+    /// The "Exported by" comment line (off for the clipboard).
+    header: bool,
 }
 
 impl<W: Write> SqlSink<W> {
@@ -241,6 +299,7 @@ impl<W: Write> SqlSink<W> {
             columns: String::new(),
             batch: opts.sql_batch.clamp(1, 10_000),
             pending: vec![],
+            header: opts.header,
         })
     }
 
@@ -248,8 +307,18 @@ impl<W: Write> SqlSink<W> {
         if self.pending.is_empty() {
             return Ok(());
         }
-        writeln!(self.out, "INSERT INTO {} ({}) VALUES\n  {};", self.table, self.columns, self.pending.join(",\n  "))
-            .map_err(io_err)?;
+        if self.pending.len() == 1 {
+            writeln!(self.out, "INSERT INTO {} ({}) VALUES {};", self.table, self.columns, self.pending[0])
+        } else {
+            writeln!(
+                self.out,
+                "INSERT INTO {} ({}) VALUES\n  {};",
+                self.table,
+                self.columns,
+                self.pending.join(",\n  ")
+            )
+        }
+        .map_err(io_err)?;
         self.pending.clear();
         Ok(())
     }
@@ -259,7 +328,9 @@ impl<W: Write + Send> RowSink for SqlSink<W> {
     fn begin(&mut self, columns: &[ColumnMeta]) -> Result<()> {
         let cols: Result<Vec<String>> = columns.iter().map(|c| self.dialect.quote_ident(&c.name)).collect();
         self.columns = cols?.join(", ");
-        writeln!(self.out, "-- Exported by Table Pro Max").map_err(io_err)?;
+        if self.header {
+            writeln!(self.out, "-- Exported by Table Pro Max").map_err(io_err)?;
+        }
         Ok(())
     }
     fn write_rows(&mut self, rows: &[Row]) -> Result<()> {
@@ -812,6 +883,56 @@ mod tests {
         assert!(s.contains("INSERT INTO \"public\".\"items\" (\"id\", \"name\", \"data\") VALUES"), "{s}");
         assert!(s.contains("('1', 'a,b \"q\"', '\\xdead'::bytea)"), "{s}");
         assert!(s.contains("('2', NULL, NULL);"));
+    }
+
+    #[test]
+    fn rows_copy_as_insert_statements_and_json() {
+        let opts = |format| ExportOptions {
+            format,
+            delimiter: ',',
+            header: false,
+            null_text: String::new(),
+            sql_table: Some("public.items".into()),
+            dialect: Some(Dialect::Postgres),
+            sql_batch: 1,
+        };
+        let sql = rows_as_text(&cols(), &rows(), &opts(ExportFormat::Sql)).unwrap();
+        assert_eq!(
+            sql,
+            "INSERT INTO \"public\".\"items\" (\"id\", \"name\", \"data\") VALUES ('1', 'a,b \"q\"', '\\xdead'::bytea);\n\
+             INSERT INTO \"public\".\"items\" (\"id\", \"name\", \"data\") VALUES ('2', NULL, NULL);\n"
+        );
+        let mysql = rows_as_text(
+            &cols(),
+            &rows()[1..],
+            &ExportOptions { dialect: Some(Dialect::Mysql), sql_table: Some("it's".into()), ..opts(ExportFormat::Sql) },
+        )
+        .unwrap();
+        assert_eq!(mysql, "INSERT INTO `it's` (`id`, `name`, `data`) VALUES ('2', NULL, NULL);\n");
+        let json: serde_json::Value =
+            serde_json::from_str(&rows_as_text(&cols(), &rows(), &opts(ExportFormat::Json)).unwrap()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!([{ "id": "1", "name": "a,b \"q\"", "data": "\\xdead" }, { "id": "2", "name": null, "data": null }])
+        );
+        assert!(rows_as_text(&cols(), &rows(), &opts(ExportFormat::Xlsx)).is_err());
+        assert!(
+            rows_as_text(&cols(), &[vec![Cell::NotLoaded, Cell::Null, Cell::Null]], &opts(ExportFormat::Json)).is_err()
+        );
+    }
+
+    #[test]
+    fn cells_from_the_grid_keep_complete_binary_values() {
+        use serde_json::json;
+        assert_eq!(cell_from_ui(&json!(null)).unwrap(), Cell::Null);
+        assert_eq!(cell_from_ui(&json!("x")).unwrap(), Cell::Text("x".into()));
+        assert_eq!(cell_from_ui(&json!({ "$bytes": "dead", "size": 2 })).unwrap(), Cell::Bytes(vec![0xde, 0xad]));
+        let err = cell_from_ui(&json!({ "$bytes": "dead", "size": 9000 })).unwrap_err();
+        assert!(err.message.contains("export"), "{err:?}");
+        assert!(cell_from_ui(&json!({ "$bytes": "zz", "size": 1 })).is_err());
+        assert!(cell_from_ui(&json!({ "$notLoaded": true })).is_err());
+        assert!(cell_from_ui(&json!({ "$partial": "ab", "length": 10 })).is_err());
+        assert!(cell_from_ui(&json!(5)).is_err());
     }
 
     #[test]

@@ -143,6 +143,7 @@ pub fn run() {
             commands::transfer::export_result,
             commands::transfer::export_table,
             commands::transfer::export_rows,
+            commands::transfer::rows_as_text,
             commands::transfer::preview_import,
             commands::transfer::import_file,
             commands::transfer::read_sql_file,
