@@ -198,6 +198,9 @@ export const api = {
     call<number>("export_result", { resultId, path, options }),
   exportTable: (sessionId: string, source: BrowseRequest, path: string, options: ExportOptions, jobId: string) =>
     call<number>("export_table", { request: { sessionId, source, path, options, jobId } }),
+  /** Rows as JSON or INSERT text for the clipboard (cells as the grid holds them, fully loaded). */
+  rowsAsText: (columns: { name: string; typeName: string }[], rows: Cell[][], options: ExportOptions) =>
+    call<string>("rows_as_text", { request: { columns, rows, options } }),
   exportRows: (columns: { name: string; typeName: string }[], rows: (string | null)[][], path: string, options: ExportOptions) =>
     call<number>("export_rows", { request: { columns, rows, path, options } }),
   previewImport: (path: string, options: ImportOptions) => call<ImportPreview>("preview_import", { path, options }),

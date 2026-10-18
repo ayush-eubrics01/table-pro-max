@@ -228,6 +228,8 @@ describe("large values in opened tables", () => {
           return { sql: "UPDATE …", statementCount: 1, atomic: true };
         case "apply_changes":
           return { counts: [1], restore: [] };
+        case "rows_as_text":
+          return `copied as ${(args as { request: { options: { format: string } } }).request.options.format}`;
         default:
           return null;
       }
@@ -373,6 +375,25 @@ describe("large values in opened tables", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "Export selected rows…" }));
     expect(await screen.findByRole("dialog", { name: /Export/ })).toBeInTheDocument();
     expect(calls.some((c) => c.cmd === "fetch_column")).toBe(false); // already loaded by the copies above
+  });
+
+  it("copies rows as JSON or INSERT statements, with deferred values loaded first", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: write }, configurable: true });
+    page = [["2", "two", NL, NL]];
+    view();
+    await screen.findAllByText("Not loaded");
+    await menuOnRow("two");
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Copy rows as JSON" }));
+    await waitFor(() => expect(write).toHaveBeenLastCalledWith("copied as json"));
+    const json = calls.find((c) => c.cmd === "rows_as_text")!.args as unknown as { request: { columns: { name: string }[]; rows: unknown[][]; options: Record<string, unknown> } };
+    expect(json.request.rows).toEqual([["2", "two", "short", null]]);
+    expect(json.request.columns.map((c) => c.name)).toEqual(["id", "title", "body", "doc"]);
+    await menuOnRow("two");
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Copy rows as INSERT" }));
+    await waitFor(() => expect(write).toHaveBeenLastCalledWith("copied as sql"));
+    const sql = calls.filter((c) => c.cmd === "rows_as_text").at(-1)!.args as unknown as { request: { options: Record<string, unknown> } };
+    expect(sql.request.options).toMatchObject({ format: "sql", sqlTable: "public.docs", dialect: "postgres", sqlBatch: 1, header: false });
   });
 
   it("Export selected rows loads Not loaded values before the dialog opens", async () => {

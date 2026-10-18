@@ -313,3 +313,108 @@ describe("following references in results", () => {
     expect(opened[0]![1]).toBe("customers");
   });
 });
+
+describe("ResultsPanel: copy rows", () => {
+  const origin = (column: string) => ({ schema: "public", table: "users", column });
+  const result = (withOrigins: boolean): ScriptResult => ({
+    taskId: "t",
+    cancelled: false,
+    durationMs: 1,
+    statements: [
+      {
+        index: 0,
+        sql: "select id, bio from users",
+        start: 0,
+        end: 25,
+        durationMs: 1,
+        truncated: false,
+        resultId: "r1",
+        columns: [
+          { name: "id", typeName: "int4", ...(withOrigins ? { origin: origin("id") } : {}) },
+          { name: "bio", typeName: "text", ...(withOrigins ? { origin: origin("bio") } : {}) },
+        ],
+        rows: [["7", { $partial: "long…", length: 9000 }]],
+        totalRows: 1,
+      },
+    ],
+  });
+
+  it("copies rows as INSERT into their source table, or as JSON, with full values", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: write }, configurable: true });
+    const requests: { rows: unknown[][]; options: Record<string, unknown> }[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "result_value") return "the full bio";
+      if (cmd === "rows_as_text") {
+        requests.push((args as { request: { rows: unknown[][]; options: Record<string, unknown> } }).request);
+        return "copied";
+      }
+      return null;
+    });
+    render(
+      <>
+        <ResultsPanel result={result(true)} running={false} dialect="postgres" />
+        <Overlays />
+      </>,
+    );
+    const cell = (await screen.findByText("7")).closest(".grid-cell")!;
+    fireEvent.mouseDown(cell);
+    fireEvent.contextMenu(cell);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Copy rows as INSERT" }));
+    await waitFor(() => expect(write).toHaveBeenCalledWith("copied"));
+    expect(requests[0]!.rows).toEqual([["7", "the full bio"]]);
+    expect(requests[0]!.options).toMatchObject({ format: "sql", sqlTable: "public.users", dialect: "postgres", sqlBatch: 1 });
+    fireEvent.contextMenu(cell);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Copy rows as JSON" }));
+    await waitFor(() => expect(requests).toHaveLength(2));
+    expect(requests[1]!.options.format).toBe("json");
+  });
+
+  it("reads rows not fetched yet instead of leaving them out", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: write }, configurable: true });
+    const requests: { rows: unknown[][] }[] = [];
+    const fetched: number[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "fetch_rows") {
+        const { offset } = args as { offset: number };
+        fetched.push(offset);
+        return [["1001", "later"]];
+      }
+      if (cmd === "rows_as_text") requests.push((args as { request: { rows: unknown[][] } }).request);
+      return cmd === "rows_as_text" ? "copied" : null;
+    });
+    const big = result(true);
+    const st = big.statements[0]!;
+    big.statements[0] = { ...st, rows: Array.from({ length: 1000 }, (_, i) => [String(i + 1), "b"]), totalRows: 1001 };
+    render(<ResultsPanel result={big} running={false} dialect="postgres" />);
+    const grid = await screen.findByRole("grid");
+    const first = (await screen.findAllByText("1")).map((e) => e.closest(".grid-cell")).find(Boolean)!;
+    fireEvent.mouseDown(first);
+    fireEvent.keyDown(grid, { key: "a", ctrlKey: true });
+    fireEvent.contextMenu(first);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Copy rows as JSON" }));
+    await waitFor(() => expect(requests).toHaveLength(1));
+    expect(fetched).toContain(1000);
+    expect(requests[0]!.rows).toHaveLength(1001);
+    expect(requests[0]!.rows.at(-1)).toEqual(["1001", "later"]);
+  });
+
+  it("names the INSERT target query_result when the rows don't come from one table", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: write }, configurable: true });
+    const requests: { options: Record<string, unknown> }[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "result_value") return "the full bio";
+      if (cmd === "rows_as_text") requests.push((args as { request: { options: Record<string, unknown> } }).request);
+      return cmd === "rows_as_text" ? "copied" : null;
+    });
+    render(<ResultsPanel result={result(false)} running={false} dialect="mysql" />);
+    const cell = (await screen.findByText("7")).closest(".grid-cell")!;
+    fireEvent.mouseDown(cell);
+    fireEvent.contextMenu(cell);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Copy rows as INSERT" }));
+    await waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]!.options).toMatchObject({ sqlTable: "query_result", dialect: "mysql" });
+  });
+});
