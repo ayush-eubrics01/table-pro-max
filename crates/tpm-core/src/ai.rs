@@ -482,6 +482,24 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn a_request_cancelled_before_it_starts_is_never_sent() {
+        // A closed local port: had the request been tried, this would be a transport error.
+        let config = AiConfig::from_settings(&settings(&[
+            ("ai.enabled", json!(true)),
+            ("ai.provider", json!("openai_compatible")),
+            ("ai.model", json!("m")),
+            ("ai.baseUrl", json!("http://127.0.0.1:9")),
+        ]));
+        let prompt = build_prompt(&config, &req(AiTask::Explain)).unwrap();
+        for _ in 0..20 {
+            let cancel = Arc::new(CancellationToken::new());
+            cancel.cancel();
+            let e = send(&config, &prompt, None, cancel).await.unwrap_err();
+            assert_eq!(e.kind, ErrorKind::Cancelled, "{e:?}");
+        }
+    }
+
     #[test]
     fn defaults_are_off_and_anthropic() {
         let c = AiConfig::from_settings(&serde_json::Map::new());
