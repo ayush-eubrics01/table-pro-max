@@ -6,6 +6,7 @@ import { confirmAction, notify, notifyError } from "../../stores/ui";
 import type { Workspace } from "../../stores/workspaces";
 import type { MongoCollection, MongoDatabase, MongoDeleteTarget, MongoPage } from "../../types/backend";
 import { ConnectionLine } from "../connections/nameConfirm";
+import { ValueEditor } from "../value-editor/ValueEditor";
 import { cellText, isEveryDocument, parseDoc } from "./mongoText";
 
 type Mode = "find" | "aggregate" | "vector";
@@ -52,7 +53,10 @@ export function MongoView({ ws }: { ws: Workspace }) {
   });
   const [page, setPage] = useState<MongoPage | null>(null);
   /** Where the page on screen came from, and its find filter: what deletes and "Count all" act on. */
-  const [shown, setShown] = useState<{ target: Target; filter: string | null } | null>(null);
+  /** What the results on screen came from; `filter` only for a find. */
+  const [shown, setShown] = useState<{ target: Target; filter: string | null; mode: Mode; projection: string } | null>(null);
+  /** The document editor: a find result being edited (by its index on the page), or a new one. */
+  const [editing, setEditing] = useState<{ index: number } | "new" | null>(null);
   const [total, setTotal] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [view, setView] = useState<"table" | "json">("table");
@@ -130,7 +134,7 @@ export function MongoView({ ws }: { ws: Workspace }) {
                 });
         if (n !== runSeq.current) return;
         setPage(result);
-        setShown({ target: t, filter: mode === "find" ? filter : null });
+        setShown({ target: t, filter: mode === "find" ? filter : null, mode, projection: mode === "find" ? projection : "" });
         setSelected(new Set());
       } catch (e) {
         if (n === runSeq.current) setError(toError(e).message);
@@ -205,8 +209,53 @@ export function MongoView({ ws }: { ws: Workspace }) {
     }
   };
 
+  /** Saves the editor's text: over the document it was read as, or as a new one. */
+  const saveDocument = async (text: string) => {
+    if (!shown || !page || !editing) return;
+    const { database, collection } = shown.target;
+    if (
+      ws.session.environment === "production" &&
+      !(await confirmAction({
+        title: editing === "new" ? "Insert this document?" : "Save this document?",
+        confirmLabel: editing === "new" ? "Insert" : "Save",
+        danger: true,
+        body: (
+          <>
+            <ConnectionLine session={ws.session} />
+            <p style={{ margin: 0 }}>
+              Into{" "}
+              <strong className="mono">
+                {database}.{collection}
+              </strong>
+              . MongoDB changes keep no restore point.
+            </p>
+          </>
+        ),
+      }))
+    )
+      return;
+    try {
+      if (editing === "new") await api.mongoInsert(sid, database, collection, text, true);
+      else {
+        const id = page.ids[editing.index];
+        if (!id) return;
+        await api.mongoReplace(sid, { database, collection, id, original: page.documents[editing.index]!, document: text, confirmed: true });
+      }
+      notify(editing === "new" ? "Inserted the document" : "Saved the document", "success");
+      setEditing(null);
+      await run(shown.target, skip);
+    } catch (e) {
+      // The editor stays open with the text, so nothing typed is lost.
+      notifyError(e, editing === "new" ? "Insert failed" : "Save failed");
+    }
+  };
+
   const docs = useMemo(() => page?.documents.map(parseDoc) ?? [], [page]);
   const canDelete = !readOnly && shown?.target.kind === "collection";
+  // Only whole documents from a find are edited: a projection shows part of one, and vector
+  // search results carry embeddings that an edit would leave stale.
+  const canEdit = canDelete && shown?.mode === "find" && !shown.projection.trim();
+  const canInsert = canDelete && shown?.mode === "find";
   const shownFilter = shown?.filter ?? null;
   const selectable = canDelete && mode !== "aggregate";
 
@@ -506,6 +555,11 @@ export function MongoView({ ws }: { ws: Workspace }) {
                 </>
               )}
               <span className="grow" />
+              {canInsert && (
+                <button className="btn" onClick={() => setEditing("new")}>
+                  <Icon name="add" size={13} /> Insert document
+                </button>
+              )}
               {selectable && selected.size > 0 && (
                 <button
                   className="btn btn-danger"
@@ -549,6 +603,7 @@ export function MongoView({ ws }: { ws: Workspace }) {
                   <thead>
                     <tr>
                       {selectable && <th style={{ width: 28 }} />}
+                      {canEdit && <th style={{ width: 28 }} />}
                       {page.fields.map((f) => (
                         <th key={f} className="mono">
                           {f}
@@ -562,6 +617,7 @@ export function MongoView({ ws }: { ws: Workspace }) {
                       return (
                         <tr key={i}>
                           {selectable && <td>{id && <SelectBox id={id} selected={selected} onChange={setSelected} label={`Select document ${cellText(d._id)}`} />}</td>}
+                          {canEdit && <td>{id && <EditButton label={`Edit document ${i + 1}`} onClick={() => setEditing({ index: i })} />}</td>}
                           {page.fields.map((f) => (
                             <td key={f} className="mono">
                               {cellText(d[f])}
@@ -580,6 +636,7 @@ export function MongoView({ ws }: { ws: Workspace }) {
                   return (
                     <div key={i} className="mongo-doc">
                       {selectable && id && <SelectBox id={id} selected={selected} onChange={setSelected} label={`Select document ${i + 1}`} />}
+                      {canEdit && id && <EditButton label={`Edit document ${i + 1}`} onClick={() => setEditing({ index: i })} />}
                       <pre className="code-block">{text}</pre>
                     </div>
                   );
@@ -589,7 +646,27 @@ export function MongoView({ ws }: { ws: Workspace }) {
           </>
         )}
       </div>
+      {editing && shown && (
+        <ValueEditor
+          title={`${shown.target.database}.${shown.target.collection} · ${editing === "new" ? "New document" : "Edit document"}`}
+          typeName="Extended JSON"
+          mode="json"
+          load={() => Promise.resolve(editing === "new" ? "{\n  \n}" : (page?.documents[editing.index] ?? ""))}
+          readOnlyReason={null}
+          nullable={false}
+          onSave={(text) => text !== null && void saveDocument(text)}
+          onClose={() => setEditing(null)}
+        />
+      )}
     </div>
+  );
+}
+
+function EditButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button className="btn btn-ghost btn-icon" aria-label={label} title="Edit this document" onClick={onClick}>
+      <Icon name="edit" size={13} />
+    </button>
   );
 }
 

@@ -1055,6 +1055,24 @@ async fn restore_point_restores(engine: &Arc<Engine>, sid: &str, schema: &str, d
     };
     let rows = |sql: &'static str| async move { run(engine, sid, sql).await.statements[0].rows.clone().unwrap() };
 
+    // Binary values come back byte for byte: deleted, changed, and with a dropped table.
+    let bin = match driver {
+        Driver::Postgres => "bytea",
+        Driver::Mssql => "varbinary(max)",
+        _ => "blob",
+    };
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rpbin").await;
+    run(engine, sid, &format!("CREATE TABLE tpm_it_rpbin (id integer PRIMARY KEY, b {bin})")).await;
+    run(engine, sid, &format!("INSERT INTO tpm_it_rpbin VALUES (1, {}), (2, NULL)", blob_literal(driver))).await;
+    let stored = || rows("SELECT id, b FROM tpm_it_rpbin ORDER BY id");
+    let before = stored().await;
+    for sql in ["DELETE FROM tpm_it_rpbin", "UPDATE tpm_it_rpbin SET b = NULL", "DROP TABLE tpm_it_rpbin"] {
+        let r = engine.run_script(sid, sql, opts.clone(), None).await.unwrap();
+        engine.apply_restore(sid, &point(&r), None, true).await.unwrap_or_else(|e| panic!("{driver:?} {sql}: {e:?}"));
+        assert_eq!(stored().await, before, "{driver:?} {sql}");
+    }
+    run(engine, sid, "DROP TABLE tpm_it_rpbin").await;
+
     // A dropped table with an index (and on PostgreSQL a serial key and a comment) comes back.
     run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rpd").await;
     let key = if driver == Driver::Postgres { "id serial PRIMARY KEY" } else { "id integer PRIMARY KEY" };
@@ -2988,9 +3006,13 @@ async fn sql_server_flow(t: Target) {
     let r = run(&engine, &sid, "SELECT CAST('<a x=\"1\"/>' AS xml) AS x, CAST(NULL AS int) AS n").await;
     assert_eq!((text(&rows(&r, 0)[0][0]), &rows(&r, 0)[0][1]), ("<a x=\"1\"/>", &Cell::Null));
 
-    // --- restore points: a DELETE is captured and comes back ---
+    // --- restore points: a DELETE is captured and comes back, varbinary values as bytes ---
     let store = Arc::new(tpm_core::storage::Storage::open_in_memory().unwrap());
     engine.set_restore_store(store.clone());
+    let banana = "SELECT owner_id, name, price, data FROM tpm_it_items WHERE name = N'banana'";
+    run(&engine, &sid, &format!("UPDATE tpm_it_items SET data = {} WHERE name = N'banana'", blob_literal(driver)))
+        .await;
+    let before = run(&engine, &sid, banana).await.statements[0].rows.clone().unwrap();
     let r = engine
         .run_script(
             &sid,
@@ -3001,8 +3023,9 @@ async fn sql_server_flow(t: Target) {
         .await
         .unwrap();
     let note = r.statements[0].restore.clone().expect("note");
-    assert_eq!(note.reason.as_deref(), Some("the table has binary columns"), "as on MySQL: {note:?}");
-    run(&engine, &sid, "INSERT INTO tpm_it_items (owner_id, name, price) VALUES (1, N'banana', 0.25)").await;
+    let id = note.point_id.clone().unwrap_or_else(|| panic!("no restore point: {note:?}"));
+    engine.apply_restore(&sid, &id, None, true).await.unwrap();
+    assert_eq!(run(&engine, &sid, banana).await.statements[0].rows.clone().unwrap(), before, "banana is back");
     restore_points_on_sql_server(&engine, &sid).await;
 
     transfer_roundtrip(&engine, &sid, "dbo", driver).await;
@@ -3325,7 +3348,7 @@ async fn cancels_reach_their_own_run() {
 async fn mongodb() {
     use futures_util::TryStreamExt;
     use mongodb::bson::{DateTime, doc, oid::ObjectId};
-    use tpm_core::mongo::{AggregateRequest, DeleteTarget, FindRequest, VectorRequest};
+    use tpm_core::mongo::{AggregateRequest, DeleteTarget, FindRequest, ReplaceRequest, VectorRequest};
     let Ok(url) = std::env::var("TPM_TEST_MONGO_URL") else {
         eprintln!("BLOCKED: TPM_TEST_MONGO_URL not set; run scripts/test-db.sh up");
         return;
@@ -3539,6 +3562,57 @@ async fn mongodb() {
         .unwrap_err();
     assert_eq!(e.code.as_deref(), Some("confirm_typed"));
     assert_eq!(s.count("tpm_test", "tpm_it_orders", "").await.unwrap(), 45);
+    // Inserts likewise: refused read-only and locked, confirmed on production.
+    let one_doc = r#"{ "status": "x" }"#;
+    for id in [&ro_id, &prod_id] {
+        let e = engine.mongo(id).unwrap().insert("tpm_test", "tpm_it_orders", one_doc, true).await.unwrap_err();
+        assert_eq!(e.kind, ErrorKind::PolicyViolation);
+    }
+    let e = engine.mongo(&prod_rw).unwrap().insert("tpm_test", "tpm_it_orders", one_doc, false).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::ConfirmationRequired);
+    assert_eq!(s.count("tpm_test", "tpm_it_orders", "").await.unwrap(), 45);
+
+    // Edits: a document is replaced only while it is as it was read, with its types kept.
+    let edits = db.collection::<mongodb::bson::Document>("tpm_it_edits");
+    edits
+        .insert_one(doc! { "_id": 1, "status": "shiped", "n": 9_007_199_254_740_993_i64, "small": 5_i64, "at": DateTime::from_millis(0) })
+        .await
+        .unwrap();
+    let read =
+        || async { s.find(&FindRequest { collection: "tpm_it_edits".into(), ..req("", "", 10) }).await.unwrap() };
+    let page = read().await;
+    let (text, id) = (page.documents[0].clone(), page.ids[0].clone().unwrap());
+    let rq = |document: String, original: &str| ReplaceRequest {
+        database: "tpm_test".into(),
+        collection: "tpm_it_edits".into(),
+        id: id.clone(),
+        original: original.into(),
+        document,
+        confirmed: false,
+    };
+    s.replace(&rq(text.replace("shiped", "shipped"), &text)).await.unwrap();
+    let got = edits.find_one(doc! { "_id": 1 }).await.unwrap().unwrap();
+    assert_eq!(got.get_str("status").unwrap(), "shipped");
+    assert_eq!(got.get_i64("n").unwrap(), 9_007_199_254_740_993, "a large Int64 exactly");
+    assert_eq!(got.get_i64("small").unwrap(), 5, "a small Int64 stays Int64");
+    assert!(got.get_datetime("at").is_ok(), "a date stays a date");
+    // Saved over a document that changed since it was read: refused, nothing written.
+    let e = s.replace(&rq(text.replace("shiped", "again"), &text)).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Conflict, "{e:?}");
+    assert_eq!(edits.find_one(doc! { "_id": 1 }).await.unwrap().unwrap().get_str("status").unwrap(), "shipped");
+    let fresh = read().await.documents[0].clone();
+    let e = s.replace(&rq(fresh.replace("\"_id\": 1", "\"_id\": 2"), &fresh)).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::InvalidConfig, "the _id can't change: {e:?}");
+    // Inserted documents get an id; a gone document says so.
+    let new_id = s
+        .insert("tpm_test", "tpm_it_edits", r#"{ "status": "new", "at": { "$date": "2024-01-02T00:00:00Z" } }"#, false)
+        .await
+        .unwrap();
+    assert!(new_id.contains("$oid"), "{new_id}");
+    assert_eq!(edits.count_documents(doc! { "status": "new" }).await.unwrap(), 1);
+    edits.delete_one(doc! { "_id": 1 }).await.unwrap();
+    assert_eq!(s.replace(&rq(fresh.clone(), &fresh)).await.unwrap_err().kind, ErrorKind::NotFound);
+    assert_eq!(s.insert("admin", "x", "{}", false).await.unwrap_err().kind, ErrorKind::PolicyViolation);
 
     // A wrong password says so.
     let e = engine.mongo_open(&profile, Some("not-the-password"), None, false).await.unwrap_err();

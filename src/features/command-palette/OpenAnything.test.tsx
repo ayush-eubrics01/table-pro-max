@@ -59,6 +59,31 @@ describe("OpenAnything", () => {
     expect(await screen.findByText(/Nothing matches/)).toBeInTheDocument();
   });
 
+  it("Enter right after typing opens the best match for what was typed, not what was listed before", () => {
+    const onConnect = vi.fn();
+    render(<OpenAnything onConnect={onConnect} />);
+    const input = screen.getByRole("combobox");
+    // Typed (or pasted) and Enter at once: the list hasn't caught up yet.
+    fireEvent.change(input, { target: { value: "set" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onConnect).toHaveBeenCalledWith(expect.objectContaining({ id: "c-set" }));
+    expect(useUi.getState().settingsOpen).toBe(false);
+  });
+
+  it("finds saved queries by their folder and shows it", async () => {
+    mockIPC((cmd) =>
+      cmd === "list_saved_queries" ? [{ id: "q1", connectionId: null, name: "monthly revenue", folder: "Reports", sql: "select 1", favorite: false }] : null,
+    );
+    useWorkspaces.setState({
+      workspaces: [{ id: "w", kind: "sql", profile, session, schema: "public", schemas: ["public"], objects: { public: [] }, columns: {}, tabs: [], activeTabId: null, closed: [], health: "ok" }],
+      activeId: "w",
+    });
+    render(<OpenAnything onConnect={() => undefined} />);
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "reports" } });
+    await waitFor(() => expect(screen.getAllByRole("option")[0]).toHaveTextContent(/^monthly revenue/));
+    expect(screen.getAllByRole("option")[0]).toHaveTextContent("in Reports");
+  });
+
   it("walks the displayed order with the arrow keys", async () => {
     render(<OpenAnything onConnect={() => undefined} />);
     const input = screen.getByRole("combobox");
