@@ -92,7 +92,7 @@ No feature has a paid tier, license check, quota or artificial limit.
 | Create table | Form with preview | IMPLEMENTED | `ddl.rs`, `CreateTableDialog.tsx` | all | ddl unit tests | |
 | Alter table | Add, drop, rename column; type, nullability, default; create and drop index; rename table — staged and previewed | IMPLEMENTED | `ddl.rs`, `StructureView.tsx` | all | ddl unit tests | SQLite cannot change types or defaults in place; MySQL nullability changes need "change type" |
 | Drop table | Previewed, confirmed in the review dialog | IMPLEMENTED | `Sidebar.tsx` | all | | |
-| Open Anything | Ctrl+K (or Ctrl+P) fuzzy search over cached objects, schemas, saved queries, connections, actions | IMPLEMENTED | `OpenAnything.tsx`, `fuzzy.ts` | all | fuzzy unit tests | Searches only schemas already loaded |
+| Open Anything | Ctrl+K (or Ctrl+P) search over cached objects, schemas, saved queries, connections, actions. Forgiving: words in any order (`order items`), spaces for separators, letters in order (`ordit`), one typo per word of 4+ letters where the corrected word appears unbroken (`odrer_items`), and the connection or schema as well as the name (`sales items`); exact, prefix and word-start matches first, typo matches last; matched letters highlighted. The sidebar's Filter objects and the connections search on the home screen match the same way | VERIFIED | `OpenAnything.tsx`, `lib/fuzzy.ts`, `Highlight.tsx`, `Sidebar.tsx`, `Home.tsx` | all | `fuzzy.test.ts`, `OpenAnything`/`Sidebar`/`Home` tests; manual (Xvfb): `enum chk pg`, `lines g4`, sidebar `odrers` | Searches only schemas already loaded |
 
 ## Safety
 
