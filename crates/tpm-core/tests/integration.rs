@@ -555,6 +555,11 @@ async fn exercise(t: Target) {
         .await
         .unwrap_err();
     assert_eq!(err.kind, ErrorKind::PolicyViolation);
+    if driver == Driver::Mssql {
+        // The estimated plan works read-only too: nothing runs.
+        let ro_plan = engine.explain(&ro_info.session_id, "SELECT 1", false, false, None).await.unwrap();
+        assert!(ro_plan.raw.contains("<ShowPlanXML"));
+    }
     run(&engine, &ro_info.session_id, "SELECT count(*) FROM tpm_it_items").await;
     if let Some(sql) = t.sequence_write {
         // Classified as a read, but the server's read-only transaction refuses it.
@@ -2854,7 +2859,24 @@ async fn sql_server_flow(t: Target) {
     assert_eq!(r.statements[0].error.as_ref().unwrap().kind, ErrorKind::Timeout);
     assert!(t0.elapsed() < Duration::from_secs(6));
     run(&engine, &sid, "SELECT 1").await;
-    assert_eq!(engine.explain(&sid, "SELECT 1", false, false, None).await.unwrap_err().kind, ErrorKind::Unsupported);
+    // Query plans: the estimated one (SHOWPLAN_XML, nothing runs) and the actual one (STATISTICS XML).
+    let plan = engine.explain(&sid, "SELECT * FROM tpm_it_items WHERE price > 1", false, false, None).await.unwrap();
+    assert_eq!(plan.format, "mssql_xml");
+    assert!(
+        plan.raw.contains("<ShowPlanXML") && plan.raw.contains("tpm_it_items"),
+        "{}",
+        &plan.raw[..plan.raw.len().min(300)]
+    );
+    assert!(!plan.raw.contains("RunTimeInformation"), "estimated: nothing ran");
+    // The session runs statements again afterwards (SHOWPLAN is off).
+    let r = run(&engine, &sid, "SELECT count(*) FROM tpm_it_items").await;
+    assert!(r.statements[0].rows.is_some(), "{r:?}");
+    let actual = engine.explain(&sid, "SELECT * FROM tpm_it_items WHERE price > 1", true, false, None).await.unwrap();
+    assert_eq!(actual.format, "mssql_xml");
+    assert!(actual.raw.contains("RunTimeInformation"), "actual plan has run-time counters");
+    // An actual plan runs the statement, so a destructive one needs the confirmation first.
+    let e = engine.explain(&sid, "DELETE FROM tpm_it_items", true, false, None).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::ConfirmationRequired);
 
     // --- transactions the user opens are followed ---
     run(&engine, &sid, "BEGIN TRANSACTION; UPDATE tpm_it_items SET price = 3 WHERE name = N'cherry'").await;

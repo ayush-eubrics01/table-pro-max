@@ -6,7 +6,7 @@ import { envStyle } from "../lib/env";
 import { uid } from "../lib/text";
 import { useConnections } from "../stores/connections";
 import { useSettings } from "../stores/settings";
-import { useWorkspaces, type Tab } from "../stores/workspaces";
+import { hasUnsavedText, useWorkspaces, type Tab } from "../stores/workspaces";
 import { confirmAction, notifyError, useUi } from "../stores/ui";
 import { Overlays } from "../components/Overlays";
 import { Home } from "../features/connections/Home";
@@ -101,7 +101,15 @@ export function App() {
           if (sw.schema) await store.setSchema(wsId, sw.schema).catch(() => undefined);
           const tabs: Tab[] = sw.tabs.map((t): Tab => {
             if (t.kind === "query")
-              return { kind: "query", id: uid(), title: t.title, sql: t.sql ?? "", savedQueryId: t.savedQueryId ?? null, dirty: t.dirty ?? false };
+              return {
+                kind: "query",
+                id: uid(),
+                title: t.title,
+                sql: t.sql ?? "",
+                savedQueryId: t.savedQueryId ?? null,
+                dirty: t.dirty ?? false,
+                ...(typeof t.sql2 === "string" ? { split: t.split === true, sql2: t.sql2 } : {}),
+              };
             if (t.kind === "dashboard") return { kind: "dashboard", id: uid(), title: t.title, dashboardId: t.dashboardId ?? "" };
             if (t.kind === "table")
               return {
@@ -154,7 +162,7 @@ export function App() {
 
   const closeWorkspace = async (id: string) => {
     const ws = useWorkspaces.getState().workspaces.find((w) => w.id === id);
-    const unsaved = ws?.tabs.filter((t) => t.kind === "query" && t.dirty && !t.savedQueryId && t.sql.trim()).length ?? 0;
+    const unsaved = ws?.tabs.filter(hasUnsavedText).length ?? 0;
     if (unsaved > 0) {
       const ok = await confirmAction({
         title: `Disconnect from ${ws!.profile.name}?`,

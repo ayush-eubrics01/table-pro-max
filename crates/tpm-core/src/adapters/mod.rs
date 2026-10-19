@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use crate::config::{ConnectionProfile, Driver};
 use crate::dialect::Dialect;
-use crate::error::Result;
+use crate::error::{AppError, Result};
 use crate::model::{
     Capabilities, ColumnOrigin, DbObject, ObjectKind, Param, ReferencingKey, RowSet, ServerInfo, StatementOutcome,
     TableStructure,
@@ -74,6 +74,12 @@ pub trait Session: Send {
     async fn list_objects(&mut self, schema: &str) -> Result<Vec<DbObject>>;
     async fn table_structure(&mut self, schema: &str, name: &str) -> Result<TableStructure>;
     async fn object_definition(&mut self, schema: &str, name: &str, kind: ObjectKind) -> Result<String>;
+
+    /// The estimated plan of `sql`, without running it, as the server's own text (SQL Server:
+    /// showplan XML). Drivers that explain through a statement prefix don't need it.
+    async fn estimated_plan(&mut self, _sql: &str) -> Result<String> {
+        Err(AppError::unsupported("Query plans are not available this way"))
+    }
 
     /// Foreign keys in other tables that point at this one. The default reads the structure of
     /// every table in the same schema (SQLite, DuckDB); drivers with a catalog for it answer

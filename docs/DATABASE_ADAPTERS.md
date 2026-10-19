@@ -23,8 +23,8 @@ Every driver implements `tpm_core::adapters::Session` (`crates/tpm-core/src/adap
 | Cancellation | protocol cancel | `KILL QUERY` | `KILL QUERY` | `sqlite3_interrupt` | `duckdb_interrupt` | TDS attention (reconnects when the driver can't settle it) |
 | Transactions for grid edits | yes | yes (InnoDB) | yes | yes | yes | yes |
 | Transactional DDL | yes | no | no | yes | yes | yes |
-| EXPLAIN | JSON (VERBOSE) | `FORMAT=JSON` | `FORMAT=JSON` | `EXPLAIN QUERY PLAN` | not yet | not yet |
-| EXPLAIN ANALYZE | JSON + BUFFERS | tree (8.0.18+) | not offered | no | not yet | not yet |
+| EXPLAIN | JSON (VERBOSE) | `FORMAT=JSON` | `FORMAT=JSON` | `EXPLAIN QUERY PLAN` | not yet | `SHOWPLAN_XML` |
+| EXPLAIN ANALYZE | JSON + BUFFERS | tree (8.0.18+) | not offered | no | not yet | `STATISTICS XML` |
 | Materialized views | yes | no | no | no | no | no |
 | Routines listed | functions, procedures | yes | yes | no | no | functions, procedures |
 | Sequences | yes | no | yes | no | yes | yes |
@@ -188,7 +188,7 @@ checks `@@autocommit`, and the engine also tracks the `BEGIN`/`COMMIT`/`ROLLBACK
   An error in a statement never ends the user's transaction on the app's side.
 * Named instances: `host\instance` (or `instanceName=`) without a port asks SQL Browser on UDP 1434
   for the instance's TCP port at connect (one datagram each way, within the connect timeout).
-* Not yet: query plans (`SHOWPLAN_XML`), Windows/Entra sign-in,
+* Not yet: Windows/Entra sign-in,
   `DROP DEFAULT` from the structure editor (defaults are named constraints: drop them by name).
 * Tests: `scripts/test-db.sh` starts `tpm-test-mssql` (SQL Server 2022 Developer edition, free for
   development and testing; starting it accepts Microsoft's licence for that use).

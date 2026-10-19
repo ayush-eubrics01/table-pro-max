@@ -412,7 +412,7 @@ export interface ChangePreview {
 }
 
 export interface ExplainResult {
-  format: "postgres_json" | "mysql_json" | "mysql_tree" | "sqlite_plan";
+  format: "postgres_json" | "mysql_json" | "mysql_tree" | "sqlite_plan" | "mssql_xml";
   raw: string;
   rows: { columns: ColumnMeta[]; rows: Row[]; truncated: boolean } | null;
   durationMs: number;

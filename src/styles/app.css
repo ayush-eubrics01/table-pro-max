@@ -1166,6 +1166,17 @@ pre,
   border-left: 2px solid var(--bg);
   border-right: 2px solid var(--bg);
 }
+/* Query tab editors: one, or two side by side; the focused one is marked when split. */
+.query-pane {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  border-top: 2px solid transparent;
+}
+.query-pane.focused {
+  border-top-color: var(--accent);
+}
 
 /* ---- data grid ----------------------------------------------------------- */
 
