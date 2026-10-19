@@ -1,11 +1,13 @@
 import { useEffect, useId, useRef, useState } from "react";
-import type { AppInfo } from "../../types/backend";
+import type { AppInfo, RestoreUsage } from "../../types/backend";
 import { Dialog } from "../../components/Dialog";
 import { Icon } from "../../components/Icon";
 import type { IconName } from "../../components/icons.generated";
 import { useSettings, type Settings } from "../../stores/settings";
 import { confirmAction, notify, notifyError } from "../../stores/ui";
 import { api } from "../../lib/ipc";
+import { formatBytes } from "../../lib/cells";
+import { pluralize } from "../../lib/text";
 import { isMacPlatform } from "../../app/WindowControls";
 import { AiSettings } from "../ai/AiSettings";
 import { SnippetSettings } from "./SnippetSettings";
@@ -226,6 +228,7 @@ export function SettingsDialog({ appInfo, onClose }: { appInfo: AppInfo | null; 
               <NumberField label="Most rows in one restore point" k="restore.maxRows" min={1} max={10000000} hint="A statement that changes more rows asks before running without one." />
               <NumberField label="Largest restore point (MB)" k="restore.maxMb" min={1} max={Math.min(10000, settings["restore.maxTotalMb"])} hint="At most the space for all restore points." />
               <NumberField label="Space for all restore points (MB)" k="restore.maxTotalMb" min={10} max={100000} hint="When full, the oldest restore points are removed first." />
+              <RestoreUsageLine />
             </>
           )}
           {section === "history" && (
@@ -290,5 +293,25 @@ export function SettingsDialog({ appInfo, onClose }: { appInfo: AppInfo | null; 
         </section>
       </div>
     </Dialog>
+  );
+}
+
+/** How much the restore points kept now take; each connection's panel can delete its own. */
+function RestoreUsageLine() {
+  const [usage, setUsage] = useState<RestoreUsage | null>(null);
+  useEffect(() => {
+    api
+      .restorePointsUsage()
+      .then(setUsage)
+      .catch(() => setUsage(null));
+  }, []);
+  if (!usage) return null;
+  return (
+    <p className="hint">
+      {usage.count === 0
+        ? "No restore points are kept on this computer now."
+        : `${pluralize(usage.count, "restore point")} use ${formatBytes(usage.bytes)} on this computer.`}{" "}
+      To delete a connection's restore points, open its Restore points panel.
+    </p>
   );
 }

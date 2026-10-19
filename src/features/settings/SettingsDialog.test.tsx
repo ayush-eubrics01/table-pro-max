@@ -14,6 +14,7 @@ beforeEach(() => {
   mockIPC((cmd, args) => {
     if (cmd === "set_setting") saved[(args as { key: string }).key] = (args as { value: unknown }).value;
     if (cmd === "update_status") return { currentVersion: "0.1.0", lastCheck: null, auto: "unset" };
+    if (cmd === "restore_points_usage") return { count: 12, bytes: 3 * 1024 * 1024 };
     return null;
   });
 });
@@ -138,6 +139,12 @@ describe("SettingsDialog", () => {
     fireEvent.blur(total);
     expect(useSettings.getState().settings["restore.maxTotalMb"]).toBe(10);
     expect(saved["restore.maxTotalMb"]).toBe(10);
+  });
+
+  it("shows the space restore points use now", async () => {
+    render(<SettingsDialog appInfo={appInfo} onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "Safety" }));
+    expect(await screen.findByText(/^12 restore points use 3\.0 MB on this computer\./)).toBeInTheDocument();
   });
 
   it("keeps one restore point within the space for all of them", () => {

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::ConnectionProfile;
 use crate::error::{AppError, Result};
-use crate::restore::{RestoreKind, RestorePoint, RestorePointSummary, RestoreStatus, RestoreStore};
+use crate::restore::{RestoreKind, RestorePoint, RestorePointSummary, RestoreStatus, RestoreStore, RestoreUsage};
 
 /// Ordered migrations; index + 1 is the schema version (`PRAGMA user_version`).
 const MIGRATIONS: &[&str] = &[
@@ -759,6 +759,23 @@ impl Storage {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// Deletes a connection's restore points, except pending ones (their transaction is still
+    /// open; they go when it ends). Returns how many were deleted.
+    pub fn delete_restore_points(&self, connection_id: &str) -> Result<usize> {
+        Ok(self
+            .lock()?
+            .execute("DELETE FROM restore_points WHERE connection_id = ?1 AND status <> 'pending'", [connection_id])?)
+    }
+
+    /// Every restore point on this computer, counted and sized.
+    pub fn restore_points_usage(&self) -> Result<RestoreUsage> {
+        let (count, bytes): (i64, i64) =
+            self.lock()?.query_row("SELECT COUNT(*), COALESCE(SUM(bytes), 0) FROM restore_points", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?;
+        Ok(RestoreUsage { count: count as u64, bytes: bytes as u64 })
+    }
+
     /// Deletes pending restore points: their transaction ended with the app (a crash or a kill),
     /// so the changes they cover were never committed. Run at startup.
     pub fn discard_pending_restore_points(&self) -> Result<usize> {
@@ -1071,6 +1088,43 @@ mod tests {
         assert!(s.get("two_days").is_err());
         s.delete_connection("c1").unwrap();
         assert!(s.list_restore_points("c1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_connections_restore_points_are_deleted_together_and_counted() {
+        use crate::restore::{RestoreData, RestoreKind, RestorePoint, RestoreStatus, RestoreStore};
+        let s = Storage::open_in_memory().unwrap();
+        let p = |id: &str, conn: &str, status: RestoreStatus, bytes: u64| RestorePoint {
+            id: id.into(),
+            connection_id: conn.into(),
+            created_at: Utc::now().to_rfc3339(),
+            status,
+            restored_at: None,
+            kind: RestoreKind::Delete,
+            schema: "public".into(),
+            table: "orders".into(),
+            statement: "DELETE FROM orders".into(),
+            data: RestoreData {
+                columns: vec!["id".into()],
+                before: vec![vec![Some("1".into())]],
+                ..Default::default()
+            },
+            row_count: 1,
+            bytes,
+        };
+        assert_eq!(s.restore_points_usage().unwrap(), RestoreUsage { count: 0, bytes: 0 });
+        s.save(&p("a", "c1", RestoreStatus::Kept, 100)).unwrap();
+        s.save(&p("b", "c1", RestoreStatus::Restored, 200)).unwrap();
+        s.save(&p("pend", "c1", RestoreStatus::Pending, 50)).unwrap();
+        s.save(&p("other", "c2", RestoreStatus::Kept, 400)).unwrap();
+        assert_eq!(s.restore_points_usage().unwrap(), RestoreUsage { count: 4, bytes: 750 });
+        // A pending point's transaction is still open: it stays until the transaction ends.
+        assert_eq!(s.delete_restore_points("c1").unwrap(), 2);
+        let left: Vec<String> = s.list_restore_points("c1").unwrap().into_iter().map(|x| x.id).collect();
+        assert_eq!(left, vec!["pend".to_string()]);
+        assert_eq!(s.list_restore_points("c2").unwrap().len(), 1);
+        assert_eq!(s.restore_points_usage().unwrap(), RestoreUsage { count: 2, bytes: 450 });
+        assert_eq!(s.delete_restore_points("nobody").unwrap(), 0);
     }
 
     #[test]

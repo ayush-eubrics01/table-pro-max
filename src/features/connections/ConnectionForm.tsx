@@ -9,6 +9,9 @@ import { Icon } from "../../components/Icon";
 import { Dialog } from "../../components/Dialog";
 import { newProfile, useConnections } from "../../stores/connections";
 import { resolveConnectError } from "./connectFlow";
+import { confirmAction, notifyError } from "../../stores/ui";
+import { formatBytes } from "../../lib/cells";
+import { pluralize } from "../../lib/text";
 
 interface Props {
   initial?: ConnectionProfile;
@@ -17,6 +20,24 @@ interface Props {
   appInfo: AppInfo | null;
   onClose: () => void;
   onSaved: (profile: ConnectionProfile, connect: boolean) => void;
+}
+
+/** Restore points were just turned off for a connection: offer to delete the ones already kept. */
+async function offerToDeleteRestorePoints(profile: ConnectionProfile) {
+  try {
+    // Pending points belong to a transaction still open; they stay until it ends.
+    const kept = (await api.listRestorePoints(profile.id)).filter((x) => x.status !== "pending");
+    if (kept.length === 0) return;
+    const ok = await confirmAction({
+      title: "Delete the restore points already kept?",
+      body: `${profile.name} keeps no new restore points from now on. Its ${pluralize(kept.length, "restore point")} (${formatBytes(kept.reduce((n, x) => n + x.bytes, 0))}) can be deleted from this computer now, or left to expire.`,
+      confirmLabel: `Delete ${pluralize(kept.length, "restore point")}`,
+      danger: true,
+    });
+    if (ok) await api.deleteRestorePoints(profile.id);
+  } catch (e) {
+    notifyError(e, "Could not delete the restore points");
+  }
 }
 
 export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved }: Props) {
@@ -133,6 +154,7 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
     try {
       const profile = profileToSave();
       const saved = await save(profile, password || null, profile.ssh ? sshSecret || null : null);
+      if (isEdit && initial.restorePoints !== false && saved.restorePoints === false) await offerToDeleteRestorePoints(saved);
       onSaved(saved, connect);
     } catch (e) {
       setError(toError(e));

@@ -55,7 +55,9 @@ databases themselves.
   point.
 * **Restore points hold table data on disk.** They are copies of changed rows in the app
   database, unencrypted, readable by anyone who can read the user's files, for up to 7 days by
-  default (Settings › Safety). Turn them off per connection where that is not acceptable.
+  default (Settings › Safety, which also shows the space they use). Turn them off per connection
+  where that is not acceptable, and delete a connection's points with **Delete all** in its
+  Restore points panel (turning them off offers the same).
 * **In-memory secrets**: passwords held for "ask every time" stay in process memory until the
   app exits and are not zeroized.
 * **AI providers receive what you send.** With AI turned on, the previewed SQL, error text and

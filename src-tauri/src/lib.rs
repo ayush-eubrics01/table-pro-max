@@ -165,6 +165,8 @@ pub fn run() {
             commands::library::list_restore_points,
             commands::library::get_restore_point,
             commands::library::delete_restore_point,
+            commands::library::delete_restore_points,
+            commands::library::restore_points_usage,
             commands::library::delete_history,
             commands::library::clear_history,
             commands::library::prune_history,

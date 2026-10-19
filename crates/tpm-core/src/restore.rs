@@ -66,6 +66,14 @@ pub struct RestorePoint {
     pub bytes: u64,
 }
 
+/// How many restore points are kept on this computer, and their size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreUsage {
+    pub count: u64,
+    pub bytes: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RestorePointSummary {
