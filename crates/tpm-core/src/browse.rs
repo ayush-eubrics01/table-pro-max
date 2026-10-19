@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::dialect::Dialect;
 use crate::error::{AppError, Result};
 use crate::filter::{FilterNode, SqlBuilder, compile_with};
+use crate::large_values::is_binary_type;
 use crate::model::{ObjectKind, Param, TableStructure};
 
 /// Hard ceiling on a single page; keeps one IPC response bounded.
@@ -103,7 +104,8 @@ pub(crate) fn build_page(
         }
         let q = dialect.quote_ident(&c.name)?;
         select.push(match dialect {
-            Dialect::Postgres if c.data_type != "bytea" => format!("t.{q}::text AS {q}"),
+            // Binary values stay bytes (PostgreSQL bytea, DuckDB BLOB); everything else as text.
+            Dialect::Postgres if !is_binary_type(&c.data_type) => format!("t.{q}::text AS {q}"),
             _ => dialect.read_column(&format!("t.{q}"), &q, &c.data_type),
         });
     }
@@ -162,7 +164,7 @@ pub fn build_fetch(
     let proj = |name: &str, ty: &str| -> Result<String> {
         let q = dialect.quote_ident(name)?;
         Ok(match dialect {
-            Dialect::Postgres if ty != "bytea" => format!("t.{q}::text AS {q}"),
+            Dialect::Postgres if !is_binary_type(ty) => format!("t.{q}::text AS {q}"),
             _ => dialect.read_column(&format!("t.{q}"), &q, ty),
         })
     };

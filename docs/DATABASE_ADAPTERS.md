@@ -36,7 +36,7 @@ Every driver implements `tpm_core::adapters::Session` (`crates/tpm-core/src/adap
 * User SQL: `simple_query_raw`. Values arrive in text form; `bytea` shows as `\x…`.
   Column type names are not available on this path.
 * Generated SQL: extended protocol. Parameters use `TextParam` (text format, any type).
-  Browse queries cast columns to `::text` except `bytea`, which is decoded as binary.
+  Browse queries cast columns to `::text` except binary ones (`bytea`; DuckDB `BLOB`), read as bytes.
 * Conflict check compares `col::text IS NOT DISTINCT FROM $n` with the loaded text.
 * Errors: SQLSTATE class mapping (23 constraint, 28 auth, 08 network, 57014 cancelled,
   25006 read-only). Detail, hint and context are kept, and the position is mapped into the

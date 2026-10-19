@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tpm_core::browse::BrowseRequest;
+use tpm_core::changes::ColumnValue;
 use tpm_core::engine::{ImportRequest, JobProgress, RunOptions, StatementResult};
 use tpm_core::error::{AppError, Result};
 use tpm_core::transfer::{ExportOptions, ImportOptions, ImportPreview, open_sink, preview, validate_export_path};
@@ -66,6 +67,33 @@ pub async fn export_result(
     let n = state.engine.export_result(&result_id, sink).await?;
     tracing::info!(rows = n, format = ?options.format, "exported query result");
     Ok(n)
+}
+
+/// Reads a file chosen in the open dialog as a binary cell's new value, as hex.
+#[tauri::command]
+pub async fn read_binary_file(path: String) -> Result<String> {
+    tokio::task::spawn_blocking(move || {
+        tpm_core::transfer::read_binary_file(std::path::Path::new(&path), tpm_core::transfer::MAX_BINARY_FILE)
+    })
+    .await
+    .map_err(|e| AppError::internal(e.to_string()))?
+}
+
+/// Saves a table cell's full value (read again by its key) to a file chosen in the save dialog.
+#[tauri::command]
+pub async fn save_value_to_file(
+    state: State<'_, AppState>,
+    session_id: String,
+    schema: String,
+    table: String,
+    key: Vec<ColumnValue>,
+    column: String,
+    path: String,
+) -> Result<u64> {
+    let cell = state.engine.fetch_value(&session_id, &schema, &table, key, &column).await?;
+    tokio::task::spawn_blocking(move || tpm_core::transfer::write_cell_file(std::path::Path::new(&path), &cell))
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?
 }
 
 #[derive(Debug, Deserialize)]

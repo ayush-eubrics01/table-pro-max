@@ -9,6 +9,7 @@ import {
   newInsertedRow,
   pendingCount,
   toggleDelete,
+  type PendingValue,
 } from "./pending";
 
 const col = (name: string, extra: Partial<ColumnInfo> = {}): ColumnInfo => ({
@@ -84,6 +85,21 @@ describe("pending changes", () => {
     const placeholder: Cell[][] = [["1", "ada", { $notLoaded: true }]];
     const p = { ...EMPTY_PENDING, edits: { 0: { 2: "new" } } };
     expect(() => buildChangeSet(p, placeholder, columns, "public", "people", true)).toThrow(/not loaded/);
+  });
+
+  it("sends binary values as hex and shows them as binary", () => {
+    const withBlob = [...columns, col("photo", { dataType: "bytea" })];
+    const loaded: Cell[][] = [["1", "ada", null, { $notLoaded: true }]];
+    const p = editCell(EMPTY_PENDING, loaded, 0, 3, { $hex: "00ff10" });
+    expect(displayRow(p, loaded, 0)![3]).toEqual({ $bytes: "00ff10", size: 3 });
+    // A binary value has no conflict check, so it needn't be loaded to be replaced.
+    const set = buildChangeSet(p, loaded, withBlob, "public", "people", true);
+    expect(set.changes[0]).toEqual({ type: "update", key: [{ column: "id", value: "1" }], edits: [{ column: "photo", value: { kind: "bytes", hex: "00ff10" } }] });
+    const ins = { ...EMPTY_PENDING, inserted: [{ id: "n", values: [DEFAULT, "linus", null, { $hex: "" }] as PendingValue[] }] };
+    expect(buildChangeSet(ins, loaded, withBlob, "public", "people", true).changes[0]).toMatchObject({
+      type: "insert",
+      values: [{ column: "id", value: { kind: "default" } }, { column: "name" }, { column: "note" }, { column: "photo", value: { kind: "bytes", hex: "" } }],
+    });
   });
 
   it("refuses to change rows without a primary key", () => {

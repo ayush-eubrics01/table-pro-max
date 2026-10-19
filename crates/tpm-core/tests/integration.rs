@@ -407,6 +407,27 @@ async fn exercise(t: Target) {
     let r = run(&engine, &sid, "SELECT price FROM tpm_it_items WHERE name = 'apple'").await;
     assert!(text(&r.statements[0].rows.as_ref().unwrap()[0][0]).starts_with("2.75"));
 
+    // --- binary values: hex from the grid, decoded by the database, read back as bytes ---
+    let bytes_set = |hex: &str| ChangeSet {
+        schema: t.schema.clone(),
+        table: "tpm_it_items".into(),
+        check_conflicts: true,
+        changes: vec![RowChange::Update {
+            key: key(&apple_id),
+            edits: vec![ColumnEdit {
+                column: "data".into(),
+                value: EditValue::Bytes { hex: hex.into() },
+                original: None,
+            }],
+        }],
+    };
+    for (hex, bytes) in [("00FF107f", vec![0x00, 0xff, 0x10, 0x7f]), ("", vec![])] {
+        assert_eq!(engine.apply_changes(&sid, &bytes_set(hex), true).await.unwrap(), vec![1], "{driver:?} {hex}");
+        let v = engine.fetch_value(&sid, &t.schema, "tpm_it_items", key(&apple_id), "data").await.unwrap();
+        assert_eq!(v, Cell::Bytes(bytes), "{driver:?} {hex}");
+    }
+    assert!(engine.apply_changes(&sid, &bytes_set("0g"), true).await.is_err(), "not hex");
+
     // --- optimistic concurrency: stale original value -> conflict, nothing committed ---
     let stale = ChangeSet {
         schema: t.schema.clone(),

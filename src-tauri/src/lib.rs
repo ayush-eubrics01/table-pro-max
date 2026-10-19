@@ -163,6 +163,8 @@ pub fn run() {
             commands::transfer::import_file,
             commands::transfer::read_sql_file,
             commands::transfer::write_sql_file,
+            commands::transfer::read_binary_file,
+            commands::transfer::save_value_to_file,
             commands::transfer::run_sql_file,
             commands::library::search_history,
             commands::library::list_restore_points,
