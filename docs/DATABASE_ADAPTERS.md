@@ -186,7 +186,9 @@ checks `@@autocommit`, and the engine also tracks the `BEGIN`/`COMMIT`/`ROLLBACK
   The engine asks `@@TRANCOUNT` (and `DB_NAME()`) after each batch to follow the user's
   transactions; one that ended counts as committed unless the batch failed or only rolled back.
   An error in a statement never ends the user's transaction on the app's side.
-* Not yet: query plans (`SHOWPLAN_XML`), Windows/Entra sign-in, named-instance lookup,
+* Named instances: `host\instance` (or `instanceName=`) without a port asks SQL Browser on UDP 1434
+  for the instance's TCP port at connect (one datagram each way, within the connect timeout).
+* Not yet: query plans (`SHOWPLAN_XML`), Windows/Entra sign-in,
   `DROP DEFAULT` from the structure editor (defaults are named constraints: drop them by name).
 * Tests: `scripts/test-db.sh` starts `tpm-test-mssql` (SQL Server 2022 Developer edition, free for
   development and testing; starting it accepts Microsoft's licence for that use).

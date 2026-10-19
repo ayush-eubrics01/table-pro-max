@@ -36,6 +36,8 @@ export interface ConnectionProfile {
   authSource?: string | null;
   /** MongoDB: this one server only, without discovering its replica set (`directConnection`). */
   directConnection?: boolean;
+  /** SQL Server: a named instance; without a port, SQL Browser gives it. */
+  instance?: string | null;
 }
 
 export interface SshConfig {

@@ -198,6 +198,10 @@ pub struct ConnectionProfile {
     /// (`directConnection=true`: Docker and port-forwarded servers).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub direct_connection: bool,
+    /// SQL Server: a named instance (`server\\SQLEXPRESS`); without a port, its port is looked up
+    /// through SQL Browser.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -236,6 +240,7 @@ impl ConnectionProfile {
             srv: false,
             auth_source: None,
             direct_connection: false,
+            instance: None,
         }
     }
 
@@ -275,6 +280,11 @@ impl ConnectionProfile {
                 return Err(AppError::invalid_config("SSH tunnels apply to network databases only"));
             }
             ssh.validate()?;
+            if self.instance.is_some() && self.port.is_none() {
+                return Err(AppError::invalid_config(
+                    "A named instance's port is found through SQL Browser, which an SSH tunnel can't reach. Enter the instance's port.",
+                ));
+            }
         }
         if self.connect_timeout_secs == 0 || self.connect_timeout_secs > 600 {
             return Err(AppError::invalid_config("Connect timeout must be between 1 and 600 seconds"));
@@ -288,7 +298,11 @@ impl ConnectionProfile {
             self.file_path.clone().unwrap_or_default()
         } else {
             let db = if self.database.is_empty() { String::new() } else { format!("/{}", self.database) };
-            format!("{}@{}:{}{}", self.user, self.host, self.port_or_default(), db)
+            match (&self.instance, self.port) {
+                (Some(i), None) => format!("{}@{}\\{i}{db}", self.user, self.host),
+                (Some(i), Some(port)) => format!("{}@{}\\{i}:{port}{db}", self.user, self.host),
+                _ => format!("{}@{}:{}{}", self.user, self.host, self.port_or_default(), db),
+            }
         }
     }
 
@@ -305,6 +319,9 @@ impl ConnectionProfile {
         let _ = url.set_port(self.port);
         let _ = url.set_username(&self.user);
         url.set_path(&self.database);
+        if let Some(instance) = &self.instance {
+            url.query_pairs_mut().append_pair("instanceName", instance);
+        }
         let ssl = match self.tls.mode {
             TlsMode::Disable => "disable",
             TlsMode::Prefer => "prefer",
@@ -478,6 +495,13 @@ pub fn parse_connection_url(input: &str) -> Result<ParsedUrl> {
             }
             "user" if profile.user.is_empty() => profile.user = v.into_owned(),
             "dbname" | "database" if profile.database.is_empty() => profile.database = v.into_owned(),
+            // SQL Server named instance; its port comes from SQL Browser unless the URL has one.
+            "instancename" if driver == Driver::Mssql && !v.trim().is_empty() => {
+                profile.instance = Some(v.trim().to_string());
+                if url.port().is_none() {
+                    profile.port = None;
+                }
+            }
             // Passwords in the query string are accepted but never stored in the profile.
             _ => {}
         }
@@ -569,11 +593,11 @@ fn parse_ado_string(input: &str) -> Result<ParsedUrl> {
         }
         None => (server, None),
     };
-    if host.contains('\\') {
-        return Err(AppError::unsupported(
-            "Named instances (server\\instance) aren't supported yet. Use the instance's TCP port: Server=host,port.",
-        ));
-    }
+    // `host\instance`: SQL Browser gives the port unless one is written.
+    let (host, instance) = match host.split_once('\\') {
+        Some((h, i)) if !i.trim().is_empty() => (h.trim(), Some(i.trim().to_string())),
+        _ => (host, None),
+    };
     let host = match host {
         "" | "." | "(local)" => "localhost",
         h => h,
@@ -584,7 +608,8 @@ fn parse_ado_string(input: &str) -> Result<ParsedUrl> {
         Driver::Mssql,
     );
     profile.host = host.to_string();
-    profile.port = port.or(Driver::Mssql.default_port());
+    profile.port = if instance.is_some() { port } else { port.or(Driver::Mssql.default_port()) };
+    profile.instance = instance;
     profile.database = database;
     profile.user = get(&["user id", "uid", "user", "username"]).unwrap_or_default();
     let encrypt = get(&["encrypt"]).is_none_or(|v| truthy(&v));
@@ -678,6 +703,11 @@ mod tests {
         assert_eq!(p.profile.tls.mode, TlsMode::Require);
         assert_eq!(p.profile.to_url(), "sqlserver://app@db.example.com:1433/shop?sslmode=verify-full");
         assert_eq!(parse_connection_url("mssql://h:1444/x").unwrap().profile.port, Some(1444));
+        // A named instance round-trips as instanceName (as JDBC writes it), without a port.
+        let p = parse_connection_url("sqlserver://app@h/shop?instanceName=SQLEXPRESS").unwrap().profile;
+        assert_eq!((p.instance.as_deref(), p.port), (Some("SQLEXPRESS"), None));
+        assert_eq!(p.to_url(), "sqlserver://app@h/shop?instanceName=SQLEXPRESS&sslmode=prefer");
+        assert_eq!(p.target_label(), "app@h\\SQLEXPRESS/shop");
         assert_eq!(Driver::Mssql.dialect(), Dialect::Mssql);
     }
 
@@ -758,8 +788,26 @@ mod tests {
         let e = parse_connection_url("Server=h;Integrated Security=SSPI;Password=hunter2").unwrap_err();
         assert!(e.message.contains("Windows"), "{}", e.message);
         assert!(!e.message.contains("hunter2"));
-        let e = parse_connection_url("Server=h\\SQLEXPRESS;Database=x").unwrap_err();
-        assert!(e.message.contains("instance"), "{}", e.message);
+        // A named instance: its port is looked up through SQL Browser unless one is given.
+        let p = parse_connection_url("Server=h\\SQLEXPRESS;Database=x").unwrap().profile;
+        assert_eq!((p.host.as_str(), p.instance.as_deref(), p.port), ("h", Some("SQLEXPRESS"), None));
+        let p = parse_connection_url("Server=tcp:h\\SQLEXPRESS,1450").unwrap().profile;
+        assert_eq!((p.instance.as_deref(), p.port), (Some("SQLEXPRESS"), Some(1450)));
+        let p = parse_connection_url("Server=.\\SQLEXPRESS").unwrap().profile;
+        assert_eq!(p.host, "localhost");
+        // SQL Browser answers over UDP, which an SSH tunnel doesn't carry: a port is needed then.
+        let mut tunnelled = parse_connection_url("Server=h\\SQLEXPRESS").unwrap().profile;
+        tunnelled.ssh = Some(crate::ssh::SshConfig {
+            host: "bastion".into(),
+            port: 22,
+            user: "me".into(),
+            auth: crate::ssh::SshAuth::Password,
+            key_path: None,
+            secret_mode: PasswordMode::Ask,
+        });
+        assert!(tunnelled.validate().unwrap_err().message.contains("port"));
+        tunnelled.port = Some(1450);
+        assert!(tunnelled.validate().is_ok());
         assert!(parse_connection_url("Server=h;Password={unclosed").is_err());
     }
 

@@ -118,6 +118,19 @@ describe("ConnectionForm", () => {
     expect(screen.queryByText(/Sign in with a SQL Server login/)).not.toBeInTheDocument();
   });
 
+  it("takes a SQL Server named instance, with the port optional", async () => {
+    const onSaved = vi.fn();
+    render(<ConnectionForm appInfo={appInfo(true)} onClose={() => undefined} onSaved={onSaved} />);
+    fireEvent.click(screen.getByRole("radio", { name: /SQL Server/ }));
+    fireEvent.change(screen.getByLabelText("Host"), { target: { value: "db.local" } });
+    fireEvent.change(screen.getByLabelText(/Instance/), { target: { value: "SQLEXPRESS" } });
+    fireEvent.change(screen.getByLabelText("Port"), { target: { value: "" } });
+    expect(screen.getByText(/SQL Browser/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(saved!.profile).toMatchObject({ host: "db.local", instance: "SQLEXPRESS", port: null });
+  });
+
   it("sets the environment with the colour chips and warns for an unguarded production connection", () => {
     render(<ConnectionForm appInfo={appInfo(true)} onClose={() => undefined} onSaved={() => undefined} />);
     fireEvent.click(screen.getByRole("radio", { name: "Production" }));
