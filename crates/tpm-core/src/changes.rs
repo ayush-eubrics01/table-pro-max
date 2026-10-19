@@ -265,24 +265,124 @@ fn build_delete(dialect: Dialect, table: &str, pk: &[String], key: &[ColumnValue
     Ok(ParamStatement { sql: format!("DELETE FROM {table} WHERE {where_sql}"), params, expect_rows: Some(1) })
 }
 
+/// Rows per merged INSERT.
+const MERGED_ROWS: usize = 1000;
+
+/// Bind parameters one statement may carry: SQLite before 3.32 allows 999, SQL Server 2,100.
+fn max_params(dialect: Dialect) -> usize {
+    match dialect {
+        Dialect::Sqlite => 999,
+        Dialect::Mssql => 2000,
+        Dialect::Postgres | Dialect::Mysql => 30_000,
+    }
+}
+
+/// A single-row `INSERT … VALUES (placeholders)` as built here: its text before ` VALUES (`.
+fn single_row_insert(st: &ParamStatement) -> Option<&str> {
+    if st.expect_rows != Some(1)
+        || !st.sql.starts_with("INSERT INTO ")
+        || st.sql.contains(';')
+        || !st.sql.ends_with(')')
+    {
+        return None;
+    }
+    let (prefix, _) = st.sql.split_once(" VALUES (")?;
+    (st.sql.matches(" VALUES (").count() == 1 && !st.params.is_empty()).then_some(prefix)
+}
+
+/// Merges runs of single-row INSERTs into the same table and columns into multi-row INSERTs
+/// (at most 1,000 rows, within the driver's parameter limit), keeping every other statement and
+/// the order. Each merged statement expects as many rows as it inserts.
+pub fn merge_inserts(dialect: Dialect, statements: Vec<ParamStatement>) -> Vec<ParamStatement> {
+    let mut out: Vec<ParamStatement> = Vec::with_capacity(statements.len());
+    let mut run: Vec<ParamStatement> = Vec::new();
+    let flush = |run: &mut Vec<ParamStatement>, out: &mut Vec<ParamStatement>| {
+        let Some(first) = run.first() else { return };
+        let prefix = single_row_insert(first).expect("only inserts are gathered").to_string();
+        let width = first.params.len();
+        let per = MERGED_ROWS.min((max_params(dialect) / width).max(1));
+        for chunk in run.chunks(per) {
+            if chunk.len() == 1 {
+                out.push(chunk[0].clone());
+                continue;
+            }
+            let mut params = Vec::with_capacity(chunk.len() * width);
+            let mut tuples = Vec::with_capacity(chunk.len());
+            for st in chunk {
+                let marks: Vec<String> = (0..width).map(|i| dialect.placeholder(params.len() + i + 1)).collect();
+                tuples.push(format!("({})", marks.join(", ")));
+                params.extend(st.params.iter().cloned());
+            }
+            out.push(ParamStatement {
+                sql: format!("{prefix} VALUES {}", tuples.join(", ")),
+                params,
+                expect_rows: Some(chunk.len() as u64),
+            });
+        }
+        run.clear();
+    };
+    for st in statements {
+        let joins = match (run.first(), single_row_insert(&st)) {
+            (Some(first), Some(prefix)) => {
+                single_row_insert(first) == Some(prefix) && first.params.len() == st.params.len()
+            }
+            _ => false,
+        };
+        if !joins {
+            flush(&mut run, &mut out);
+        }
+        if single_row_insert(&st).is_some() {
+            run.push(st);
+        } else {
+            out.push(st);
+        }
+    }
+    flush(&mut run, &mut out);
+    out
+}
+
 /// Renders statements with parameters inlined as literals, for the review dialog only.
 pub fn preview(dialect: Dialect, statements: &[ParamStatement]) -> String {
     statements.iter().map(|st| format!("{};", inline_params(dialect, st))).collect::<Vec<_>>().join("\n")
 }
 
+/// How much of a long review is shown: a number of statements, and of characters.
+#[derive(Debug, Clone, Copy)]
+pub struct PreviewBudget {
+    pub statements: usize,
+    pub chars: usize,
+}
+
 /// Like [`preview`], but only the first `shown` statements: a restore of 100,000 rows reviews a
 /// sample and the count, not 100,000 lines.
 pub fn preview_first(dialect: Dialect, statements: &[ParamStatement], shown: usize) -> String {
-    if statements.len() <= shown {
-        return preview(dialect, statements);
+    preview_within(dialect, statements, &mut PreviewBudget { statements: shown, chars: usize::MAX })
+}
+
+/// Renders statements while `budget` lasts (spending it, so it carries across tables), then the
+/// count of the rest. A merged INSERT can hold 1,000 rows, so size counts as well as number.
+pub fn preview_within(dialect: Dialect, statements: &[ParamStatement], budget: &mut PreviewBudget) -> String {
+    let mut lines = Vec::new();
+    let mut shown = 0;
+    for st in statements {
+        if budget.statements == 0 || budget.chars == 0 {
+            break;
+        }
+        let line = format!("{};", inline_params(dialect, st));
+        budget.statements -= 1;
+        budget.chars = budget.chars.saturating_sub(line.len());
+        lines.push(line);
+        shown += 1;
     }
     let rest = statements.len() - shown;
-    let more = format!(
-        "-- … and {} more statement{} like these (not shown)",
-        group_digits(rest),
-        if rest == 1 { "" } else { "s" }
-    );
-    if shown == 0 { more } else { format!("{}\n{more}", preview(dialect, &statements[..shown])) }
+    if rest > 0 {
+        lines.push(format!(
+            "-- … and {} more statement{} like these (not shown)",
+            group_digits(rest),
+            if rest == 1 { "" } else { "s" }
+        ));
+    }
+    lines.join("\n")
 }
 
 fn group_digits(n: usize) -> String {
@@ -319,11 +419,27 @@ fn inline_params(dialect: Dialect, st: &ParamStatement) -> String {
                 Dialect::Mssql => "@P",
                 _ => "?",
             };
-            let mut out = st.sql.clone();
-            // Replace higher indexes first so "$1" does not clobber "$10".
-            for (i, p) in st.params.iter().enumerate().rev() {
-                out = out.replace(&format!("{prefix}{}", i + 1), &literal(p));
+            // One pass: each placeholder's whole number picks its value ("$10" is not "$1" + "0"),
+            // so a merged INSERT with thousands of parameters renders in linear time.
+            let sql = st.sql.as_str();
+            let mut out = String::with_capacity(sql.len() * 2);
+            let mut rest = sql;
+            while let Some(at) = rest.find(prefix) {
+                out.push_str(&rest[..at]);
+                let after = &rest[at + prefix.len()..];
+                let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+                match after[..digits]
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|n| n.checked_sub(1))
+                    .and_then(|i| st.params.get(i))
+                {
+                    Some(p) => out.push_str(&literal(p)),
+                    None => out.push_str(&rest[at..at + prefix.len() + digits]),
+                }
+                rest = &after[digits..];
             }
+            out.push_str(rest);
             out
         }
     }
@@ -528,6 +644,119 @@ mod tests {
             }],
         };
         assert!(build_statements(Dialect::Postgres, &users(), &set).is_err());
+    }
+
+    fn insert(dialect: Dialect, table: &str, values: &[&str]) -> ParamStatement {
+        let marks: Vec<String> = (1..=values.len()).map(|n| dialect.placeholder(n)).collect();
+        ParamStatement {
+            sql: format!("INSERT INTO {table} (\"a\", \"b\") VALUES ({})", marks.join(", ")),
+            params: values.iter().map(|v| Some(v.to_string())).collect(),
+            expect_rows: Some(1),
+        }
+    }
+
+    #[test]
+    fn single_row_inserts_merge_into_multi_row_inserts() {
+        let rows: Vec<_> = (1..=3).map(|i| insert(Dialect::Postgres, "t", &[&i.to_string(), "x"])).collect();
+        let merged = merge_inserts(Dialect::Postgres, rows);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].sql, r#"INSERT INTO t ("a", "b") VALUES ($1, $2), ($3, $4), ($5, $6)"#);
+        assert_eq!(merged[0].params.len(), 6);
+        assert_eq!(merged[0].params[4].as_deref(), Some("3"));
+        assert_eq!(merged[0].expect_rows, Some(3));
+        // MySQL's placeholders aren't numbered; SQL Server's are.
+        let my = merge_inserts(
+            Dialect::Mysql,
+            vec![insert(Dialect::Mysql, "t", &["1", "x"]), insert(Dialect::Mysql, "t", &["2", "y"])],
+        );
+        assert!(my[0].sql.ends_with("VALUES (?, ?), (?, ?)"), "{}", my[0].sql);
+        let ms = merge_inserts(
+            Dialect::Mssql,
+            vec![insert(Dialect::Mssql, "t", &["1", "x"]), insert(Dialect::Mssql, "t", &["2", "y"])],
+        );
+        assert!(ms[0].sql.ends_with("VALUES (@P1, @P2), (@P3, @P4)"), "{}", ms[0].sql);
+    }
+
+    #[test]
+    fn a_preview_budget_stops_on_size_too_and_carries_across_tables() {
+        let st = |i: usize| insert(Dialect::Postgres, "t", &[&i.to_string(), &"x".repeat(100)]);
+        let rows: Vec<_> = (0..50).map(st).collect();
+        let mut budget = PreviewBudget { statements: 200, chars: 1000 };
+        let text = preview_within(Dialect::Postgres, &rows, &mut budget);
+        let shown = text.lines().filter(|l| l.starts_with("INSERT")).count();
+        assert!((1..50).contains(&shown), "{shown}");
+        assert!(text.ends_with(&format!("-- … and {} more statements like these (not shown)", 50 - shown)));
+        // Spent: the next table only gets its count.
+        assert_eq!(
+            preview_within(Dialect::Postgres, &rows[..2], &mut budget),
+            "-- … and 2 more statements like these (not shown)"
+        );
+    }
+
+    #[test]
+    fn previews_of_large_merged_inserts_are_quick_and_exact() {
+        // Wide rows: 1,000 rows of 20 values are 20,000 placeholders in one statement.
+        for dialect in [Dialect::Postgres, Dialect::Sqlite, Dialect::Mssql, Dialect::Mysql] {
+            let rows: Vec<ParamStatement> = (0..1000)
+                .map(|i| {
+                    let marks: Vec<String> = (1..=20).map(|n| dialect.placeholder(n)).collect();
+                    let mut params = vec![Some(i.to_string())];
+                    params.extend((1..20).map(|_| Some("it's".to_string())));
+                    ParamStatement {
+                        sql: format!("INSERT INTO t VALUES ({})", marks.join(", ")),
+                        params,
+                        expect_rows: Some(1),
+                    }
+                })
+                .collect();
+            let merged = merge_inserts(dialect, rows);
+            let started = std::time::Instant::now();
+            let text = preview(dialect, &merged);
+            assert!(started.elapsed() < std::time::Duration::from_millis(500), "{dialect:?}: {:?}", started.elapsed());
+            let lit = |v: &str| dialect.quote_literal(v);
+            assert!(text.contains(&format!("({}, {}", lit("0"), lit("it's"))), "{dialect:?}");
+            assert!(
+                text.contains(&format!("({}, {}", lit("999"), lit("it's"))),
+                "{dialect:?}: high numbers inlined whole"
+            );
+            assert!(!text.contains('$') && !text.contains("@P") && !text.contains('?'), "{dialect:?}");
+        }
+    }
+
+    #[test]
+    fn merging_keeps_order_and_limits() {
+        // Another table, or anything else in between, starts a new statement; order is kept.
+        let other =
+            ParamStatement { sql: "UPDATE t SET a = $1".into(), params: vec![Some("1".into())], expect_rows: Some(1) };
+        let list = vec![
+            insert(Dialect::Postgres, "t", &["1", "x"]),
+            insert(Dialect::Postgres, "u", &["2", "y"]),
+            other.clone(),
+            insert(Dialect::Postgres, "t", &["3", "z"]),
+            insert(Dialect::Postgres, "t", &["4", "w"]),
+        ];
+        let merged = merge_inserts(Dialect::Postgres, list);
+        assert_eq!(merged.iter().map(|s| s.expect_rows).collect::<Vec<_>>(), [Some(1), Some(1), Some(1), Some(2)]);
+        assert_eq!(merged[2], other);
+        // At most 1,000 rows per statement, and within the driver's parameter limit
+        // (999 on SQLite: 499 rows of two values).
+        let many: Vec<_> = (0..2500).map(|i| insert(Dialect::Postgres, "t", &[&i.to_string(), "x"])).collect();
+        assert_eq!(
+            merge_inserts(Dialect::Postgres, many).iter().map(|s| s.expect_rows.unwrap()).collect::<Vec<_>>(),
+            [1000, 1000, 500]
+        );
+        let lite: Vec<_> = (0..1000).map(|i| insert(Dialect::Sqlite, "t", &[&i.to_string(), "x"])).collect();
+        assert_eq!(
+            merge_inserts(Dialect::Sqlite, lite).iter().map(|s| s.expect_rows.unwrap()).collect::<Vec<_>>(),
+            [499, 499, 2]
+        );
+        // SQL Server's IDENTITY_INSERT wrapper is several statements: left alone.
+        let wrapped = ParamStatement {
+            sql: "SET IDENTITY_INSERT t ON; INSERT INTO t (\"a\") VALUES (@P1); SET IDENTITY_INSERT t OFF".into(),
+            params: vec![Some("1".into())],
+            expect_rows: Some(1),
+        };
+        assert_eq!(merge_inserts(Dialect::Mssql, vec![wrapped.clone(), wrapped.clone()]).len(), 2);
     }
 
     #[test]

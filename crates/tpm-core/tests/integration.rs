@@ -1051,13 +1051,22 @@ async fn restore_point_restores(engine: &Arc<Engine>, sid: &str, schema: &str, d
     }
     run(engine, sid, "DROP TABLE tpm_it_rpd").await;
 
-    // A large restore: reviewed by a sample and its count, applied a chunk at a time with
-    // progress, and a cancel after the first chunk puts nothing back.
+    // A large restore of deleted rows goes back as a few multi-row INSERTs, reviewed as they run.
     run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rpbig").await;
     run(engine, sid, "CREATE TABLE tpm_it_rpbig (id integer PRIMARY KEY, note varchar(10))").await;
     let values = (1..=1200).map(|i| format!("({i}, 'n')")).collect::<Vec<_>>().join(", ");
     run(engine, sid, &format!("INSERT INTO tpm_it_rpbig VALUES {values}")).await;
     let r = engine.run_script(sid, "DELETE FROM tpm_it_rpbig", opts.clone(), None).await.unwrap();
+    let big = point(&r);
+    let preview = engine.preview_restore(sid, &big, None).await.unwrap();
+    let expected = if driver == Driver::Sqlite { 3 } else { 2 }; // 1,000 rows each; SQLite 499 (999 parameters)
+    assert_eq!(preview.statement_count, expected, "{driver:?}");
+    assert!(preview.sql.starts_with("INSERT INTO") && preview.sql.contains("), ("), "{driver:?}: multi-row INSERTs");
+    engine.apply_restore(sid, &big, None, true).await.unwrap_or_else(|e| panic!("{driver:?}: {e:?}"));
+    assert_eq!(text(&rows("SELECT count(*) FROM tpm_it_rpbig").await[0][0]), "1200", "{driver:?}");
+    // A large restore of changed rows (one UPDATE each): reviewed by a sample and its count,
+    // applied a chunk at a time with progress, and a cancel after the first chunk puts nothing back.
+    let r = engine.run_script(sid, "UPDATE tpm_it_rpbig SET note = 'm'", opts.clone(), None).await.unwrap();
     let big = point(&r);
     let preview = engine.preview_restore(sid, &big, None).await.unwrap();
     assert_eq!(preview.statement_count, 1200, "{driver:?}");
@@ -1072,14 +1081,15 @@ async fn restore_point_restores(engine: &Arc<Engine>, sid: &str, schema: &str, d
         .await
         .unwrap_err();
     assert_eq!(e.kind, ErrorKind::Cancelled, "{driver:?}: {e:?}");
-    assert_eq!(text(&rows("SELECT count(*) FROM tpm_it_rpbig").await[0][0]), "0", "{driver:?}: rolled back");
+    let still = "SELECT count(*) FROM tpm_it_rpbig WHERE note = 'm'";
+    assert_eq!(text(&rows(still).await[0][0]), "1200", "{driver:?}: rolled back");
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let log = seen.clone();
     let progress: tpm_core::engine::ApplyProgress =
         Arc::new(move |done, total| log.lock().unwrap().push((done, total)));
     engine.apply_restore_with(sid, &big, None, true, Some("tpm-it-restore".into()), Some(progress)).await.unwrap();
     assert_eq!(*seen.lock().unwrap(), vec![(500, 1200), (1000, 1200), (1200, 1200)], "{driver:?}");
-    assert_eq!(text(&rows("SELECT count(*) FROM tpm_it_rpbig").await[0][0]), "1200", "{driver:?}");
+    assert_eq!(text(&rows("SELECT count(*) FROM tpm_it_rpbig WHERE note = 'n'").await[0][0]), "1200", "{driver:?}");
     assert!(!engine.cancel_task("tpm-it-restore").await.unwrap(), "the task is gone once the restore ends");
     run(engine, sid, "DROP TABLE tpm_it_rpbig").await;
 
