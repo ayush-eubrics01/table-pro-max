@@ -345,7 +345,7 @@ describe("ResultsPanel: copy rows", () => {
     Object.defineProperty(navigator, "clipboard", { value: { writeText: write }, configurable: true });
     const requests: { rows: unknown[][]; options: Record<string, unknown> }[] = [];
     mockIPC((cmd, args) => {
-      if (cmd === "result_value") return "the full bio";
+      if (cmd === "result_values") return (args as { cells: unknown[] }).cells.map(() => "the full bio");
       if (cmd === "rows_as_text") {
         requests.push((args as { request: { rows: unknown[][]; options: Record<string, unknown> } }).request);
         return "copied";
@@ -369,6 +369,39 @@ describe("ResultsPanel: copy rows", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "Copy rows as JSON" }));
     await waitFor(() => expect(requests).toHaveLength(2));
     expect(requests[1]!.options.format).toBe("json");
+  });
+
+  it("reads the full values of many previews in a few calls, not one per cell", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: write }, configurable: true });
+    const batches: [number, number][][] = [];
+    let single = 0;
+    let copied: unknown[][] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "result_value") single++;
+      if (cmd === "result_values") {
+        const cells = (args as { cells: [number, number][] }).cells;
+        batches.push(cells);
+        return cells.map(([r]) => `full ${r}`);
+      }
+      if (cmd === "rows_as_text") copied = (args as { request: { rows: unknown[][] } }).request.rows;
+      return cmd === "rows_as_text" ? "copied" : null;
+    });
+    const many = result(true);
+    const st = many.statements[0]!;
+    many.statements[0] = { ...st, rows: Array.from({ length: 450 }, (_, i) => [String(i + 1), { $partial: "long…", length: 9000 }]), totalRows: 450 };
+    render(<ResultsPanel result={many} running={false} dialect="postgres" />);
+    const grid = await screen.findByRole("grid");
+    const first = (await screen.findAllByText("1")).map((e) => e.closest(".grid-cell")).find(Boolean)!;
+    fireEvent.mouseDown(first);
+    fireEvent.keyDown(grid, { key: "a", ctrlKey: true });
+    fireEvent.contextMenu(first);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Copy rows as JSON" }));
+    await waitFor(() => expect(write).toHaveBeenCalledWith("copied"));
+    expect(single).toBe(0);
+    expect(batches.map((b) => b.length)).toEqual([200, 200, 50]);
+    expect(copied).toHaveLength(450);
+    expect(copied[449]).toEqual(["450", "full 449"]);
   });
 
   it("reads rows not fetched yet instead of leaving them out", async () => {
@@ -466,7 +499,7 @@ describe("ResultsPanel: copy rows", () => {
     Object.defineProperty(navigator, "clipboard", { value: { writeText: write }, configurable: true });
     const requests: { options: Record<string, unknown> }[] = [];
     mockIPC((cmd, args) => {
-      if (cmd === "result_value") return "the full bio";
+      if (cmd === "result_values") return (args as { cells: unknown[] }).cells.map(() => "the full bio");
       if (cmd === "rows_as_text") requests.push((args as { request: { options: Record<string, unknown> } }).request);
       return cmd === "rows_as_text" ? "copied" : null;
     });

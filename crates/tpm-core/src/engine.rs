@@ -1461,6 +1461,25 @@ impl Engine {
             .ok_or_else(|| AppError::not_found("That cell is outside this result"))
     }
 
+    /// Several cells of a stored result in one call (copying rows), in the order asked.
+    pub fn result_values(&self, result_id: &str, cells: &[(usize, usize)]) -> Result<Vec<Cell>> {
+        let store = lock(&self.results);
+        let r = store
+            .results
+            .get(result_id)
+            .ok_or_else(|| AppError::not_found("This result is no longer in memory; run the query again"))?;
+        cells
+            .iter()
+            .map(|&(row, col)| {
+                r.rows
+                    .get(row)
+                    .and_then(|cells| cells.get(col))
+                    .cloned()
+                    .ok_or_else(|| AppError::not_found("That cell is outside this result"))
+            })
+            .collect()
+    }
+
     /// All rows and columns of a stored result (for export).
     pub fn result_snapshot(&self, result_id: &str) -> Result<(Vec<ColumnMeta>, Vec<Row>)> {
         let store = lock(&self.results);

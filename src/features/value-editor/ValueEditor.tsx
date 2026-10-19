@@ -11,7 +11,7 @@ import { confirmAction } from "../../stores/ui";
 import { formatBytes } from "../../lib/cells";
 import { toError } from "../../lib/ipc";
 import { EDITOR_HIGHLIGHT, EDITOR_THEME } from "../sql-editor/SqlEditor";
-import { formatJson, validateJson } from "./json";
+import { formatJson, validateJson, type JsonCheck } from "./json";
 
 export interface ValueEditorProps {
   title: string;
@@ -27,6 +27,14 @@ export interface ValueEditorProps {
 }
 
 type Loaded = { state: "loading" } | { state: "error"; message: string; kind: string } | { state: "ready"; original: string | null };
+
+/** From this many characters, checking and measuring wait until typing pauses. */
+const LARGE_TEXT = 100_000;
+const CHECK_DELAY_MS = 300;
+
+function byteLength(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
 
 export function ValueEditor({ title, typeName, mode, load, readOnlyReason, nullable, onSave, onClose, recover }: ValueEditorProps) {
   const [loaded, setLoaded] = useState<Loaded>({ state: "loading" });
@@ -82,8 +90,19 @@ export function ValueEditor({ title, typeName, mode, load, readOnlyReason, nulla
   const ready = loaded.state === "ready";
   const original = ready ? loaded.original : null;
   const dirty = ready && text !== (original ?? "");
-  const check = mode === "json" && ready ? validateJson(text) : null;
-  const size = ready ? formatBytes(new TextEncoder().encode(text).length) : null;
+  // A large value is checked and measured once typing pauses, not on every keystroke (a few MB
+  // of JSON take long enough to make typing lag). Until then Save waits for the check.
+  const large = text.length >= LARGE_TEXT;
+  const [measured, setMeasured] = useState<{ text: string; check: JsonCheck | null; bytes: number } | null>(null);
+  useEffect(() => {
+    if (!ready || !large) return;
+    const t = setTimeout(() => setMeasured({ text, check: mode === "json" ? validateJson(text) : null, bytes: byteLength(text) }), CHECK_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [ready, large, text, mode]);
+  const current = !large ? { check: mode === "json" ? validateJson(text) : null, bytes: byteLength(text) } : measured?.text === text ? measured : null;
+  const checking = ready && mode === "json" && current === null;
+  const check = ready ? (current?.check ?? null) : null;
+  const size = ready ? formatBytes(current?.bytes ?? byteLength(original ?? "")) : null;
 
   const close = async () => {
     if (dirty && !(await confirmAction({ title: "Discard your changes to this value?", body: "The edits in this editor have not been saved.", confirmLabel: "Discard", danger: true }))) return;
@@ -111,7 +130,7 @@ export function ValueEditor({ title, typeName, mode, load, readOnlyReason, nulla
             Copy
           </button>
           {mode === "json" && ready && (
-            <button className="btn btn-ghost" disabled={!check?.ok} onClick={() => replace(formatJson(text))}>
+            <button className="btn btn-ghost" disabled={!check?.ok || checking} onClick={() => replace(formatJson(text))}>
               Format
             </button>
           )}
@@ -121,13 +140,13 @@ export function ValueEditor({ title, typeName, mode, load, readOnlyReason, nulla
             </button>
           )}
           <span className="value-editor-status" role="status">
-            {check ? (check.ok ? "Valid JSON" : `Invalid JSON: line ${check.line}, column ${check.column}: ${check.message}`) : null}
+            {checking ? "Checking JSON…" : check ? (check.ok ? "Valid JSON" : `Invalid JSON: line ${check.line}, column ${check.column}: ${check.message}`) : null}
           </span>
           <button className="btn" onClick={() => void close()}>
             {readOnlyReason === null ? "Cancel" : "Close"}
           </button>
           {readOnlyReason === null && (
-            <button className="btn btn-primary" disabled={!ready || !dirty || (check !== null && !check.ok)} onClick={() => onSave(text)}>
+            <button className="btn btn-primary" disabled={!ready || !dirty || checking || (check !== null && !check.ok)} onClick={() => onSave(text)}>
               Save
             </button>
           )}

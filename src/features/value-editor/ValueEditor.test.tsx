@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { EditorView } from "@codemirror/view";
 import { ValueEditor } from "./ValueEditor";
+import * as jsonModule from "./json";
 import { Overlays } from "../../components/Overlays";
 
 beforeEach(() => {
@@ -36,6 +37,28 @@ describe("ValueEditor", () => {
     await setText('{"a": 2}');
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(onSave).toHaveBeenCalledWith('{"a": 2}');
+  });
+
+  it("checks a large document once typing pauses, not on every change, and waits for it before saving", async () => {
+    const onSave = vi.fn();
+    const big = (n: number) => JSON.stringify({ rows: Array.from({ length: 6000 }, (_, i) => ({ id: i, name: `row ${i}`, n })) });
+    const spy = vi.spyOn(jsonModule, "validateJson");
+    render(<ValueEditor title="t" typeName="jsonb" mode="json" load={async () => big(0)} readOnlyReason={null} nullable onSave={onSave} onClose={() => {}} />);
+    expect(await screen.findByText("Valid JSON")).toBeInTheDocument();
+    spy.mockClear();
+    await setText(big(1));
+    await setText(big(2));
+    await setText(big(3) + "x");
+    expect(spy).not.toHaveBeenCalled();
+    expect(screen.getByText("Checking JSON…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(await screen.findByText(/^Invalid JSON/)).toBeInTheDocument();
+    expect(spy).toHaveBeenCalledTimes(1);
+    await setText(big(4));
+    expect(await screen.findByText("Valid JSON")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSave).toHaveBeenCalledWith(big(4));
+    spy.mockRestore();
   });
 
   it("formats without changing numbers, and sets NULL", async () => {

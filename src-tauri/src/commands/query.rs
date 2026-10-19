@@ -364,3 +364,9 @@ pub async fn fetch_column(
 pub fn result_value(state: State<'_, AppState>, result_id: String, row: usize, col: usize) -> Result<Cell> {
     state.engine.result_value(&result_id, row, col)
 }
+
+/// Several cells as `[row, col]` pairs, in one call (copying rows reads every preview in full).
+#[tauri::command]
+pub fn result_values(state: State<'_, AppState>, result_id: String, cells: Vec<(usize, usize)>) -> Result<Vec<Cell>> {
+    state.engine.result_values(&result_id, &cells)
+}
