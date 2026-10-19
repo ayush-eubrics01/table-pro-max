@@ -81,6 +81,18 @@ describe("Sidebar", () => {
     expect(screen.getByText("No matching objects")).toBeInTheDocument();
   });
 
+  it("filters forgivingly: typos and spaces for underscores, best match first", () => {
+    render(<Sidebar ws={ws()} onSwitchDatabase={() => undefined} />);
+    const filter = screen.getByLabelText("Filter objects");
+    for (const q of ["odrers", "ord", "paid ord"]) {
+      fireEvent.change(filter, { target: { value: q } });
+      expect(screen.queryByText("No matching objects"), q).not.toBeInTheDocument();
+    }
+    fireEvent.change(filter, { target: { value: "odrers" } });
+    expect(screen.getByRole("treeitem", { name: /^orders/ })).toBeInTheDocument();
+    expect(screen.queryByRole("treeitem", { name: /customers/ })).not.toBeInTheDocument();
+  });
+
   it("keeps schema actions in the footer, and only Refresh when read-only", () => {
     const { unmount } = render(<Sidebar ws={ws()} onSwitchDatabase={() => undefined} />);
     const foot = screen.getByRole("toolbar", { name: "Schema actions" });

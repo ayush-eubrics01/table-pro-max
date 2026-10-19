@@ -3178,3 +3178,17 @@ select.grid-editor {
   margin-left: 6px;
   vertical-align: middle;
 }
+
+/* ---- search matches --------------------------------------------------------- */
+
+/* Letters a search matched: the accent colour and weight, not the browser's yellow. */
+mark {
+  background: transparent;
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+@media (forced-colors: active) {
+  mark {
+    color: Highlight;
+  }
+}

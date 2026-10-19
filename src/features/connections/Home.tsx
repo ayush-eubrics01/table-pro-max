@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { rank } from "../../lib/fuzzy";
 import { Icon } from "../../components/Icon";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { api } from "../../lib/ipc";
@@ -44,16 +45,17 @@ export function Home({ appInfo, onConnect, connecting }: Props) {
   const isUrl = isConnectionString(search);
 
   const groups = useMemo(() => {
-    const needle = isUrl ? "" : search.trim().toLowerCase();
-    const filtered = connections.filter(
-      ({ profile: p }) =>
-        !needle || [p.name, p.host, p.database, p.user, p.group ?? "", p.filePath ?? "", ...p.tags].some((v) => v.toLowerCase().includes(needle)),
-    );
-    const sorted = [...filtered].sort((a, b) => {
-      if (sort === "name") return a.profile.name.localeCompare(b.profile.name);
-      if (sort === "recent") return (b.lastUsedAt ?? "").localeCompare(a.lastUsedAt ?? "");
-      return a.sortOrder - b.sortOrder;
-    });
+    const needle = isUrl ? "" : search.trim();
+    // Forgiving match on the name first, then where it points and how it is labelled; while
+    // searching, the best matches come first within each environment.
+    const fields = (p: ConnectionProfile) => [p.name, p.host, p.database, p.user, p.group ?? "", p.filePath ?? "", p.driver, ...p.tags];
+    const sorted = needle
+      ? rank(connections, needle, (c) => fields(c.profile), Infinity)
+      : [...connections].sort((a, b) => {
+          if (sort === "name") return a.profile.name.localeCompare(b.profile.name);
+          if (sort === "recent") return (b.lastUsedAt ?? "").localeCompare(a.lastUsedAt ?? "");
+          return a.sortOrder - b.sortOrder;
+        });
     const byEnv = new Map<Environment, StoredConnection[]>();
     for (const c of sorted) byEnv.set(c.profile.environment, [...(byEnv.get(c.profile.environment) ?? []), c]);
     return ENV_ORDER.filter((env) => byEnv.has(env)).map((env) => [env, byEnv.get(env)!] as const);
