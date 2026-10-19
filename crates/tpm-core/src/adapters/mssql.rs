@@ -87,8 +87,8 @@ impl MsSession {
         password: Option<&str>,
         options: &ConnectOptions,
     ) -> Result<Self> {
-        // tiberius uses the process's rustls provider; the app's TLS everywhere else is ring.
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        // tiberius uses the process's rustls provider.
+        super::tls::install_process_provider();
         let mut config = Config::new();
         let addr = match options.tunnel_port {
             Some(p) => {

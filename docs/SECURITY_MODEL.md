@@ -48,6 +48,11 @@ databases themselves.
 * **SQL Server sign-in is always encrypted**, but with TLS set to Disable the server's
   certificate is not checked and the rest of the traffic is plaintext. Prefer and Require
   verify the certificate.
+* **MongoDB read-only** is enforced by the app, not the server: MongoDB has no read-only session,
+  so a read-only or locked production connection only runs finds, counts, reading pipelines
+  (`$out` and `$merge` refused at any depth) and vector searches, and refuses deletes. For a
+  guaranteed read-only connection, use a user with only the `read` role. Deletes keep no restore
+  point.
 * **Restore points hold table data on disk.** They are copies of changed rows in the app
   database, unencrypted, readable by anyone who can read the user's files, for up to 7 days by
   default (Settings › Safety). Turn them off per connection where that is not acceptable.

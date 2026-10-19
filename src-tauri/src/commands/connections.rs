@@ -188,6 +188,17 @@ pub async fn test_connection(
             Err(e) => return Err(e),
         },
     };
+    if request.profile.driver == tpm_core::config::Driver::Mongodb {
+        let (id, info) =
+            state.engine.mongo_open(&request.profile, password.as_deref(), ssh_secret.as_deref(), false).await?;
+        state.engine.mongo_close(&id);
+        return Ok(tpm_core::model::ServerInfo {
+            product: "MongoDB".into(),
+            version: info.version,
+            current_database: info.database,
+            current_user: info.user,
+        });
+    }
     if request.profile.driver == tpm_core::config::Driver::Redis {
         let (id, info) = state.engine.redis_open(&request.profile, password.as_deref(), ssh_secret.as_deref()).await?;
         state.engine.redis_close(&id);
@@ -283,7 +294,7 @@ pub async fn connect(app: AppHandle, state: State<'_, AppState>, request: Connec
 }
 
 /// Settings › Safety › "Open production connections read-only" (on unless turned off).
-fn production_read_only(state: &AppState) -> bool {
+pub(crate) fn production_read_only(state: &AppState) -> bool {
     !matches!(state.storage.get_setting("safety.productionReadOnly"), Ok(Some(serde_json::Value::Bool(false))))
 }
 

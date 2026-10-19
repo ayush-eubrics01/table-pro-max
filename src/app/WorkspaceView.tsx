@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../components/Icon";
-import { useWorkspaces, type Tab, type Workspace } from "../stores/workspaces";
+import { mongoSessionInfo, useWorkspaces, type Tab, type Workspace } from "../stores/workspaces";
 import { useRestore } from "../stores/restore";
 import { RestorePanel } from "../features/restore/RestorePanel";
 import { usePendingEdits } from "../stores/pendingEdits";
@@ -13,11 +13,12 @@ import { QueryTab } from "../features/sql-editor/QueryTab";
 import { DefinitionView } from "../features/schema-browser/DefinitionView";
 import { DashboardView } from "../features/dashboards/DashboardView";
 import { RedisView } from "../features/redis/RedisView";
+import { MongoView } from "../features/mongo/MongoView";
 import { api } from "../lib/ipc";
 import { databaseToReopen } from "../lib/dialect";
 import { envColorVar, envLabel, envStyle, safetyLabel } from "../lib/env";
 import { confirmAction, notifyError } from "../stores/ui";
-import { connectWithPrompt, reconnectWithPrompt } from "../features/connections/connectFlow";
+import { connectMongoWithPrompt, connectWithPrompt, reconnectWithPrompt } from "../features/connections/connectFlow";
 import { ConnectionLine } from "../features/connections/nameConfirm";
 
 export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean }) {
@@ -98,14 +99,14 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
 
   const s = ws.session;
   const restoreOpen = useRestore((r) => r.open) && keepsRestorePoints(ws);
-  if (ws.kind === "redis") {
+  if (ws.kind === "redis" || ws.kind === "mongo") {
     return (
       <div
         className="workspace"
         data-env={s.environment}
         style={{ ["--env-color" as string]: envColorVar(s.environment), display: visible ? "flex" : "none" }}
       >
-        <RedisView ws={ws} />
+        {ws.kind === "redis" ? <RedisView ws={ws} /> : <MongoView ws={ws} />}
       </div>
     );
   }
@@ -158,7 +159,7 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
 
 /** Whether restore points are kept for this workspace's connection. */
 function keepsRestorePoints(ws: Workspace): boolean {
-  return ws.kind !== "redis" && !ws.session.readOnly && ws.profile.restorePoints !== false;
+  return ws.kind !== "redis" && ws.kind !== "mongo" && !ws.session.readOnly && ws.profile.restorePoints !== false;
 }
 
 /** "Restore points · N" in the status bar; opens the panel. */
@@ -198,8 +199,9 @@ export async function changeWriteAccess(ws: Workspace, allow: boolean) {
         <>
           <ConnectionLine session={s} />
           <p style={{ margin: 0 }}>
-            Statements and edits can change this production database until you go back to read-only or close the connection. Query tabs reconnect on their next run, and a transaction open in
-            one is rolled back.
+            {ws.kind === "mongo"
+              ? "Deletes can change this production database until you go back to read-only or close the connection."
+              : "Statements and edits can change this production database until you go back to read-only or close the connection. Query tabs reconnect on their next run, and a transaction open in one is rolled back."}
           </p>
         </>
       ),
@@ -220,6 +222,13 @@ export async function changeWriteAccess(ws: Workspace, allow: boolean) {
     if (!ok) return;
   }
   try {
+    if (ws.kind === "mongo") {
+      const r = await connectMongoWithPrompt(ws.profile, { lockProduction: !allow });
+      if (!r) return;
+      await api.mongoDisconnect(s.sessionId).catch(() => undefined);
+      useWorkspaces.getState().update(ws.id, { session: mongoSessionInfo(ws.profile, r.sessionId, r.info), allowWrites: allow, health: "ok" });
+      return;
+    }
     const session = await connectWithPrompt(ws.profile, databaseToReopen(s), { lockProduction: !allow });
     if (!session) return;
     await api.disconnect(s.sessionId).catch(() => undefined);
@@ -241,6 +250,13 @@ export function StatusBar({ ws, version }: { ws: Workspace | undefined; version?
   const s = ws.session;
   const reconnect = async () => {
     try {
+      if (ws.kind === "mongo") {
+        const r = await connectMongoWithPrompt(ws.profile, { lockProduction: s.writesLocked });
+        if (!r) return;
+        await api.mongoDisconnect(s.sessionId).catch(() => undefined);
+        useWorkspaces.getState().update(ws.id, { session: mongoSessionInfo(ws.profile, r.sessionId, r.info), health: "ok" });
+        return;
+      }
       const info = await reconnectWithPrompt(s.sessionId, ws.profile);
       if (info) useWorkspaces.getState().update(ws.id, { session: info, health: "ok" });
     } catch (e) {

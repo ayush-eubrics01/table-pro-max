@@ -1,7 +1,7 @@
 # Table Pro Max
 
 A free, privacy-first desktop database client for **PostgreSQL, MySQL, MariaDB, SQL Server,
-SQLite, DuckDB and Redis**. It is built with Rust and Tauri for Linux, Windows and macOS.
+SQLite, DuckDB, Redis and MongoDB**. It is built with Rust and Tauri for Linux, Windows and macOS.
 
 - **Free, with no catches.** No account, no license key, no premium tier, no limits on tabs,
   filters or connections.

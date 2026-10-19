@@ -164,6 +164,18 @@ No feature has a paid tier, license check, quota or artificial limit.
 | Console with history, redis-cli style output | VERIFIED | integration; manual (Xvfb) | |
 | Safety: commands classified by name; read-only connections run only read commands; dangerous commands (FLUSHDB, FLUSHALL, CONFIG SET, KEYS, DEL…) need confirmation; blocking and pub/sub commands refused | VERIFIED | unit + integration; manual (Xvfb): FLUSHDB stopped at confirmation | Redis has no server-side read-only session on a primary, so read-only is enforced by this allowlist |
 
+## MongoDB (Tier 2)
+
+| Feature | Status | Evidence | Limitations |
+|---|---|---|---|
+| Connect (one host or `mongodb+srv://`, auth database, `directConnection`, TLS verified or not, CA file, SSH tunnel); `mongodb://` and `mongodb+srv://` URLs | VERIFIED (TCP, no TLS) | unit `parses_mongodb_urls`; integration `mongodb` (wrong password refused); manual (Xvfb) on MongoDB 7 and Atlas local 8 | Replica-set host lists not supported (one host, or SRV); SRV with SSH refused; TLS and SSH share the tested code but have no MongoDB-specific test; MongoDB has no "TLS if offered", so Prefer means verified TLS with SRV and none without |
+| Browse databases and collections (views, time series, estimated counts); `system.*` collections hidden | VERIFIED | integration; `MongoView.test.tsx`; manual (Xvfb) | |
+| Find: filter, sort, projection as Extended JSON, skip and limit (pages up to 1,000), count; table of top-level fields or JSON per document | VERIFIED | unit `filters_are_extended_json_objects`; integration (dates, ObjectIds, sort, projection, skip); manual (Xvfb) | Results stop at 16 MB per page, with a note |
+| Aggregate: a pipeline of reading stages; `$out` and `$merge` refused at any depth | VERIFIED | unit; integration (`$out` refused, nothing written); manual (Xvfb): `$merge` refused | |
+| Vector search (`$vectorSearch` built from index, field, query vector, candidates, limit and an optional filter; `_score` shown) | VERIFIED | unit (stage building and validation); integration on `mongodb/mongodb-atlas-local` (index created in the test, filter applied); manual (Xvfb) | Needs Atlas or Atlas local; index management is not offered |
+| Delete selected documents (by `_id`) or the documents a filter matches: counted first, confirmed with the count, run only if the count is unchanged; on production a delete by filter needs the connection name typed | VERIFIED | unit `check_delete` rules, `system_collections_are_never_deleted_from`; integration (confirmation, conflict, by id, by filter, read-only and production lock refused); `MongoView.test.tsx`; manual (Xvfb) on development and production connections | No restore points for MongoDB; no insert or edit |
+| Every read has a time limit (`maxTimeMS`: the connection's query timeout, else 30 s) | VERIFIED | integration (`$where` sleep stopped) | |
+
 ## Import and export
 
 | Feature | Behaviour | Status | Modules | Drivers | Evidence | Limitations |

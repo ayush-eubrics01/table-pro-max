@@ -14,6 +14,13 @@ use crate::error::{AppError, ErrorKind, Result};
 /// CA bundles larger than this are rejected rather than read into memory.
 const MAX_CA_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
+/// Makes ring rustls's process-wide default. Drivers that build their own TLS from that default
+/// (tiberius, mongodb) then use the same crypto as the rest of the app; AWS-LC is compiled in
+/// through tiberius's dependencies, and with two providers rustls would pick neither.
+pub(crate) fn install_process_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 fn provider() -> Arc<CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }

@@ -117,7 +117,7 @@ fn ddl(driver: Driver) -> Vec<&'static str> {
              name text NOT NULL UNIQUE, price numeric(10,2), data bytea, tags jsonb, created timestamptz DEFAULT now())",
             "CREATE INDEX tpm_it_items_price ON tpm_it_items(price)",
         ],
-        Driver::Mysql | Driver::Mariadb | Driver::Redis => vec![
+        Driver::Mysql | Driver::Mariadb | Driver::Redis | Driver::Mongodb => vec![
             "DROP TABLE IF EXISTS tpm_it_items",
             "DROP TABLE IF EXISTS tpm_it_owners",
             "CREATE TABLE tpm_it_owners (id int PRIMARY KEY, name varchar(100) NOT NULL) ENGINE=InnoDB",
@@ -1544,7 +1544,7 @@ async fn lazy_values(engine: &Arc<Engine>, sid: &str, schema: &str, driver: Driv
         Driver::Sqlite => ("TEXT", "TEXT", "replace(hex(zeroblob(50000)), '0', 'x')"),
         Driver::Duckdb => ("VARCHAR", "VARCHAR", "repeat('x', 100000)"),
         Driver::Mssql => ("nvarchar(max)", "nvarchar(max)", "REPLICATE(CAST('x' AS nvarchar(max)), 100000)"),
-        Driver::Redis => unreachable!(),
+        Driver::Redis | Driver::Mongodb => unreachable!(),
     };
     run(engine, sid, "DROP TABLE IF EXISTS tpm_it_docs").await;
     run(engine, sid, "DROP TABLE IF EXISTS tpm_it_nokey").await;
@@ -3141,4 +3141,238 @@ async fn cancels_reach_their_own_run() {
     assert_eq!(text(&r.statements[0].rows.clone().unwrap()[0][0]), "0", "A never ran");
     run(&engine, &sid, "DROP TABLE tpm_it_cr").await;
     engine.close_all().await;
+}
+
+/// MongoDB: browse, find, aggregate, delete with the backend's checks, read-only, and vector search
+/// against the local Atlas image.
+#[tokio::test(flavor = "multi_thread")]
+async fn mongodb() {
+    use futures_util::TryStreamExt;
+    use mongodb::bson::{DateTime, doc, oid::ObjectId};
+    use tpm_core::mongo::{AggregateRequest, DeleteTarget, FindRequest, VectorRequest};
+    let Ok(url) = std::env::var("TPM_TEST_MONGO_URL") else {
+        eprintln!("BLOCKED: TPM_TEST_MONGO_URL not set; run scripts/test-db.sh up");
+        return;
+    };
+    let parsed = parse_connection_url(&url).unwrap();
+    let (mut profile, password) = (parsed.profile, parsed.password);
+    profile.name = "Mongo it".into();
+    let seed = mongodb::Client::with_uri_str(&url).await.unwrap();
+    let db = seed.database("tpm_test");
+    db.collection::<mongodb::bson::Document>("tpm_it_orders").drop().await.unwrap();
+    db.collection::<mongodb::bson::Document>("tpm_it_notes").drop().await.unwrap();
+    let orders: Vec<_> = (0..50)
+        .map(|i| {
+            doc! {
+                "_id": i,
+                "status": if i % 2 == 0 { "paid" } else { "new" },
+                "total": i as f64 * 1.5,
+                "at": DateTime::from_millis(1_700_000_000_000 + i as i64 * 86_400_000),
+                "tags": ["a", "b"],
+                "nested": { "n": i },
+            }
+        })
+        .collect();
+    db.collection("tpm_it_orders").insert_many(orders).await.unwrap();
+    let note_ids: Vec<ObjectId> = (0..3).map(|_| ObjectId::new()).collect();
+    db.collection("tpm_it_notes")
+        .insert_many(note_ids.iter().map(|id| doc! { "_id": id, "text": "é 漢字" }).collect::<Vec<_>>())
+        .await
+        .unwrap();
+
+    let engine = Arc::new(Engine::new());
+    let (id, info) = engine.mongo_open(&profile, password.as_deref(), None, false).await.unwrap();
+    assert!(info.version.starts_with("7."), "{info:?}");
+    let s = engine.mongo(&id).unwrap();
+    let dbs = s.databases().await.unwrap();
+    assert_eq!(dbs[0].name, "tpm_test", "the connection's database first: {dbs:?}");
+    let colls = s.collections("tpm_test").await.unwrap();
+    let o = colls.iter().find(|c| c.name == "tpm_it_orders").expect("listed");
+    assert_eq!((o.kind.as_str(), o.estimated_count), ("collection", Some(50)));
+
+    // Find: filter, sort, projection, paging; values as relaxed Extended JSON.
+    let req = |filter: &str, sort: &str, limit: u32| FindRequest {
+        database: "tpm_test".into(),
+        collection: "tpm_it_orders".into(),
+        filter: filter.into(),
+        sort: sort.into(),
+        projection: String::new(),
+        skip: 0,
+        limit,
+    };
+    let page = s.find(&req(r#"{ "status": "paid" }"#, r#"{ "total": -1 }"#, 5)).await.unwrap();
+    assert_eq!((page.documents.len(), page.has_more), (5, true));
+    assert_eq!(page.ids[0].as_deref(), Some("48"));
+    assert!(
+        page.documents[0].contains("\"total\": 72.0") && page.documents[0].contains("\"$date\""),
+        "{}",
+        page.documents[0]
+    );
+    assert_eq!(page.fields, ["_id", "status", "total", "at", "tags", "nested"]);
+    let last = s.find(&FindRequest { skip: 20, ..req(r#"{ "status": "paid" }"#, "", 10) }).await.unwrap();
+    assert_eq!((last.documents.len(), last.has_more), (5, false));
+    let p = s.find(&FindRequest { projection: r#"{ "total": 1 }"#.into(), ..req("", "", 1) }).await.unwrap();
+    assert_eq!(p.fields, ["_id", "total"]);
+    let dated = s.find(&req(r#"{ "at": { "$lt": { "$date": "2023-11-16T00:00:00Z" } } }"#, "", 100)).await.unwrap();
+    assert_eq!(dated.documents.len(), 2, "Extended JSON dates compare as dates");
+    assert_eq!(s.count("tpm_test", "tpm_it_orders", r#"{ "nested.n": { "$gte": 40 } }"#).await.unwrap(), 10);
+    let err = s.find(&req("{ status: 1 }", "", 5)).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidConfig);
+
+    // Aggregate: reads run, writes are refused before anything is sent.
+    let agg = |pipeline: &str| AggregateRequest {
+        database: "tpm_test".into(),
+        collection: "tpm_it_orders".into(),
+        pipeline: pipeline.into(),
+        limit: 100,
+    };
+    let g = s
+        .aggregate(&agg(r#"[{ "$group": { "_id": "$status", "n": { "$sum": 1 } } }, { "$sort": { "_id": 1 } }]"#))
+        .await
+        .unwrap();
+    assert_eq!(g.documents.len(), 2);
+    assert!(g.documents[0].contains("\"n\": 25"), "{}", g.documents[0]);
+    let e = s.aggregate(&agg(r#"[{ "$match": {} }, { "$out": "tpm_it_copy" }]"#)).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::PolicyViolation);
+    let names = db.list_collection_names().await.unwrap();
+    assert!(!names.contains(&"tpm_it_copy".to_string()), "$out never ran");
+
+    // A server-side time limit stops a slow read.
+    let mut slow = profile.clone();
+    slow.query_timeout_secs = 1;
+    let (slow_id, _) = engine.mongo_open(&slow, password.as_deref(), None, false).await.unwrap();
+    let t0 = Instant::now();
+    let e = engine
+        .mongo(&slow_id)
+        .unwrap()
+        .find(&req(r#"{ "$where": "sleep(200) || true" }"#, "", 1000))
+        .await
+        .unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Timeout, "{e:?}");
+    assert!(t0.elapsed() < Duration::from_secs(5));
+    engine.mongo_close(&slow_id);
+
+    // Deletes: counted, confirmed, and refused when the count changed.
+    let paid = DeleteTarget::Filter { filter: r#"{ "status": "paid", "total": { "$gte": 60 } }"#.into() };
+    let n = s.delete_count("tpm_test", "tpm_it_orders", &paid).await.unwrap();
+    assert_eq!(n, 5);
+    let e = s.delete("tpm_test", "tpm_it_orders", &paid, n, false, None).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::ConfirmationRequired);
+    let e = s.delete("tpm_test", "tpm_it_orders", &paid, n + 1, true, None).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Conflict);
+    assert_eq!(s.count("tpm_test", "tpm_it_orders", "").await.unwrap(), 50, "nothing deleted");
+    assert_eq!(s.delete("tpm_test", "tpm_it_orders", &paid, n, true, None).await.unwrap(), 5);
+    let notes = s.find(&FindRequest { collection: "tpm_it_notes".into(), ..req("", "", 10) }).await.unwrap();
+    assert!(notes.documents[0].contains("é 漢字"));
+    let one = DeleteTarget::Ids { ids: vec![notes.ids[1].clone().unwrap()] };
+    assert_eq!(s.delete_count("tpm_test", "tpm_it_notes", &one).await.unwrap(), 1);
+    assert_eq!(s.delete("tpm_test", "tpm_it_notes", &one, 1, true, None).await.unwrap(), 1);
+    let left: Vec<ObjectId> = db
+        .collection::<mongodb::bson::Document>("tpm_it_notes")
+        .find(doc! {})
+        .await
+        .unwrap()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap()
+        .iter()
+        .map(|d| d.get_object_id("_id").unwrap())
+        .collect();
+    assert_eq!(left, [note_ids[0], note_ids[2]], "the selected document, and only it");
+
+    // Read-only connections, and production until writes are allowed, refuse deletes.
+    let mut ro = profile.clone();
+    ro.safety_mode = SafetyMode::ReadOnly;
+    let (ro_id, ro_info) = engine.mongo_open(&ro, password.as_deref(), None, false).await.unwrap();
+    assert!(ro_info.read_only);
+    let all = DeleteTarget::Filter { filter: "{}".into() };
+    let e = engine.mongo(&ro_id).unwrap().delete("tpm_test", "tpm_it_orders", &all, 45, true, None).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::PolicyViolation);
+    let mut prod = profile.clone();
+    prod.environment = tpm_core::config::Environment::Production;
+    let (prod_id, prod_info) = engine.mongo_open(&prod, password.as_deref(), None, true).await.unwrap();
+    assert!(prod_info.writes_locked);
+    let e =
+        engine.mongo(&prod_id).unwrap().delete("tpm_test", "tpm_it_orders", &all, 45, true, None).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::PolicyViolation);
+    let (prod_rw, _) = engine.mongo_open(&prod, password.as_deref(), None, false).await.unwrap();
+    let e = engine
+        .mongo(&prod_rw)
+        .unwrap()
+        .delete("tpm_test", "tpm_it_orders", &all, 45, true, Some("wrong"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code.as_deref(), Some("confirm_typed"));
+    assert_eq!(s.count("tpm_test", "tpm_it_orders", "").await.unwrap(), 45);
+
+    // A wrong password says so.
+    let e = engine.mongo_open(&profile, Some("not-the-password"), None, false).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Authentication, "{e:?}");
+
+    db.drop().await.unwrap();
+
+    // Vector search, against the local Atlas image (Atlas Search runs $vectorSearch).
+    let Ok(atlas_url) = std::env::var("TPM_TEST_MONGO_ATLAS_URL") else {
+        eprintln!("BLOCKED: TPM_TEST_MONGO_ATLAS_URL not set; vector search not tested");
+        return;
+    };
+    let atlas = mongodb::Client::with_uri_str(&atlas_url).await.unwrap();
+    let adb = atlas.database("tpm_test");
+    let docs = adb.collection::<mongodb::bson::Document>("tpm_it_vectors");
+    let _ = docs.drop().await;
+    docs.insert_many(vec![
+        doc! { "_id": 1, "title": "north", "lang": "en", "embedding": [1.0, 0.0, 0.0] },
+        doc! { "_id": 2, "title": "east", "lang": "en", "embedding": [0.0, 1.0, 0.0] },
+        doc! { "_id": 3, "title": "nearly north", "lang": "fr", "embedding": [0.9, 0.1, 0.0] },
+    ])
+    .await
+    .unwrap();
+    let model = mongodb::SearchIndexModel::builder()
+        .name("tpm_vidx".to_string())
+        .index_type(mongodb::SearchIndexType::VectorSearch)
+        .definition(doc! { "fields": [
+            { "type": "vector", "path": "embedding", "numDimensions": 3, "similarity": "cosine" },
+            { "type": "filter", "path": "lang" },
+        ] })
+        .build();
+    docs.create_search_index(model).await.unwrap();
+    let mut ready = false;
+    for _ in 0..120 {
+        let idx: Vec<_> = docs.list_search_indexes().await.unwrap().try_collect().await.unwrap();
+        if idx.iter().any(|i| i.get_bool("queryable").unwrap_or(false)) {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(ready, "the vector index became queryable");
+    let parsed = parse_connection_url(&atlas_url).unwrap();
+    let (aid, _) = engine.mongo_open(&parsed.profile, parsed.password.as_deref(), None, false).await.unwrap();
+    let a = engine.mongo(&aid).unwrap();
+    let vreq = |filter: &str| VectorRequest {
+        database: "tpm_test".into(),
+        collection: "tpm_it_vectors".into(),
+        index: "tpm_vidx".into(),
+        path: "embedding".into(),
+        query_vector: "[1, 0, 0]".into(),
+        num_candidates: None,
+        limit: 2,
+        filter: filter.into(),
+    };
+    let mut hits = a.vector_search(&vreq("")).await.unwrap();
+    // The index catches up with the inserts shortly after it is queryable.
+    for _ in 0..40 {
+        if hits.documents.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        hits = a.vector_search(&vreq("")).await.unwrap();
+    }
+    assert_eq!(hits.ids, [Some("1".to_string()), Some("3".to_string())], "nearest first");
+    assert!(hits.documents[0].contains("\"_score\""), "{}", hits.documents[0]);
+    assert!(hits.fields.contains(&"_score".to_string()));
+    let en = a.vector_search(&vreq(r#"{ "lang": "en" }"#)).await.unwrap();
+    assert_eq!(en.ids, [Some("1".to_string()), Some("2".to_string())], "the filter applies before ranking");
+    adb.drop().await.unwrap();
+    engine.mongo_close(&aid);
 }
