@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Icon } from "../../components/Icon";
 import type { Cell, ColumnInfo } from "../../types/backend";
-import { cellCopy, cellDisplay, isBinary, isJsonType, isLargeText, isNotLoaded, isPartial, prettyJson, previewText, formatBytes } from "../../lib/cells";
+import { cellCopy, cellDisplay, isBinary, isBinaryType, isJsonType, isLargeText, isNotLoaded, isPartial, prettyJson, previewText, formatBytes } from "../../lib/cells";
 
 interface Props {
   columns: ColumnInfo[];
@@ -117,13 +117,27 @@ function Field({
             Open editor
           </button>
         </div>
-      ) : isBinary(value) ? (
-        <pre className="hint">
-          Binary, {formatBytes(value.size)}
-          {"\n"}
-          {value.$bytes.slice(0, 256)}
-          {value.$bytes.length > 256 ? "…" : ""}
-        </pre>
+      ) : isBinary(value) || isBinaryType(column.dataType) ? (
+        // Binary values change in their editor (hex, a file or NULL), never as typed text.
+        <div>
+          <pre className="hint">
+            {isBinary(value) ? (
+              <>
+                Binary, {formatBytes(value.size)}
+                {"\n"}
+                {value.$bytes.slice(0, 256)}
+                {value.$bytes.length > 256 ? "…" : ""}
+              </>
+            ) : (
+              cellDisplay(value)
+            )}
+          </pre>
+          {onOpenEditor && (
+            <button className="btn btn-ghost" onClick={onOpenEditor}>
+              {editable ? "Edit…" : "View"}
+            </button>
+          )}
+        </div>
       ) : editable && column.enumValues?.length ? (
         <div className="field-row" style={{ gap: 4 }}>
           <select

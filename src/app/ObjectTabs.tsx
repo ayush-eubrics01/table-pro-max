@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../components/Icon";
-import { useWorkspaces, type Tab, type Workspace } from "../stores/workspaces";
+import { hasUnsavedText, useWorkspaces, type Tab, type Workspace } from "../stores/workspaces";
 import { shortcut } from "../lib/shortcut";
 
 function TabIcon({ tab }: { tab: Tab }) {
@@ -79,7 +79,7 @@ export function ObjectTabs({ ws, dirtyTables, onClose }: { ws: Workspace; dirtyT
           >
             <TabIcon tab={t} />
             <span className="label">{t.title}</span>
-            {((t.kind === "query" && t.dirty && !t.savedQueryId && t.sql.trim()) || dirtyTables[t.id]) && <span className="dirty" aria-label="Unsaved changes" />}
+            {(hasUnsavedText(t) || dirtyTables[t.id]) && <span className="dirty" aria-label="Unsaved changes" />}
           </div>
           <button
             className="tab-close"

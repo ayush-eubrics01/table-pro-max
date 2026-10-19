@@ -55,6 +55,12 @@ describe("Ctrl+W", () => {
     await waitFor(() => expect(tabsLeft()).toBe(0));
   });
 
+  it("asks when only the second editor has text", async () => {
+    renderWs(ws({ kind: "query", id: "q3", title: "Query 3", sql: "", savedQueryId: null, dirty: false, split: true, sql2: "select 2" }));
+    fireEvent.keyDown(window, { key: "w", ctrlKey: true });
+    expect(await screen.findByText("Close Query 3?")).toBeInTheDocument();
+  });
+
   it("closes a tab with nothing to lose straight away", async () => {
     renderWs(ws({ kind: "query", id: "q2", title: "Query 2", sql: "", savedQueryId: null, dirty: false }));
     fireEvent.keyDown(window, { key: "w", ctrlKey: true });

@@ -93,7 +93,15 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
   const updateTab = useWorkspaces((s) => s.updateTab);
   const openQuery = useWorkspaces((s) => s.openQuery);
   const loadColumns = useWorkspaces((s) => s.loadColumns);
-  const editor = useRef<SqlEditorHandle>(null);
+  // The tab's editor and, when split, a second one beside it; actions use the focused one.
+  const left = useRef<SqlEditorHandle>(null);
+  const right = useRef<SqlEditorHandle>(null);
+  const [pane, setPane] = useState<0 | 1>(0);
+  const paneRef = useRef<0 | 1>(0);
+  paneRef.current = tab.split ? pane : 0;
+  const editorOf = (p: 0 | 1) => (p === 1 ? right : left).current;
+  const ed = () => editorOf(paneRef.current);
+  const textOf = (p: 0 | 1) => editorOf(p)?.getText() ?? (p === 1 ? (tab.sql2 ?? "") : tab.sql);
   const sessionRef = useRef<SessionInfo | null>(null);
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [running, setRunning] = useState<{ taskId: string; done: number } | null>(null);
@@ -106,6 +114,8 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyKey, setHistoryKey] = useState(0);
   const [split, setSplit] = useState(0.45);
+  const [hsplit, setHsplit] = useState(0.5);
+  const editors = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   const container = useRef<HTMLDivElement>(null);
   const [fileTask, setFileTask] = useState<{ id: string; name: string } | null>(null);
@@ -114,7 +124,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
   const [ai, setAi] = useState<{ task: AiTask } | null>(null);
   const [resultsDirty, setResultsDirty] = useState(false);
   // What produced the current results, so "Run again" repeats exactly that (a selection stays a selection).
-  const lastRun = useRef<{ mode: RunMode; target: { sql: string; base: number } } | null>(null);
+  const lastRun = useRef<{ mode: RunMode; target: { sql: string; base: number }; pane: 0 | 1 } | null>(null);
   // Parameter values typed in this tab, offered again on the next run.
   const paramValues = useRef<ParameterValues>({});
   // The dialog's answer: values, "raw" (run as written) or null (cancelled).
@@ -212,24 +222,26 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
 
   useEffect(() => {
     const t = setTimeout(() => {
-      const wanted = referencedTables(tab.sql, ws.schema).filter(
+      const wanted = referencedTables(tab.split ? `${tab.sql}\n${tab.sql2 ?? ""}` : tab.sql, ws.schema).filter(
         ({ schema, table }) => ws.columns[`${schema}.${table}`] === undefined && ws.objects[schema]?.some((o) => o.name === table),
       );
       for (const { schema, table } of wanted.slice(0, 5)) void loadColumns(ws.id, schema, table);
     }, 400);
     return () => clearTimeout(t);
-  }, [tab.sql, ws.id, ws.schema, ws.columns, ws.objects, loadColumns]);
+  }, [tab.sql, tab.sql2, tab.split, ws.id, ws.schema, ws.columns, ws.objects, loadColumns]);
 
-  const run = async (mode: RunMode, confirmed = false, explicit?: { sql: string; base: number }, typed?: string, given?: ParameterValues) => {
+  const run = async (mode: RunMode, confirmed = false, explicit?: { sql: string; base: number; pane: 0 | 1 }, typed?: string, given?: ParameterValues) => {
     if (running || paramAsk) return;
-    const text = editor.current?.getText() ?? tab.sql;
-    let target = explicit;
+    const p = explicit?.pane ?? paneRef.current;
+    const editor = editorOf(p);
+    const text = textOf(p);
+    let target: { sql: string; base: number } | undefined = explicit;
     if (!target) {
-      const sel = editor.current?.getSelection();
+      const sel = editor?.getSelection();
       if (sel) target = { sql: text.slice(sel.from, sel.to), base: utf16ToByte(text, sel.from) };
       else if (mode === "all") target = { sql: text, base: 0 };
       else {
-        const span = await api.statementAtCursor(text, ws.session.dialect, utf16ToByte(text, editor.current?.getCursor() ?? 0));
+        const span = await api.statementAtCursor(text, ws.session.dialect, utf16ToByte(text, editor?.getCursor() ?? 0));
         if (!span) return;
         target = { sql: span.sql, base: span.start };
       }
@@ -270,7 +282,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
       return null;
     });
     if (!s) return;
-    editor.current?.clearError();
+    editor?.clearError();
     setError(null);
     setExplain(null);
     const taskId = uid();
@@ -290,12 +302,12 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
       });
       if (resultIds.current.length) void api.releaseResults(resultIds.current);
       resultIds.current = r.statements.flatMap((x) => (x.resultId ? [x.resultId] : []));
-      lastRun.current = { mode, target };
+      lastRun.current = { mode, target, pane: p };
       setResult(r);
       // Any run can add restore points, or settle pending ones (COMMIT, ROLLBACK, MySQL DDL).
       useRestore.getState().bump();
       const failed = r.statements.find((x) => x.error && x.error.kind !== "cancelled");
-      if (failed) markError(text, failed);
+      if (failed) markError(editor, text, failed);
     } catch (e) {
       const err = toError(e);
       if (err.kind === "confirmation_required") {
@@ -308,7 +320,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
           ...(byName ? { typeToConfirm: s.connectionName } : {}),
           body: <ConfirmRunBody session={s} detail={err.detail} />,
         });
-        if (ok) return run(mode, true, target, byName ? s.connectionName : undefined, parameters);
+        if (ok) return run(mode, true, { ...target, pane: p }, byName ? s.connectionName : undefined, parameters);
         return;
       }
       // Writes are off only until allowed: say where to turn them on.
@@ -319,14 +331,14 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
     }
   };
 
-  const markError = (text: string, st: StatementResult) => {
-    if (!st.error) return;
+  const markError = (editor: SqlEditorHandle | null, text: string, st: StatementResult) => {
+    if (!st.error || !editor) return;
     if (st.error.position !== undefined) {
       const at = byteToUtf16(text, st.error.position);
       const end = text.slice(at).search(/[\s,;()]|$/);
-      editor.current?.markError(at, at + Math.max(1, end));
+      editor.markError(at, at + Math.max(1, end));
     } else {
-      editor.current?.markError(byteToUtf16(text, st.start), byteToUtf16(text, st.end));
+      editor.markError(byteToUtf16(text, st.start), byteToUtf16(text, st.end));
     }
   };
 
@@ -343,17 +355,18 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
   };
 
   const format = () => {
-    const text = editor.current?.getText() ?? "";
+    const text = ed()?.getText() ?? "";
     try {
       const language = formatterLanguage(ws.session.dialect, ws.profile.driver);
-      editor.current?.setText(formatSql(text, { language, keywordCase: "upper", tabWidth: 2 }));
+      ed()?.setText(formatSql(text, { language, keywordCase: "upper", tabWidth: 2 }));
     } catch (e) {
       notify(`Could not format: ${(e as Error).message}`, "error");
     }
   };
 
   const save = async () => {
-    const sql = editor.current?.getText() ?? tab.sql;
+    if (paneRef.current === 1) return saveSecond();
+    const sql = textOf(0);
     let name = tab.title;
     if (!tab.savedQueryId) {
       const n = await promptText({ title: "Save query", label: "Name", initial: tab.title.startsWith("Query ") ? "" : tab.title });
@@ -370,12 +383,32 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
     }
   };
 
+  /** The second editor isn't the tab's query: saving it makes a new saved query. */
+  const saveSecond = async () => {
+    const name = await promptText({ title: "Save query", label: "Name", initial: "" });
+    if (!name) return;
+    try {
+      await api.saveQuery({ id: uid(), connectionId: ws.profile.id, name, folder: null, sql: textOf(1), favorite: false });
+      notify(`Saved "${name}"`, "success");
+    } catch (e) {
+      notifyError(e, "Query was not saved");
+    }
+  };
+
+  const toggleSplit = () => {
+    const open = !tab.split;
+    updateTab(ws.id, tab.id, { split: open });
+    setPane(open ? 1 : 0);
+    setTimeout(() => editorOf(open ? 1 : 0)?.focus(), 0);
+  };
+
   const runExplain = async (analyze = false) => {
-    const text = editor.current?.getText() ?? "";
-    const sel = editor.current?.getSelection();
+    const editor = ed();
+    const text = editor?.getText() ?? "";
+    const sel = editor?.getSelection();
     let sql = sel ? text.slice(sel.from, sel.to) : "";
     if (!sql) {
-      const span = await api.statementAtCursor(text, ws.session.dialect, utf16ToByte(text, editor.current?.getCursor() ?? 0));
+      const span = await api.statementAtCursor(text, ws.session.dialect, utf16ToByte(text, editor?.getCursor() ?? 0));
       sql = span?.sql ?? "";
     }
     if (!sql.trim()) return;
@@ -409,8 +442,10 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
     if (typeof path !== "string") return;
     try {
       const text = await api.readSqlFile(path);
-      editor.current?.setText(text);
-      updateTab(ws.id, tab.id, { title: path.split(/[\\/]/).pop() ?? tab.title, sql: text, dirty: true });
+      const p = paneRef.current;
+      editorOf(p)?.setText(text);
+      if (p === 1) updateTab(ws.id, tab.id, { sql2: text });
+      else updateTab(ws.id, tab.id, { title: path.split(/[\\/]/).pop() ?? tab.title, sql: text, dirty: true });
     } catch (e) {
       notifyError(e, "Could not open the file");
     }
@@ -420,7 +455,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
     const path = await saveDialog({ defaultPath: `${tab.title.replace(/[^\w.-]+/g, "_")}.sql`, filters: [{ name: "SQL", extensions: ["sql"] }] });
     if (!path) return;
     try {
-      await api.writeSqlFile(path, editor.current?.getText() ?? tab.sql);
+      await api.writeSqlFile(path, textOf(paneRef.current));
       notify(`Saved ${path}`, "success");
     } catch (e) {
       notifyError(e, "Could not save the file");
@@ -474,6 +509,39 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
     }
   };
 
+  const editorFor = (p: 0 | 1) => (
+    <SqlEditor
+      ref={p === 1 ? right : left}
+      value={p === 1 ? (tab.sql2 ?? "") : tab.sql}
+      dialect={ws.session.dialect}
+      mariadb={ws.profile.driver === "mariadb" || ws.session.server.product === "MariaDB"}
+      schema={completion}
+      defaultSchema={ws.schema}
+      fontSize={settings["editor.fontSize"]}
+      wordWrap={settings["editor.wordWrap"]}
+      snippets={snippets}
+      onChange={(sql) => updateTab(ws.id, tab.id, p === 1 ? { sql2: sql } : { sql, dirty: true })}
+      onRun={(m) => void run(m)}
+      onFormat={format}
+      onSave={() => void save()}
+      onExplain={() => void runExplain(false)}
+      onSplit={toggleSplit}
+    />
+  );
+
+  const onDragEditors = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const box = editors.current?.getBoundingClientRect();
+    if (!box) return;
+    const move = (ev: MouseEvent) => setHsplit(Math.min(0.85, Math.max(0.15, (ev.clientX - box.left) / box.width)));
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+
   const onDragSplit = (e: React.MouseEvent) => {
     e.preventDefault();
     const box = container.current?.getBoundingClientRect();
@@ -488,7 +556,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
   };
 
   useEffect(() => {
-    if (active) setTimeout(() => editor.current?.focus(), 0);
+    if (active) setTimeout(() => (paneRef.current === 1 ? right : left).current?.focus(), 0);
   }, [active]);
 
   const info = session ?? ws.session;
@@ -532,6 +600,15 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
         <button className="btn btn-ghost btn-icon" onClick={save} aria-label="Save query" title={`Save query (${shortcut("Mod+S")})`}>
           <Icon name="save" size={14} />
         </button>
+        <button
+          className="btn btn-ghost btn-icon"
+          aria-pressed={!!tab.split}
+          onClick={toggleSplit}
+          aria-label="Split editor"
+          title={`${tab.split ? "Close the second editor" : "Open a second editor beside this one"} (${shortcut("Mod+\\")})`}
+        >
+          <Icon name="vertical_split" size={14} />
+        </button>
         <span className="sep" />
         <button className="btn btn-ghost btn-icon" onClick={openFile} aria-label="Open SQL file" title="Open a .sql file in this tab">
           <Icon name="folder_open" size={14} />
@@ -560,23 +637,24 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
       </div>
       <div className="split-h" style={{ minHeight: 0 }}>
         <div ref={container} className="split-v">
-          <div style={{ flex: `0 0 ${split * 100}%`, display: "flex", minHeight: 0 }}>
-            <SqlEditor
-              ref={editor}
-              value={tab.sql}
-              dialect={ws.session.dialect}
-              mariadb={ws.profile.driver === "mariadb" || ws.session.server.product === "MariaDB"}
-              schema={completion}
-              defaultSchema={ws.schema}
-              fontSize={settings["editor.fontSize"]}
-              wordWrap={settings["editor.wordWrap"]}
-              snippets={snippets}
-              onChange={(sql) => updateTab(ws.id, tab.id, { sql, dirty: true })}
-              onRun={(m) => void run(m)}
-              onFormat={format}
-              onSave={() => void save()}
-              onExplain={() => void runExplain(false)}
-            />
+          <div ref={editors} className="split-h query-editors" style={{ flex: `0 0 ${split * 100}%`, minHeight: 0 }}>
+            <div
+              className={tab.split && pane === 0 ? "query-pane focused" : "query-pane"}
+              style={tab.split ? { flex: `0 0 ${hsplit * 100}%` } : undefined}
+              role="group"
+              aria-label={tab.split ? "Left editor" : "Editor"}
+              onFocus={() => setPane(0)}
+            >
+              {editorFor(0)}
+            </div>
+            {tab.split && (
+              <>
+                <div className="split-handle-v" role="separator" aria-orientation="vertical" onMouseDown={onDragEditors} />
+                <div className={pane === 1 ? "query-pane focused" : "query-pane"} role="group" aria-label="Right editor" onFocus={() => setPane(1)}>
+                  {editorFor(1)}
+                </div>
+              </>
+            )}
           </div>
           <div className="split-handle" role="separator" aria-orientation="horizontal" onMouseDown={onDragSplit} />
           {error && (
@@ -597,7 +675,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
               running={!!running || !!fileTask}
               dialect={ws.session.dialect}
               session={session ?? undefined}
-              onRunAgain={() => lastRun.current && void run(lastRun.current.mode, false, lastRun.current.target)}
+              onRunAgain={() => lastRun.current && void run(lastRun.current.mode, false, { ...lastRun.current.target, pane: lastRun.current.pane })}
               onDirtyChange={reportDirty}
               onOpenTable={onOpenTable}
             />
@@ -607,7 +685,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
           <HistoryPanel
             connectionId={ws.profile.id}
             refreshKey={historyKey}
-            onInsert={(sql) => editor.current?.insertText(sql)}
+            onInsert={(sql) => ed()?.insertText(sql)}
             onOpen={(sql) => openQuery(ws.id, { sql, title: "From history", dirty: true })}
             onClose={() => setHistoryOpen(false)}
           />
@@ -616,8 +694,8 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
           <AiPanel
             dialect={`${info.server.product} ${info.server.version.split(" ")[0] ?? ""}`.trim()}
             getSql={() => {
-              const text = editor.current?.getText() ?? tab.sql;
-              const sel = editor.current?.getSelection();
+              const text = textOf(paneRef.current);
+              const sel = ed()?.getSelection();
               return sel ? text.slice(sel.from, sel.to) : text;
             }}
             lastError={lastError}
@@ -625,7 +703,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
             allTables={allTables}
             columns={ws.columns}
             initialTask={ai.task}
-            onInsert={(sql) => editor.current?.insertText(sql)}
+            onInsert={(sql) => ed()?.insertText(sql)}
             onClose={() => setAi(null)}
           />
         )}

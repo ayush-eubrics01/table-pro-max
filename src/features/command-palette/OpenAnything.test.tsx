@@ -59,6 +59,17 @@ describe("OpenAnything", () => {
     expect(await screen.findByText(/Nothing matches/)).toBeInTheDocument();
   });
 
+  it("Enter right after typing opens the best match for what was typed, not what was listed before", () => {
+    const onConnect = vi.fn();
+    render(<OpenAnything onConnect={onConnect} />);
+    const input = screen.getByRole("combobox");
+    // Typed (or pasted) and Enter at once: the list hasn't caught up yet.
+    fireEvent.change(input, { target: { value: "set" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onConnect).toHaveBeenCalledWith(expect.objectContaining({ id: "c-set" }));
+    expect(useUi.getState().settingsOpen).toBe(false);
+  });
+
   it("walks the displayed order with the arrow keys", async () => {
     render(<OpenAnything onConnect={() => undefined} />);
     const input = screen.getByRole("combobox");

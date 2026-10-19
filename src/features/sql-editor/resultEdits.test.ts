@@ -102,6 +102,11 @@ describe("result edits", () => {
     expect(readOnlyReason(st, ["1", { $bytes: "00", size: 1 }, "7", "a@x", "3"], 1)).toBe("Binary values cannot be edited here");
   });
 
+  it("binary columns are changed in the opened table, even when NULL or read as text", () => {
+    const blob = { ...st, columns: st.columns!.map((c, i) => (i === 1 ? { ...c, typeName: "bytea" } : c)) };
+    for (const v of [null, "\\x00ff"]) expect(readOnlyReason(blob, ["1", v, "7", "a@x", "3"], 1)).toMatch(/opened table/);
+  });
+
   it("never records an edit against a preview (its original would be unknown)", () => {
     const rPartial = ["1", { $partial: "p".repeat(80), length: 900 }, "7", "a@x", "3"];
     expect(setEdit({}, st, rPartial, 1, "new")).toEqual({});

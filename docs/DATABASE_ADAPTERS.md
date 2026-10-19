@@ -36,7 +36,7 @@ Every driver implements `tpm_core::adapters::Session` (`crates/tpm-core/src/adap
 * User SQL: `simple_query_raw`. Values arrive in text form; `bytea` shows as `\x…`.
   Column type names are not available on this path.
 * Generated SQL: extended protocol. Parameters use `TextParam` (text format, any type).
-  Browse queries cast columns to `::text` except `bytea`, which is decoded as binary.
+  Browse queries cast columns to `::text` except binary ones (`bytea`; DuckDB `BLOB`), read as bytes.
 * Conflict check compares `col::text IS NOT DISTINCT FROM $n` with the loaded text.
 * Errors: SQLSTATE class mapping (23 constraint, 28 auth, 08 network, 57014 cancelled,
   25006 read-only). Detail, hint and context are kept, and the position is mapped into the
@@ -215,8 +215,12 @@ MongoDB is not SQL, so like Redis (`redis_kv.rs`) it does not implement `Session
   documents without the typed confirmation a filter needs on production.
 * Names (database, collection, index, field path) are passed to the driver as API parameters,
   never put into query text, so there is nothing to quote.
-* Not supported: inserting or editing documents, index management, schema validation, change
-  streams, GridFS, replica-set host lists, restore points.
+* Writes: one document at a time. An edit re-reads the document by `_id`, stops if it no longer
+  reads as the page showed it, and replaces with a filter on the whole current document
+  (`$expr: {$eq: ["$$ROOT", {$literal: …}]}`), so a change in between is a conflict. Numbers keep
+  their stored types (relaxed Extended JSON shows Int64 and whole doubles as plain numbers).
+* Not supported: updates by filter, index management, schema validation, change streams, GridFS,
+  replica-set host lists, restore points.
 * Tests: `scripts/test-db.sh` starts `tpm-test-mongo` (`mongo:7`) and `tpm-test-mongo-atlas`
   (`mongodb/mongodb-atlas-local`, for vector search).
 

@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use crate::adapters::ParamStatement;
 use crate::dialect::Dialect;
 use crate::error::{AppError, Result};
-use crate::model::{ObjectKind, Param, TableStructure};
+use crate::large_values::is_binary_type;
+use crate::model::{ColumnInfo, ObjectKind, Param, TableStructure};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -20,6 +21,11 @@ pub enum EditValue {
     },
     /// Use the column default (omitted from INSERT, `DEFAULT` in UPDATE).
     Default,
+    /// Bytes for a binary column, as hex digits without a prefix (two per byte). Sent as a text
+    /// parameter and decoded by the database, so the adapters bind text as for every value.
+    Bytes {
+        hex: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -142,6 +148,29 @@ fn placeholder(dialect: Dialect, params: &mut Vec<Param>, v: Param) -> String {
     dialect.placeholder(params.len())
 }
 
+/// A binary value's placeholder: hex digits as the parameter, wrapped in the database's own
+/// hex decoding. DuckDB shares the PostgreSQL dialect; its binary type is BLOB, PostgreSQL's bytea.
+fn bytes_placeholder(dialect: Dialect, info: &ColumnInfo, params: &mut Vec<Param>, hex: &str) -> Result<String> {
+    if !is_binary_type(&info.data_type) {
+        return Err(AppError::invalid_config(format!("Column '{}' is not a binary column", info.name)));
+    }
+    if !hex.len().is_multiple_of(2) || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(AppError::invalid_config(format!(
+            "The value for '{}' must be hex digits, two per byte",
+            info.name
+        )));
+    }
+    let p = placeholder(dialect, params, Some(hex.to_ascii_lowercase()));
+    let duckdb = info.data_type.trim().eq_ignore_ascii_case("blob");
+    Ok(match dialect {
+        Dialect::Postgres if duckdb => format!("from_hex({p})"),
+        Dialect::Postgres => format!("decode({p}, 'hex')"),
+        Dialect::Mysql => format!("UNHEX({p})"),
+        Dialect::Sqlite => format!("unhex({p})"),
+        Dialect::Mssql => format!("CONVERT(varbinary(max), {p}, 2)"),
+    })
+}
+
 fn build_insert(
     dialect: Dialect,
     s: &TableStructure,
@@ -161,10 +190,16 @@ fn build_insert(
             }
             cols.push(dialect.quote_ident(&v.column)?);
             vals.push(placeholder(dialect, &mut params, value.clone()));
+        } else if let EditValue::Bytes { hex } = &v.value {
+            let info = s.column(&v.column).expect("checked");
+            cols.push(dialect.quote_ident(&v.column)?);
+            vals.push(bytes_placeholder(dialect, info, &mut params, hex)?);
         }
     }
     for c in &s.columns {
-        let provided = values.iter().any(|v| v.column == c.name && matches!(v.value, EditValue::Value { .. }));
+        let provided = values
+            .iter()
+            .any(|v| v.column == c.name && matches!(v.value, EditValue::Value { .. } | EditValue::Bytes { .. }));
         if !provided && !c.nullable && c.default.is_none() && !c.auto_increment && !c.generated {
             return Err(AppError::invalid_config(format!("Column '{}' requires a value", c.name)));
         }
@@ -228,6 +263,10 @@ fn build_update(
                     return Err(AppError::invalid_config(format!("Column '{}' cannot be NULL", e.column)));
                 }
                 let p = placeholder(dialect, &mut params, value.clone());
+                sets.push(format!("{q} = {p}"));
+            }
+            EditValue::Bytes { hex } => {
+                let p = bytes_placeholder(dialect, s.column(&e.column).expect("checked"), &mut params, hex)?;
                 sets.push(format!("{q} = {p}"));
             }
             EditValue::Default => {
@@ -478,6 +517,65 @@ mod tests {
         assert_eq!(st[0].expect_rows, Some(1));
         let mysql = build_statements(Dialect::Mysql, &users(), &set).unwrap();
         assert_eq!(mysql[0].sql, "UPDATE `public`.`users` SET `email` = ? WHERE `id` = ? AND `email` <=> ?");
+    }
+
+    fn bytes_edit(column: &str, hex: &str) -> ColumnEdit {
+        ColumnEdit { column: column.into(), value: EditValue::Bytes { hex: hex.into() }, original: None }
+    }
+
+    #[test]
+    fn binary_values_are_sent_as_hex_and_decoded_by_the_database() {
+        let update = |s: &TableStructure, d: Dialect| {
+            let set = ChangeSet {
+                schema: s.schema.clone(),
+                table: "users".into(),
+                check_conflicts: true,
+                changes: vec![RowChange::Update { key: key("7"), edits: vec![bytes_edit("avatar", "DEADbeef")] }],
+            };
+            build_statements(d, s, &set).unwrap().remove(0)
+        };
+        let pg = update(&users(), Dialect::Postgres);
+        assert_eq!(pg.sql, "UPDATE \"public\".\"users\" SET \"avatar\" = decode($1, 'hex') WHERE \"id\" = $2");
+        assert_eq!(pg.params, vec![Some("deadbeef".into()), Some("7".into())]);
+        // DuckDB shares the PostgreSQL dialect; its binary type is BLOB.
+        let mut duck = users();
+        duck.columns[2].data_type = "BLOB".into();
+        assert!(update(&duck, Dialect::Postgres).sql.contains("\"avatar\" = from_hex($1)"));
+        let mut my = users();
+        my.columns[2].data_type = "longblob".into();
+        assert!(update(&my, Dialect::Mysql).sql.contains("`avatar` = UNHEX(?)"));
+        let mut lite = users();
+        lite.columns[2].data_type = "BLOB".into();
+        assert!(update(&lite, Dialect::Sqlite).sql.contains("\"avatar\" = unhex(?1)"));
+        assert!(update(&sql_server_users(), Dialect::Mssql).sql.contains("[avatar] = CONVERT(varbinary(max), @P1, 2)"));
+        // Inserts too; an empty value is zero bytes, not NULL.
+        let set = ChangeSet {
+            schema: "public".into(),
+            table: "users".into(),
+            check_conflicts: false,
+            changes: vec![RowChange::Insert { values: vec![bytes_edit("avatar", "")] }],
+        };
+        let ins = build_statements(Dialect::Postgres, &users(), &set).unwrap().remove(0);
+        assert_eq!(ins.sql, "INSERT INTO \"public\".\"users\" (\"avatar\") VALUES (decode($1, 'hex'))");
+        assert_eq!(ins.params, vec![Some(String::new())]);
+    }
+
+    #[test]
+    fn binary_values_must_be_hex_for_a_binary_column() {
+        let one = |edit: ColumnEdit| {
+            let set = ChangeSet {
+                schema: "public".into(),
+                table: "users".into(),
+                check_conflicts: false,
+                changes: vec![RowChange::Update { key: key("7"), edits: vec![edit] }],
+            };
+            build_statements(Dialect::Postgres, &users(), &set)
+        };
+        for bad in ["abc", "zz", "de ad", "\\xdead", "0xdead"] {
+            assert!(one(bytes_edit("avatar", bad)).is_err(), "{bad}");
+        }
+        let e = one(bytes_edit("email", "dead")).unwrap_err();
+        assert!(e.message.contains("not a binary column"), "{}", e.message);
     }
 
     fn sql_server_users() -> TableStructure {
