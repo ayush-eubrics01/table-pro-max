@@ -216,8 +216,12 @@ MongoDB is not SQL, so like Redis (`redis_kv.rs`) it does not implement `Session
   documents without the typed confirmation a filter needs on production.
 * Names (database, collection, index, field path) are passed to the driver as API parameters,
   never put into query text, so there is nothing to quote.
-* Not supported: inserting or editing documents, index management, schema validation, change
-  streams, GridFS, replica-set host lists, restore points.
+* Writes: one document at a time. An edit re-reads the document by `_id`, stops if it no longer
+  reads as the page showed it, and replaces with a filter on the whole current document
+  (`$expr: {$eq: ["$$ROOT", {$literal: …}]}`), so a change in between is a conflict. Numbers keep
+  their stored types (relaxed Extended JSON shows Int64 and whole doubles as plain numbers).
+* Not supported: updates by filter, index management, schema validation, change streams, GridFS,
+  replica-set host lists, restore points.
 * Tests: `scripts/test-db.sh` starts `tpm-test-mongo` (`mongo:7`) and `tpm-test-mongo-atlas`
   (`mongodb/mongodb-atlas-local`, for vector search).
 

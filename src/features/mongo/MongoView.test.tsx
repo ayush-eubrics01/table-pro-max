@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { EditorView } from "@codemirror/view";
+import { Overlays } from "../../components/Overlays";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { MongoView } from "./MongoView";
 import { useUi } from "../../stores/ui";
@@ -41,6 +43,9 @@ let calls: { cmd: string; args: Record<string, unknown> }[] = [];
 /** Answers a find before the default one, e.g. a slow find that resolves later. */
 let findOverride: ((request: { collection: string }) => unknown) | null = null;
 beforeEach(() => {
+  // jsdom has no layout APIs that CodeMirror (the document editor) touches.
+  Range.prototype.getClientRects = () => ({ length: 0, item: () => null, [Symbol.iterator]: [][Symbol.iterator] }) as unknown as DOMRectList;
+  Range.prototype.getBoundingClientRect = () => new DOMRect();
   calls = [];
   findOverride = null;
   mockIPC((cmd, args) => {
@@ -62,6 +67,8 @@ beforeEach(() => {
         return 2;
       case "mongo_delete":
         return 2;
+      case "mongo_insert":
+        return '{"$oid":"65f0a1b2c3d4e5f601234599"}';
       default:
         return null;
     }
@@ -198,5 +205,70 @@ describe("MongoView", () => {
     useUi.getState().confirmRequest!.resolve(false);
     await waitFor(() => expect(useUi.getState().confirmRequest).toBeNull());
     expect(calls.some((c) => c.cmd === "mongo_delete")).toBe(false);
+  });
+});
+
+describe("MongoView: inserting and editing documents", () => {
+  const openWithOverlays = async (w: Workspace) => {
+    render(
+      <>
+        <MongoView ws={w} />
+        <Overlays />
+      </>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /^orders/ }));
+    await screen.findByText("2 documents");
+  };
+  /** Replaces the editor's text, as typing would. */
+  const typeDoc = async (text: string) => {
+    const dialog = await screen.findByRole("dialog");
+    const view = await waitFor(() => EditorView.findFromDOM(dialog.querySelector(".cm-editor") as HTMLElement)!);
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Save" })).toBeEnabled());
+    return dialog;
+  };
+
+  it("edits a document from the find results, sending the text it was read as", async () => {
+    await openWithOverlays(ws(false));
+    fireEvent.click(screen.getByRole("button", { name: "Edit document 1" }));
+    const edited = page.documents[0]!.replace("Ada", "Ada L.");
+    const dialog = await typeDoc(edited);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "mongo_replace")).toBe(true));
+    expect(calls.find((c) => c.cmd === "mongo_replace")!.args.request).toEqual({
+      database: "shop",
+      collection: "orders",
+      id: page.ids[0],
+      original: page.documents[0],
+      document: edited,
+      confirmed: true,
+    });
+    await waitFor(() => expect(calls.filter((c) => c.cmd === "mongo_find")).toHaveLength(2));
+  });
+
+  it("inserts a document, asking first on production", async () => {
+    await openWithOverlays(ws(false, "production"));
+    fireEvent.click(screen.getByRole("button", { name: "Insert document" }));
+    const dialog = await typeDoc('{ "name": "Grace" }');
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(useUi.getState().confirmRequest).not.toBeNull());
+    expect(calls.some((c) => c.cmd === "mongo_insert")).toBe(false);
+    useUi.getState().confirmRequest!.resolve(true);
+    await waitFor(() => expect(calls.some((c) => c.cmd === "mongo_insert")).toBe(true));
+    expect(calls.find((c) => c.cmd === "mongo_insert")!.args).toMatchObject({ database: "shop", collection: "orders", document: '{ "name": "Grace" }', confirmed: true });
+  });
+
+  it("offers no edits on a read-only session, or for documents shown with a projection", async () => {
+    await openWithOverlays(ws(true));
+    expect(screen.queryByRole("button", { name: "Edit document 1" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Insert document" })).toBeNull();
+    cleanup();
+    await openWithOverlays(ws(false));
+    const finds = calls.filter((c) => c.cmd === "mongo_find").length;
+    fireEvent.change(screen.getByLabelText("Projection"), { target: { value: '{ "name": 1 }' } });
+    fireEvent.click(screen.getByRole("button", { name: /^Run/ }));
+    await waitFor(() => expect(calls.filter((c) => c.cmd === "mongo_find")).toHaveLength(finds + 1));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Edit document 1" })).toBeNull());
+    expect(screen.getByRole("button", { name: "Insert document" })).toBeInTheDocument();
   });
 });

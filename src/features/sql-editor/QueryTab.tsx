@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { listen } from "@tauri-apps/api/event";
+import { listenFor } from "../../lib/events";
 import { format as formatSql } from "sql-formatter";
 import type { SQLNamespace } from "@codemirror/lang-sql";
 import type { AiTask, Environment, ExplainResult, ScriptResult, SessionInfo, StatementResult } from "../../types/backend";
@@ -14,6 +14,7 @@ import { useWorkspaces, type QueryTab as QueryTabModel, type Workspace } from ".
 import { EnvBadge } from "../../components/EnvBadge";
 import { ParametersDialog, type ParameterValues } from "./ParametersDialog";
 import { useSnippets } from "../../stores/snippets";
+import { useSavedQueries } from "../../stores/savedQueries";
 import { ConfirmRunBody, needsName, withNameConfirm } from "../connections/nameConfirm";
 import { SqlEditor, type RunMode, type SqlEditorHandle } from "./SqlEditor";
 import { ResultsPanel } from "./ResultsPanel";
@@ -345,11 +346,9 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
   // Live progress while a long script runs.
   useEffect(() => {
     if (!running) return;
-    let unlisten: (() => void) | undefined;
-    void listen<{ taskId: string }>("query-progress", (e) => {
-      if (e.payload.taskId === running.taskId) setRunning((r) => (r ? { ...r, done: r.done + 1 } : r));
-    }).then((u) => (unlisten = u));
-    return () => unlisten?.();
+    return listenFor<{ taskId: string }>("query-progress", (p) => {
+      if (p.taskId === running.taskId) setRunning((r) => (r ? { ...r, done: r.done + 1 } : r));
+    });
   }, [running?.taskId, running]);
 
   const cancel = async () => {
@@ -377,8 +376,18 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
     }
     const id = tab.savedQueryId ?? uid();
     try {
-      await api.saveQuery({ id, connectionId: ws.profile.id, name, folder: null, sql, favorite: false });
+      // Saving again keeps what was set in the sidebar: its folder, favourite and connection.
+      const existing = tab.savedQueryId ? (await api.listSavedQueries()).find((q) => q.id === tab.savedQueryId) : undefined;
+      await api.saveQuery({
+        id,
+        connectionId: existing ? existing.connectionId : ws.profile.id,
+        name,
+        folder: existing?.folder ?? null,
+        sql,
+        favorite: existing?.favorite ?? false,
+      });
       updateTab(ws.id, tab.id, { savedQueryId: id, title: name, dirty: false });
+      useSavedQueries.getState().bump();
       notify(`Saved "${name}"`, "success");
     } catch (e) {
       notifyError(e, "Query was not saved");
@@ -391,6 +400,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
     if (!name) return;
     try {
       await api.saveQuery({ id: uid(), connectionId: ws.profile.id, name, folder: null, sql: textOf(1), favorite: false });
+      useSavedQueries.getState().bump();
       notify(`Saved "${name}"`, "success");
     } catch (e) {
       notifyError(e, "Query was not saved");
