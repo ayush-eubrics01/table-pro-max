@@ -18,6 +18,15 @@ type Item =
   | { kind: "saved"; label: string; where: string; wsId: string; query: SavedQuery }
   | { kind: "action"; label: string; where: string; run: () => void };
 
+/** What the palette lists for a query. Without one, actions and connections come first so the
+ * 60-item cap never hides them; with one, the name counts most and the connection and schema
+ * ("where") help narrow it down. */
+function resultsFor(items: Item[], query: string): Item[] {
+  if (query.trim()) return rank(items, query, (i) => [i.label, i.where]);
+  const first: Item[] = items.filter((i) => i.kind === "action" || i.kind === "connection");
+  return rank([...first, ...items.filter((i) => !first.includes(i))], "", (i) => i.label);
+}
+
 export function OpenAnything({ onConnect }: { onConnect: (p: ConnectionProfile) => void }) {
   const setOpen = useUi((s) => s.setPaletteOpen);
   const workspaces = useWorkspaces((s) => s.workspaces);
@@ -62,13 +71,7 @@ export function OpenAnything({ onConnect }: { onConnect: (p: ConnectionProfile) 
     return out;
   }, [workspaces, activeId, connections, saved]);
 
-  // Without a query, actions and connections come first so the 60-item cap never hides them.
-  const results = useMemo(() => {
-    // The name counts most; the connection and schema ("where") help narrow it down.
-    if (debounced.trim()) return rank(items, debounced, (i) => [i.label, i.where]);
-    const first: Item[] = items.filter((i) => i.kind === "action" || i.kind === "connection");
-    return rank([...first, ...items.filter((i) => !first.includes(i))], "", (i) => i.label);
-  }, [items, debounced]);
+  const results = useMemo(() => resultsFor(items, debounced), [items, debounced]);
   const groups = useMemo(() => groupResults(results, debounced.trim() !== ""), [results, debounced]);
   // Keyboard order follows the displayed (grouped) order.
   const flat = useMemo(() => groups.flatMap((g) => g.items), [groups]);
@@ -137,7 +140,10 @@ export function OpenAnything({ onConnect }: { onConnect: (p: ConnectionProfile) 
                 // Consume Enter: its default action would otherwise press whatever takes focus
                 // next, such as Cancel in the connecting dialog, cancelling the connection.
                 e.preventDefault();
-                choose(flat[index]);
+                // Typed or pasted and Enter at once: the list (filtered after a pause) hasn't
+                // caught up, so the best match for what is typed now is opened.
+                if (query === debounced) choose(flat[index]);
+                else choose(groupResults(resultsFor(items, query), query.trim() !== "").flatMap((g) => g.items)[0]);
               }
             }}
           />
