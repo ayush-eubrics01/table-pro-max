@@ -18,6 +18,16 @@ describe("Extended JSON in table cells", () => {
     expect(cellText({ big: "x".repeat(400) }).length).toBeLessThanOrEqual(201);
   });
 
+  it("keeps integers too large for a JavaScript number exact", () => {
+    const d = parseDoc('{ "_id": 9007199254740993, "n": -9223372036854775808, "ok": 42, "f": 1.5e300, "s": "9007199254740993 in text" }');
+    expect(cellText(d._id)).toBe("9007199254740993");
+    expect(cellText(d.n)).toBe("-9223372036854775808");
+    expect(d.ok).toBe(42);
+    expect(d.f).toBe(1.5e300);
+    expect(d.s).toBe("9007199254740993 in text");
+    expect(cellText(parseDoc('{ "a": [12345678901234567890, "q\\"9007199254740993"] }').a)).toBe('[{"$numberLong":"12345678901234567890"},"q\\"9007199254740993"]');
+  });
+
   it("reads documents and recognises a filter for every document", () => {
     expect(parseDoc('{ "_id": 1, "a": "b" }')).toEqual({ _id: 1, a: "b" });
     expect(parseDoc("not json")).toEqual({});

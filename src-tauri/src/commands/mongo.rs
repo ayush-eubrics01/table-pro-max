@@ -57,6 +57,12 @@ pub fn mongo_disconnect(state: State<'_, AppState>, session_id: String) {
     state.engine.mongo_close(&session_id);
 }
 
+/// The health check: a `ping`, not a database listing.
+#[tauri::command]
+pub async fn mongo_ping(state: State<'_, AppState>, session_id: String) -> Result<()> {
+    state.engine.mongo(&session_id)?.ping().await
+}
+
 #[tauri::command]
 pub async fn mongo_databases(state: State<'_, AppState>, session_id: String) -> Result<Vec<MongoDatabase>> {
     state.engine.mongo(&session_id)?.databases().await

@@ -94,6 +94,7 @@ pub fn run() {
             commands::mongo::mongo_connect,
             commands::mongo::mongo_disconnect,
             commands::mongo::mongo_databases,
+            commands::mongo::mongo_ping,
             commands::mongo::mongo_collections,
             commands::mongo::mongo_find,
             commands::mongo::mongo_count,

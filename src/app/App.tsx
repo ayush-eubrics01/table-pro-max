@@ -140,7 +140,7 @@ export function App() {
   useEffect(() => {
     const t = setInterval(() => {
       for (const w of useWorkspaces.getState().workspaces) {
-        (w.kind === "redis" ? api.redisInfo(w.session.sessionId) : w.kind === "mongo" ? api.mongoDatabases(w.session.sessionId) : api.ping(w.session.sessionId))
+        (w.kind === "redis" ? api.redisInfo(w.session.sessionId) : w.kind === "mongo" ? api.mongoPing(w.session.sessionId) : api.ping(w.session.sessionId))
           .then(() => w.health !== "ok" && useWorkspaces.getState().update(w.id, { health: "ok" }))
           .catch(() => useWorkspaces.getState().update(w.id, { health: "down" }));
       }
