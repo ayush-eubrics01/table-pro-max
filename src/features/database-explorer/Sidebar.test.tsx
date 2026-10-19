@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { readFileSync } from "node:fs";
 import { Sidebar } from "./Sidebar";
+import { Overlays } from "../../components/Overlays";
 import { profile, session } from "../../test/fixtures";
 import { useWorkspaces, type Workspace } from "../../stores/workspaces";
+import { useSavedQueries } from "../../stores/savedQueries";
 import type { DbObject } from "../../types/backend";
 
 const objects: DbObject[] = [
@@ -191,5 +193,94 @@ describe("Sidebar: pinned objects", () => {
     expect(useWorkspaces.getState().workspaces[0]!.tabs.at(-1)).toMatchObject({ kind: "query", savedQueryId: "q1" });
     fireEvent.change(screen.getByLabelText("Filter objects"), { target: { value: "paid" } });
     expect(within(screen.getByRole("group", { name: "Pinned" })).getAllByRole("treeitem").map((b) => b.getAttribute("aria-label"))).toEqual(["paid_orders"]);
+  });
+});
+
+describe("Sidebar: saved query folders", () => {
+  const saved = [
+    { id: "q1", name: "monthly revenue", folder: "Reports", sql: "select 1", connectionId: profile.id, favorite: false },
+    { id: "q2", name: "churn by plan", folder: "Reports", sql: "select 2", connectionId: profile.id, favorite: true },
+    { id: "q3", name: "scratch", folder: null, sql: "select 3", connectionId: profile.id, favorite: false },
+  ];
+  let calls: { cmd: string; args: Record<string, unknown> }[] = [];
+  beforeEach(() => {
+    calls = [];
+    let list = saved.map((s) => ({ ...s }));
+    mockIPC((cmd, args) => {
+      const a = args as Record<string, unknown>;
+      calls.push({ cmd, args: a });
+      if (cmd === "list_saved_queries") return list;
+      if (cmd === "save_query") {
+        const q = a.query as (typeof list)[number];
+        list = list.map((x) => (x.id === q.id ? q : x));
+      }
+      if (cmd === "delete_saved_query") list = list.filter((x) => x.id !== a.id);
+      if (cmd.startsWith("list_")) return [];
+      return null;
+    });
+    useWorkspaces.setState({ workspaces: [ws()], activeId: "ws-1" });
+  });
+  const renderBar = () =>
+    render(
+      <>
+        <Sidebar ws={ws()} onSwitchDatabase={() => undefined} />
+        <Overlays />
+      </>,
+    );
+  const saves = () => calls.filter((c) => c.cmd === "save_query").map((c) => c.args.query as { id: string; folder: string | null; favorite: boolean });
+
+  it("groups saved queries by folder, and the filter finds them by folder name", async () => {
+    renderBar();
+    const folder = await screen.findByRole("group", { name: "Reports" });
+    expect(within(folder).getByText("monthly revenue")).toBeInTheDocument();
+    expect(within(folder).getByText("churn by plan")).toBeInTheDocument();
+    expect(within(folder).queryByText("scratch")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Filter objects"), { target: { value: "reports" } });
+    expect(screen.getByText("monthly revenue")).toBeInTheDocument();
+    expect(screen.queryByText("scratch")).toBeNull();
+  });
+
+  it("moves a query into a new folder, and out again", async () => {
+    renderBar();
+    fireEvent.contextMenu(await screen.findByText("scratch"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Move to folder…" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "Ideas" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Move" }));
+    await waitFor(() => expect(saves()).toEqual([expect.objectContaining({ id: "q3", folder: "Ideas" })]));
+    const ideas = await screen.findByRole("group", { name: "Ideas" });
+    fireEvent.contextMenu(within(ideas).getByText("scratch"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Remove from folder" }));
+    await waitFor(() => expect(saves().at(-1)).toMatchObject({ id: "q3", folder: null }));
+  });
+
+  it("renames a folder, and deletes it keeping its queries", async () => {
+    renderBar();
+    fireEvent.contextMenu(await screen.findByRole("button", { name: /^Reports/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rename folder…" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "Finance" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Rename" }));
+    await waitFor(() => expect(saves().map((q) => [q.id, q.folder, q.favorite])).toEqual([["q1", "Finance", false], ["q2", "Finance", true]]));
+    fireEvent.contextMenu(await screen.findByRole("button", { name: /^Finance/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete folder (keep its queries)" }));
+    await waitFor(() => expect(saves().slice(2).map((q) => q.folder)).toEqual([null, null]));
+    expect(calls.some((c) => c.cmd === "delete_saved_query")).toBe(false);
+  });
+
+  it("shows a query saved in a tab straight away", async () => {
+    renderBar();
+    await screen.findByText("scratch");
+    const before = calls.filter((c) => c.cmd === "list_saved_queries").length;
+    act(() => useSavedQueries.getState().bump());
+    await waitFor(() => expect(calls.filter((c) => c.cmd === "list_saved_queries").length).toBe(before + 1));
+  });
+
+  it("deletes a folder with its queries after asking", async () => {
+    renderBar();
+    fireEvent.contextMenu(await screen.findByRole("button", { name: /^Reports/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete folder and its 2 queries…" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete 2 queries" }));
+    await waitFor(() => expect(calls.filter((c) => c.cmd === "delete_saved_query").map((c) => c.args.id)).toEqual(["q1", "q2"]));
   });
 });

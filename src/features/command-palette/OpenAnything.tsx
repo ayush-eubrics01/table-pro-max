@@ -57,7 +57,7 @@ export function OpenAnything({ onConnect }: { onConnect: (p: ConnectionProfile) 
       }
       for (const schema of ws.schemas) out.push({ kind: "schema", label: schema, where: `${ws.profile.name} · schema`, wsId: ws.id, schema });
       for (const q of saved.filter((s) => !s.connectionId || s.connectionId === ws.profile.id))
-        out.push({ kind: "saved", label: q.name, where: `${ws.profile.name} · saved query`, wsId: ws.id, query: q });
+        out.push({ kind: "saved", label: q.name, where: `${ws.profile.name} · saved query${q.folder ? ` in ${q.folder}` : ""}`, wsId: ws.id, query: q });
     }
     for (const c of connections) out.push({ kind: "connection", label: c.profile.name, where: `${envLabel(c.profile.environment)} · ${driverLabel(c.profile.driver)}`, profile: c.profile });
     if (active) {
