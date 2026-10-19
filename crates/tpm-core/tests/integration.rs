@@ -1055,6 +1055,24 @@ async fn restore_point_restores(engine: &Arc<Engine>, sid: &str, schema: &str, d
     };
     let rows = |sql: &'static str| async move { run(engine, sid, sql).await.statements[0].rows.clone().unwrap() };
 
+    // Binary values come back byte for byte: deleted, changed, and with a dropped table.
+    let bin = match driver {
+        Driver::Postgres => "bytea",
+        Driver::Mssql => "varbinary(max)",
+        _ => "blob",
+    };
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rpbin").await;
+    run(engine, sid, &format!("CREATE TABLE tpm_it_rpbin (id integer PRIMARY KEY, b {bin})")).await;
+    run(engine, sid, &format!("INSERT INTO tpm_it_rpbin VALUES (1, {}), (2, NULL)", blob_literal(driver))).await;
+    let stored = || rows("SELECT id, b FROM tpm_it_rpbin ORDER BY id");
+    let before = stored().await;
+    for sql in ["DELETE FROM tpm_it_rpbin", "UPDATE tpm_it_rpbin SET b = NULL", "DROP TABLE tpm_it_rpbin"] {
+        let r = engine.run_script(sid, sql, opts.clone(), None).await.unwrap();
+        engine.apply_restore(sid, &point(&r), None, true).await.unwrap_or_else(|e| panic!("{driver:?} {sql}: {e:?}"));
+        assert_eq!(stored().await, before, "{driver:?} {sql}");
+    }
+    run(engine, sid, "DROP TABLE tpm_it_rpbin").await;
+
     // A dropped table with an index (and on PostgreSQL a serial key and a comment) comes back.
     run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rpd").await;
     let key = if driver == Driver::Postgres { "id serial PRIMARY KEY" } else { "id integer PRIMARY KEY" };
@@ -2988,9 +3006,13 @@ async fn sql_server_flow(t: Target) {
     let r = run(&engine, &sid, "SELECT CAST('<a x=\"1\"/>' AS xml) AS x, CAST(NULL AS int) AS n").await;
     assert_eq!((text(&rows(&r, 0)[0][0]), &rows(&r, 0)[0][1]), ("<a x=\"1\"/>", &Cell::Null));
 
-    // --- restore points: a DELETE is captured and comes back ---
+    // --- restore points: a DELETE is captured and comes back, varbinary values as bytes ---
     let store = Arc::new(tpm_core::storage::Storage::open_in_memory().unwrap());
     engine.set_restore_store(store.clone());
+    let banana = "SELECT owner_id, name, price, data FROM tpm_it_items WHERE name = N'banana'";
+    run(&engine, &sid, &format!("UPDATE tpm_it_items SET data = {} WHERE name = N'banana'", blob_literal(driver)))
+        .await;
+    let before = run(&engine, &sid, banana).await.statements[0].rows.clone().unwrap();
     let r = engine
         .run_script(
             &sid,
@@ -3001,8 +3023,9 @@ async fn sql_server_flow(t: Target) {
         .await
         .unwrap();
     let note = r.statements[0].restore.clone().expect("note");
-    assert_eq!(note.reason.as_deref(), Some("the table has binary columns"), "as on MySQL: {note:?}");
-    run(&engine, &sid, "INSERT INTO tpm_it_items (owner_id, name, price) VALUES (1, N'banana', 0.25)").await;
+    let id = note.point_id.clone().unwrap_or_else(|| panic!("no restore point: {note:?}"));
+    engine.apply_restore(&sid, &id, None, true).await.unwrap();
+    assert_eq!(run(&engine, &sid, banana).await.statements[0].rows.clone().unwrap(), before, "banana is back");
     restore_points_on_sql_server(&engine, &sid).await;
 
     transfer_roundtrip(&engine, &sid, "dbo", driver).await;

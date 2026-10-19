@@ -316,8 +316,9 @@ fn max_params(dialect: Dialect) -> usize {
     }
 }
 
-/// A single-row `INSERT … VALUES (placeholders)` as built here: its text before ` VALUES (`.
-fn single_row_insert(st: &ParamStatement) -> Option<&str> {
+/// A single-row `INSERT … VALUES (…)` as built here: its text before ` VALUES ` and its values
+/// tuple. The tuple holds only placeholders, some wrapped in a conversion (`decode($2, 'hex')`).
+fn single_row_insert(st: &ParamStatement) -> Option<(&str, &str)> {
     if st.expect_rows != Some(1)
         || !st.sql.starts_with("INSERT INTO ")
         || st.sql.contains(';')
@@ -325,8 +326,33 @@ fn single_row_insert(st: &ParamStatement) -> Option<&str> {
     {
         return None;
     }
-    let (prefix, _) = st.sql.split_once(" VALUES (")?;
-    (st.sql.matches(" VALUES (").count() == 1 && !st.params.is_empty()).then_some(prefix)
+    let (prefix, values) = st.sql.split_once(" VALUES ")?;
+    (st.sql.matches(" VALUES (").count() == 1 && !st.params.is_empty()).then_some((prefix, values))
+}
+
+/// A values tuple built here with its numbered placeholders moved up by `offset` (MySQL's `?`
+/// aren't numbered).
+fn shift_placeholders(dialect: Dialect, values: &str, offset: usize) -> String {
+    let marker = match dialect {
+        Dialect::Postgres => "$",
+        Dialect::Sqlite => "?",
+        Dialect::Mssql => "@P",
+        Dialect::Mysql => return values.to_string(),
+    };
+    let mut out = String::with_capacity(values.len() + 8);
+    let mut rest = values;
+    while let Some(at) = rest.find(marker) {
+        let (before, after) = rest.split_at(at + marker.len());
+        out.push_str(before);
+        let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+        match after[..digits].parse::<usize>() {
+            Ok(n) => out.push_str(&(n + offset).to_string()),
+            Err(_) => out.push_str(&after[..digits]),
+        }
+        rest = &after[digits..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Merges runs of single-row INSERTs into the same table and columns into multi-row INSERTs
@@ -337,7 +363,8 @@ pub fn merge_inserts(dialect: Dialect, statements: Vec<ParamStatement>) -> Vec<P
     let mut run: Vec<ParamStatement> = Vec::new();
     let flush = |run: &mut Vec<ParamStatement>, out: &mut Vec<ParamStatement>| {
         let Some(first) = run.first() else { return };
-        let prefix = single_row_insert(first).expect("only inserts are gathered").to_string();
+        let (prefix, template) = single_row_insert(first).expect("only inserts are gathered");
+        let (prefix, template) = (prefix.to_string(), template.to_string());
         let width = first.params.len();
         let per = MERGED_ROWS.min((max_params(dialect) / width).max(1));
         for chunk in run.chunks(per) {
@@ -348,8 +375,8 @@ pub fn merge_inserts(dialect: Dialect, statements: Vec<ParamStatement>) -> Vec<P
             let mut params = Vec::with_capacity(chunk.len() * width);
             let mut tuples = Vec::with_capacity(chunk.len());
             for st in chunk {
-                let marks: Vec<String> = (0..width).map(|i| dialect.placeholder(params.len() + i + 1)).collect();
-                tuples.push(format!("({})", marks.join(", ")));
+                // Every row has the same tuple (checked when gathering), numbered from 1.
+                tuples.push(shift_placeholders(dialect, &template, params.len()));
                 params.extend(st.params.iter().cloned());
             }
             out.push(ParamStatement {
@@ -362,8 +389,8 @@ pub fn merge_inserts(dialect: Dialect, statements: Vec<ParamStatement>) -> Vec<P
     };
     for st in statements {
         let joins = match (run.first(), single_row_insert(&st)) {
-            (Some(first), Some(prefix)) => {
-                single_row_insert(first) == Some(prefix) && first.params.len() == st.params.len()
+            (Some(first), Some(this)) => {
+                single_row_insert(first) == Some(this) && first.params.len() == st.params.len()
             }
             _ => false,
         };
@@ -773,6 +800,50 @@ mod tests {
             vec![insert(Dialect::Mssql, "t", &["1", "x"]), insert(Dialect::Mssql, "t", &["2", "y"])],
         );
         assert!(ms[0].sql.ends_with("VALUES (@P1, @P2), (@P3, @P4)"), "{}", ms[0].sql);
+    }
+
+    #[test]
+    fn merged_inserts_keep_how_each_value_is_written() {
+        let row = |dialect: Dialect, id: &str, hex: &str| {
+            let set = ChangeSet {
+                schema: "public".into(),
+                table: "users".into(),
+                check_conflicts: false,
+                changes: vec![RowChange::Insert {
+                    values: vec![
+                        ColumnEdit {
+                            column: "id".into(),
+                            value: EditValue::Value { value: Some(id.into()) },
+                            original: None,
+                        },
+                        bytes_edit("avatar", hex),
+                    ],
+                }],
+            };
+            let mut s = users();
+            if dialect == Dialect::Mssql {
+                s = sql_server_users();
+            }
+            build_statements(dialect, &s, &set).unwrap().remove(0)
+        };
+        let pg = merge_inserts(
+            Dialect::Postgres,
+            vec![row(Dialect::Postgres, "1", "00"), row(Dialect::Postgres, "2", "ff")],
+        );
+        assert_eq!(pg.len(), 1);
+        assert!(pg[0].sql.ends_with("VALUES ($1, decode($2, 'hex')), ($3, decode($4, 'hex'))"), "{}", pg[0].sql);
+        assert_eq!(pg[0].params, vec![Some("1".into()), Some("00".into()), Some("2".into()), Some("ff".into())]);
+        let ms = merge_inserts(Dialect::Mssql, vec![row(Dialect::Mssql, "1", "00"), row(Dialect::Mssql, "2", "ff")]);
+        assert!(
+            ms[0].sql.ends_with("(@P1, CONVERT(varbinary(max), @P2, 2)), (@P3, CONVERT(varbinary(max), @P4, 2))"),
+            "{}",
+            ms[0].sql
+        );
+        // A row whose values are written differently (a plain value there) starts a new statement.
+        let mut plain = insert(Dialect::Postgres, "\"public\".\"users\"", &["3", "x"]);
+        plain.sql = plain.sql.replace("(\"a\", \"b\")", "(\"id\", \"avatar\")");
+        let mixed = merge_inserts(Dialect::Postgres, vec![row(Dialect::Postgres, "1", "00"), plain]);
+        assert_eq!(mixed.len(), 2, "{mixed:?}");
     }
 
     #[test]
