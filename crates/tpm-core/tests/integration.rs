@@ -1083,6 +1083,44 @@ async fn restore_point_restores(engine: &Arc<Engine>, sid: &str, schema: &str, d
     assert!(!engine.cancel_task("tpm-it-restore").await.unwrap(), "the task is gone once the restore ends");
     run(engine, sid, "DROP TABLE tpm_it_rpbig").await;
 
+    // An upsert keeps the rows it overwrites (found by the keys it holds); rows it inserts stay.
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_ups").await;
+    run(engine, sid, "CREATE TABLE tpm_it_ups (id integer PRIMARY KEY, email varchar(20) UNIQUE, name varchar(20))")
+        .await;
+    run(engine, sid, "INSERT INTO tpm_it_ups VALUES (1, 'a@x', 'A'), (2, 'b@x', 'B')").await;
+    let upsert = match driver {
+        Driver::Mysql | Driver::Mariadb => {
+            "INSERT INTO tpm_it_ups (id, email, name) VALUES (1, 'a@x', 'Z'), (3, 'c@x', 'C') \
+             ON DUPLICATE KEY UPDATE name = VALUES(name)"
+        }
+        _ => {
+            "INSERT INTO tpm_it_ups (id, email, name) VALUES (1, 'a@x', 'Z'), (3, 'c@x', 'C') \
+             ON CONFLICT (id) DO UPDATE SET name = excluded.name"
+        }
+    };
+    let r = engine.run_script(sid, upsert, opts.clone(), None).await.unwrap();
+    assert!(r.statements[0].error.is_none(), "{driver:?}: {r:?}");
+    let up = point(&r);
+    let kept = store.get(&up).unwrap();
+    assert_eq!(kept.data.before.len(), 1, "{driver:?}: only the overwritten row");
+    engine.apply_restore(sid, &up, None, true).await.unwrap_or_else(|e| panic!("{driver:?}: {e:?}"));
+    let names = rows("SELECT id, name FROM tpm_it_ups ORDER BY id").await;
+    let names: Vec<(&str, &str)> = names.iter().map(|r| (text(&r[0]), text(&r[1]))).collect();
+    assert_eq!(names, [("1", "A"), ("2", "B"), ("3", "C")], "{driver:?}");
+    let replace = match driver {
+        Driver::Mysql | Driver::Mariadb => Some("REPLACE INTO tpm_it_ups (id, email, name) VALUES (2, 'b@x', 'Y')"),
+        Driver::Sqlite => Some("INSERT OR REPLACE INTO tpm_it_ups (id, email, name) VALUES (2, 'b@x', 'Y')"),
+        _ => None,
+    };
+    if let Some(sql) = replace {
+        let r = engine.run_script(sid, sql, opts.clone(), None).await.unwrap();
+        let rp = point(&r);
+        engine.apply_restore(sid, &rp, None, true).await.unwrap_or_else(|e| panic!("{driver:?}: {e:?}"));
+        let back = rows("SELECT name FROM tpm_it_ups WHERE id = 2").await;
+        assert_eq!(text(&back[0][0]), "B", "{driver:?}: REPLACE undone");
+    }
+    run(engine, sid, "DROP TABLE tpm_it_ups").await;
+
     // A grid commit says, per table, whether it kept a restore point and why not.
     run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rpk").await;
     run(engine, sid, "CREATE TABLE tpm_it_rpk (id integer PRIMARY KEY, qty integer)").await;

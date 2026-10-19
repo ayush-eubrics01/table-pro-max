@@ -236,6 +236,11 @@ pub struct RunSqlFileRequest {
     /// The connection name, typed to confirm a file that destroys data on production.
     #[serde(default)]
     pub typed_confirmation: Option<String>,
+    /// Settings › Safety limits for restore points, as for a query tab.
+    #[serde(default)]
+    pub restore_max_rows: Option<u64>,
+    #[serde(default)]
+    pub restore_max_mb: Option<u64>,
 }
 
 /// Executes a SQL script file (e.g. a dump) statement by statement, with the same safety
@@ -247,6 +252,8 @@ pub struct RunFileResult {
     pub failures: Vec<StatementResult>,
     pub cancelled: bool,
     pub duration_ms: u64,
+    /// Restore points kept for the file's statements.
+    pub restore_points: usize,
 }
 
 #[tauri::command]
@@ -274,9 +281,9 @@ pub async fn run_sql_file(
                 confirmed: request.confirmed,
                 typed_confirmation: request.typed_confirmation.clone(),
                 max_rows: Some(1000),
-                // A whole SQL file (often a dump) would copy every table it touches and push
-                // older restore points out of the size limit.
-                keep_restore_points: Some(false),
+                // Restore points as in a query tab: a statement over the limits keeps none.
+                restore_max_rows: request.restore_max_rows,
+                restore_max_mb: request.restore_max_mb,
                 ..Default::default()
             },
             Some(progress),
@@ -286,11 +293,14 @@ pub async fn run_sql_file(
     let ids: Vec<String> = result.statements.iter().filter_map(|s| s.result_id.clone()).collect();
     state.engine.release_results(&ids);
     let failures: Vec<StatementResult> = result.statements.iter().filter(|s| s.error.is_some()).cloned().collect();
+    let restore_points =
+        result.statements.iter().filter(|s| s.restore.as_ref().is_some_and(|r| r.point_id.is_some())).count();
     tracing::info!(statements = result.statements.len(), failed = failures.len(), "ran SQL file");
     Ok(RunFileResult {
         statements_run: result.statements.len(),
         failures,
         cancelled: result.cancelled,
         duration_ms: result.duration_ms,
+        restore_points,
     })
 }

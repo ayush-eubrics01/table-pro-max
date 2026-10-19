@@ -6,7 +6,7 @@ import { format as formatSql } from "sql-formatter";
 import type { SQLNamespace } from "@codemirror/lang-sql";
 import type { AiTask, Environment, ExplainResult, ScriptResult, SessionInfo, StatementResult } from "../../types/backend";
 import { api, toError } from "../../lib/ipc";
-import { byteToUtf16, formatDuration, uid, utf16ToByte } from "../../lib/text";
+import { byteToUtf16, formatDuration, pluralize, uid, utf16ToByte } from "../../lib/text";
 import { useRestore } from "../../stores/restore";
 import { confirmAction, notify, notifyError, promptText } from "../../stores/ui";
 import { useSettings } from "../../stores/settings";
@@ -449,7 +449,8 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
           </div>
           <p style={{ margin: 0 }}>
             Every statement in <span className="mono">{name}</span> will run against this database, in order. A dump can
-            create, replace or delete data. Read-only and safety settings still apply.
+            create, replace or delete data. Read-only and safety settings still apply, and restore points are kept as in a
+            query tab.
           </p>
         </>
       ),
@@ -458,9 +459,11 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
     const id = uid();
     setFileTask({ id, name });
     try {
-      const r = await withNameConfirm(s, (typed) => api.runSqlFile(s.sessionId, path, id, true, typed));
+      const limits = { maxRows: settings["restore.maxRows"], maxMb: settings["restore.maxMb"] };
+      const r = await withNameConfirm(s, (typed) => api.runSqlFile(s.sessionId, path, id, true, typed, limits));
       if (!r) return;
-      const msg = `${name}: ${r.statementsRun} statements in ${formatDuration(r.durationMs)}`;
+      const kept = r.restorePoints ? `, ${pluralize(r.restorePoints, "restore point")} kept` : "";
+      const msg = `${name}: ${r.statementsRun} statements in ${formatDuration(r.durationMs)}${kept}`;
       if (r.failures.length) {
         setError(`${msg}. Stopped at an error: ${r.failures[0]!.error!.message}\n${r.failures[0]!.sql.slice(0, 300)}`);
       } else if (r.cancelled) notify(`${msg} (cancelled)`, "info");
