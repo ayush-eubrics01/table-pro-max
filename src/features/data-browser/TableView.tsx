@@ -720,6 +720,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
                     primaryKey: c.primaryKey !== null,
                     foreignKey: structure.foreignKeys.some((f) => f.columns.includes(c.name)),
                     deferred: deferredCols.has(c.name),
+                    enumValues: c.enumValues,
                   }))}
                   rowCount={rowCount}
                   getRow={getRow}

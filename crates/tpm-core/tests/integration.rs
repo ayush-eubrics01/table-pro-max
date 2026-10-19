@@ -235,8 +235,26 @@ async fn exercise(t: Target) {
     assert!(st.indexes.iter().any(|i| i.columns == vec!["price".to_string()]), "{:?}", st.indexes);
     assert_eq!(st.foreign_keys.len(), 1, "{:?}", st.foreign_keys);
     assert_eq!(st.foreign_keys[0].ref_table, "tpm_it_owners");
+    assert!(st.columns.iter().all(|c| c.enum_values.is_empty()), "no enums here");
     let def = engine.object_definition(&sid, &t.schema, "tpm_it_items", ObjectKind::Table).await.unwrap();
     assert!(def.to_lowercase().contains("create table"), "{def}");
+    if driver == Driver::Postgres {
+        // Enum columns carry their values in declared order (not alphabetical), for tags and a dropdown.
+        let r = run(
+            &engine,
+            &sid,
+            "DROP TABLE IF EXISTS tpm_it_moods; DROP TYPE IF EXISTS tpm_it_mood; \
+             CREATE TYPE tpm_it_mood AS ENUM ('sad', 'ok', 'happy, really'); \
+             CREATE TABLE tpm_it_moods (id int PRIMARY KEY, mood tpm_it_mood, moods tpm_it_mood[])",
+        )
+        .await;
+        assert!(r.statements.iter().all(|s| s.error.is_none()), "{r:?}");
+        let st = engine.table_structure(&sid, &t.schema, "tpm_it_moods", true).await.unwrap();
+        assert_eq!(st.column("mood").unwrap().enum_values, vec!["sad", "ok", "happy, really"]);
+        assert!(st.column("moods").unwrap().enum_values.is_empty(), "arrays of enums are edited as text");
+        assert!(st.column("id").unwrap().enum_values.is_empty());
+        run(&engine, &sid, "DROP TABLE tpm_it_moods; DROP TYPE tpm_it_mood").await;
+    }
 
     // --- ad-hoc SQL, multi-statement, values as text, binary ---
     let r = run(&engine, &sid, "SELECT id, name, price, data FROM tpm_it_items ORDER BY id; SELECT 1 + 1 AS two").await;

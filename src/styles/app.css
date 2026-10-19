@@ -1369,6 +1369,25 @@ pre,
   outline: none;
   user-select: text;
 }
+/* The enum list, drawn like .select (WebKitGTK paints native selects in the GTK theme). */
+select.grid-editor {
+  -webkit-appearance: none;
+  appearance: none;
+  color: var(--text);
+  padding-right: 30px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-muted) 50%), linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  background-color: var(--surface);
+}
+@media (forced-colors: active) {
+  select.grid-editor {
+    -webkit-appearance: auto;
+    appearance: auto;
+    background-image: none;
+  }
+}
 .grid-hcell .icon[aria-label="Primary key"] {
   color: var(--warning);
 }

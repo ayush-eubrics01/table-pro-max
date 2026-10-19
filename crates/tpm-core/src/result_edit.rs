@@ -173,6 +173,7 @@ mod tests {
             columns: cols
                 .iter()
                 .map(|(n, pk)| ColumnInfo {
+                    enum_values: Vec::new(),
                     name: (*n).into(),
                     data_type: "text".into(),
                     nullable: true,

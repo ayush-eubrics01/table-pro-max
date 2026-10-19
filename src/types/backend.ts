@@ -183,6 +183,8 @@ export interface ColumnInfo {
   comment: string | null;
   /** Computed by the database; it can't be written. */
   generated?: boolean;
+  /** An enum column's values in declared order (PostgreSQL). */
+  enumValues?: string[];
 }
 
 export interface IndexInfo {

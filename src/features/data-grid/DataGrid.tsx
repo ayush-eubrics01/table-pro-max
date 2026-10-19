@@ -14,6 +14,8 @@ export interface GridColumn {
   foreignKey?: boolean;
   /** Left out of the page query; cells hold `{ $notLoaded: true }` until loaded. */
   deferred?: boolean;
+  /** An enum column's values: shown as tags, edited with a list of them. */
+  enumValues?: string[];
 }
 
 export interface CellPos {
@@ -293,15 +295,17 @@ export function DataGrid(props: DataGridProps) {
     const cell = getRow(pos.row)?.[pos.col];
     if (cell === undefined || (cell !== null && typeof cell === "object")) return;
     if (isLargeText(cell, largeValueChars)) return; // long text opens in the value editor
-    setEditing({ pos, value: initial ?? cell ?? "" });
+    // An enum is chosen from its list, so a typed key doesn't replace the value.
+    const listed = !!columns[pos.col]?.enumValues?.length;
+    setEditing({ pos, value: (listed ? undefined : initial) ?? cell ?? "" });
   };
 
   const startEditRef = useRef(startEdit);
   startEditRef.current = startEdit;
 
-  const commitEdit = (move?: "down" | "right" | "left") => {
+  const commitEdit = (move?: "down" | "right" | "left", value?: string) => {
     if (!editing) return;
-    onEdit?.(editing.pos.row, editing.pos.col, editing.value);
+    onEdit?.(editing.pos.row, editing.pos.col, value ?? editing.value);
     const { row, col } = editing.pos;
     setEditing(null);
     scrollRef.current?.focus();
@@ -608,7 +612,7 @@ export function DataGrid(props: DataGridProps) {
                   const isEditing = editing && editing.pos.row === ri.index && editing.pos.col === col;
                   const selected = inSelection(ri.index, col);
                   const active = focus?.row === ri.index && focus.col === col;
-                  const tone = cellTone(c.typeName, v);
+                  const tone = c.enumValues?.length && typeof v === "string" ? "enum" : cellTone(c.typeName, v);
                   const link = isEditing ? null : (cellLink?.(ri.index, col) ?? null);
                   const cls = [
                     "grid-cell",
@@ -638,7 +642,8 @@ export function DataGrid(props: DataGridProps) {
                       }
                       style={{ left: ROWNUM_WIDTH + ci.start, width: ci.size }}
                       onMouseDown={(e) => {
-                        if (e.button !== 0) return;
+                        // A click inside the open editor (the enum list, the text box) is part of the edit.
+                        if (e.button !== 0 || isEditing) return;
                         if (editing) commitEdit();
                         scrollRef.current?.focus();
                         select({ row: ri.index, col }, e.shiftKey);
@@ -658,7 +663,39 @@ export function DataGrid(props: DataGridProps) {
                         menu.open(e, cellMenu());
                       }}
                     >
-                      {isEditing ? (
+                      {isEditing && c.enumValues?.length ? (
+                        <select
+                          className="grid-editor"
+                          autoFocus
+                          aria-label={`Edit ${c.name}`}
+                          value={editing.value}
+                          // Choosing a value is the edit; the list closes with it.
+                          onChange={(e) => commitEdit(undefined, e.target.value)}
+                          onBlur={() => setEditing(null)}
+                          onKeyDown={(e) => {
+                            e.stopPropagation();
+                            if (e.key === "Escape") {
+                              e.preventDefault();
+                              setEditing(null);
+                              scrollRef.current?.focus();
+                            } else if (e.key === "Tab") {
+                              e.preventDefault();
+                              commitEdit(e.shiftKey ? "left" : "right");
+                            }
+                          }}
+                        >
+                          {!c.enumValues.includes(editing.value) && (
+                            <option value={editing.value} disabled>
+                              {editing.value === "" ? "Choose a value" : editing.value}
+                            </option>
+                          )}
+                          {c.enumValues.map((o) => (
+                            <option key={o} value={o}>
+                              {o}
+                            </option>
+                          ))}
+                        </select>
+                      ) : isEditing ? (
                         <input
                           className="grid-editor"
                           autoFocus

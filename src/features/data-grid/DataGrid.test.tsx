@@ -30,6 +30,50 @@ describe("DataGrid", () => {
     expect(nulls.every((n) => !n.classList.contains("tag"))).toBe(true);
   });
 
+  it("shows a PostgreSQL enum's values as tags and edits them with a list of its values", () => {
+    const cols = [
+      { name: "id", typeName: "integer", primaryKey: true },
+      { name: "mood", typeName: "mood", enumValues: ["sad", "ok", "happy"] },
+    ];
+    const data: Cell[][] = [["1", "ok"]];
+    const edits: unknown[] = [];
+    render(<DataGrid ariaLabel="Rows" columns={cols} rowCount={1} getRow={(i) => data[i]} sort={[]} canEdit={() => true} onEdit={(...a) => edits.push(a)} />);
+    expect(screen.getByText("ok")).toHaveClass("tag");
+    fireEvent.doubleClick(screen.getByText("ok").closest(".grid-cell")!);
+    const list = screen.getByRole("combobox", { name: "Edit mood" });
+    expect(list).toHaveValue("ok");
+    expect([...(list as HTMLSelectElement).options].map((o) => o.value)).toEqual(["sad", "ok", "happy"]);
+    fireEvent.change(list, { target: { value: "happy" } });
+    expect(edits).toEqual([[0, 1, "happy"]]);
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+  });
+
+  it("doesn't commit an edit when the open editor itself is clicked", () => {
+    const cols = [{ name: "mood", typeName: "mood", enumValues: ["sad", "ok"] }];
+    const data: Cell[][] = [[null]];
+    const edits: unknown[] = [];
+    render(<DataGrid ariaLabel="Rows" columns={cols} rowCount={1} getRow={(i) => data[i]} sort={[]} canEdit={() => true} onEdit={(...a) => edits.push(a)} />);
+    fireEvent.doubleClick(screen.getByText("NULL").closest(".grid-cell")!);
+    const list = screen.getByRole("combobox", { name: "Edit mood" });
+    fireEvent.mouseDown(list);
+    expect(edits).toEqual([]);
+    expect(screen.getByRole("combobox", { name: "Edit mood" })).toBeInTheDocument();
+  });
+
+  it("starts an enum edit from a typed key with the current value, and Escape keeps it", () => {
+    const cols = [{ name: "mood", typeName: "mood", enumValues: ["sad", "ok"] }];
+    const data: Cell[][] = [["sad"]];
+    const edits: unknown[] = [];
+    render(<DataGrid ariaLabel="Rows" columns={cols} rowCount={1} getRow={(i) => data[i]} sort={[]} canEdit={() => true} onEdit={(...a) => edits.push(a)} />);
+    fireEvent.mouseDown(screen.getByText("sad").closest(".grid-cell")!);
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "o" });
+    const list = screen.getByRole("combobox", { name: "Edit mood" });
+    expect(list).toHaveValue("sad");
+    fireEvent.keyDown(list, { key: "Escape" });
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(edits).toEqual([]);
+  });
+
   it("adds scroll space under the last row when asked", () => {
     const height = (inset?: number) => {
       const { container, unmount } = render(<DataGrid ariaLabel="Rows" columns={columns} rowCount={2} getRow={(i) => rows[i]} sort={[]} bottomInset={inset} />);

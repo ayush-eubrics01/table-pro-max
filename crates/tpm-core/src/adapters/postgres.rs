@@ -263,7 +263,9 @@ impl Session for PgSession {
                         (SELECT array_position(i.indkey::int2[], a.attnum) FROM pg_index i \
                            WHERE i.indrelid = a.attrelid AND i.indisprimary)::text, \
                         (a.attidentity <> '' OR coalesce(pg_get_expr(d.adbin, d.adrelid), '') LIKE 'nextval(%')::text, \
-                        col_description(a.attrelid, a.attnum), (a.attgenerated <> '')::text \
+                        col_description(a.attrelid, a.attnum), (a.attgenerated <> '')::text, \
+                        array_to_string(ARRAY(SELECT e.enumlabel::text FROM pg_enum e \
+                          WHERE e.enumtypid = a.atttypid ORDER BY e.enumsortorder), E'\\x1f') \
                  FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
                  WHERE a.attrelid = $1::oid AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum",
                 &oid_param(),
@@ -281,6 +283,7 @@ impl Session for PgSession {
                     auto_increment: r.bool(5),
                     comment: r.opt(6),
                     generated: r.bool(7),
+                    enum_values: split_list(&r.str(8)),
                 }
             })
             .collect();

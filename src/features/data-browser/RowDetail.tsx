@@ -124,6 +124,31 @@ function Field({
           {value.$bytes.slice(0, 256)}
           {value.$bytes.length > 256 ? "…" : ""}
         </pre>
+      ) : editable && column.enumValues?.length ? (
+        <div className="field-row" style={{ gap: 4 }}>
+          <select
+            className={`select${edited ? " is-edited" : ""}`}
+            style={{ flex: 1 }}
+            aria-label={column.name}
+            value={typeof value === "string" ? value : ""}
+            onChange={(e) => onEdit(e.target.value)}
+          >
+            {typeof value !== "string" && (
+              <option value="" disabled>
+                {value === null ? "NULL" : "Choose a value"}
+              </option>
+            )}
+            {typeof value === "string" && !column.enumValues.includes(value) && <option value={value}>{value}</option>}
+            {column.enumValues.map((o) => (
+              <option key={o} value={o}>
+                {o}
+              </option>
+            ))}
+          </select>
+          <button className="btn btn-ghost" onClick={() => onEdit(null)} disabled={value === null}>
+            Set NULL
+          </button>
+        </div>
       ) : editable ? (
         <>
           <textarea

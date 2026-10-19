@@ -385,6 +385,7 @@ impl Session for MySession {
                 let r = TextRow(r);
                 let name = r.str(0);
                 ColumnInfo {
+                    enum_values: Vec::new(),
                     primary_key: pk_pos(&name),
                     name,
                     data_type: r.str(1),
