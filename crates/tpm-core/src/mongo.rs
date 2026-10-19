@@ -260,14 +260,53 @@ pub fn delete_filter(target: &DeleteTarget) -> Result<Document> {
             for id in ids {
                 let json: serde_json::Value = serde_json::from_str(id)
                     .map_err(|_| AppError::invalid_config("A document id isn't valid Extended JSON"))?;
-                values.push(
-                    Bson::try_from(json)
-                        .map_err(|_| AppError::invalid_config("A document id isn't valid Extended JSON"))?,
-                );
+                let value = Bson::try_from(json)
+                    .map_err(|_| AppError::invalid_config("A document id isn't valid Extended JSON"))?;
+                // Inside $in a regular expression is a pattern and could match any number of
+                // documents; an `_id` is never an array, and `$` names are operators, not values.
+                if !is_exact_id(&value) {
+                    return Err(AppError::invalid_config(
+                        "A document id must be a single value, not a pattern or an operator",
+                    ));
+                }
+                values.push(value);
             }
             Ok(doc! { "_id": { "$in": values } })
         }
     }
+}
+
+fn is_exact_id(v: &Bson) -> bool {
+    match v {
+        Bson::RegularExpression(_) | Bson::Array(_) => false,
+        Bson::Document(d) => d.iter().all(|(k, v)| !k.starts_with('$') && is_exact_id(v)),
+        _ => true,
+    }
+}
+
+/// The database a user signs in to: the profile's auth database, else for SRV (Atlas, whose
+/// users live in admin) admin, else the connection's database, else admin.
+pub fn auth_source(profile: &ConnectionProfile) -> String {
+    let database = Some(profile.database.trim()).filter(|d| !d.is_empty() && !profile.srv);
+    profile.auth_source.as_deref().map(str::trim).filter(|s| !s.is_empty()).or(database).unwrap_or("admin").to_string()
+}
+
+/// Routes this version can't take, refused before any tunnel is opened.
+pub fn check_route(profile: &ConnectionProfile) -> Result<()> {
+    if profile.ssh.is_none() {
+        return Ok(());
+    }
+    if profile.srv {
+        return Err(AppError::unsupported(
+            "A mongodb+srv:// address can't go through an SSH tunnel; use the host and port of one server",
+        ));
+    }
+    if profile.tls.mode == TlsMode::Require {
+        return Err(AppError::unsupported(
+            "Verified TLS through an SSH tunnel is not supported for MongoDB; use TLS without verification or no TLS",
+        ));
+    }
+    Ok(())
 }
 
 /// The backend's rules for a delete, before anything is counted again or deleted: never on a
@@ -300,7 +339,13 @@ pub fn check_delete(
 }
 
 /// MongoDB keeps its own metadata in `system.*` collections; deleting from them is refused.
-pub fn check_deletable_collection(collection: &str) -> Result<()> {
+pub fn check_deletable_collection(database: &str, collection: &str) -> Result<()> {
+    if matches!(database, "admin" | "config" | "local") {
+        return Err(AppError::new(
+            ErrorKind::PolicyViolation,
+            format!("Documents in MongoDB's own {database} database can't be deleted here"),
+        ));
+    }
     if collection.starts_with("system.") {
         return Err(AppError::new(ErrorKind::PolicyViolation, "Documents in system collections can't be deleted here"));
     }
@@ -355,16 +400,7 @@ impl MongoSession {
         writes_locked: bool,
     ) -> Result<Self> {
         crate::adapters::tls::install_process_provider();
-        if profile.srv && tunnel.is_some() {
-            return Err(AppError::unsupported(
-                "A mongodb+srv:// address can't go through an SSH tunnel; use the host and port of one server",
-            ));
-        }
-        if tunnel.is_some() && profile.tls.mode == TlsMode::Require {
-            return Err(AppError::unsupported(
-                "Verified TLS through an SSH tunnel is not supported for MongoDB; use TLS without verification or no TLS",
-            ));
-        }
+        check_route(profile)?;
         let connect_timeout = Duration::from_secs(profile.connect_timeout_secs);
         let mut opts = if profile.srv {
             // The hosts come from DNS (SRV and TXT records), as for Atlas.
@@ -385,11 +421,7 @@ impl MongoSession {
             o
         };
         if !profile.user.trim().is_empty() {
-            let source = profile
-                .auth_source
-                .clone()
-                .or_else(|| Some(profile.database.clone()).filter(|d| !d.trim().is_empty()))
-                .unwrap_or_else(|| "admin".into());
+            let source = auth_source(profile);
             opts.credential = Some(
                 Credential::builder()
                     .username(profile.user.trim().to_string())
@@ -468,10 +500,9 @@ impl MongoSession {
     pub async fn databases(&self) -> Result<Vec<MongoDatabase>> {
         let specs = self.timed(self.timeout, self.client.list_databases().authorized_databases(true)).await;
         let mut out: Vec<MongoDatabase> = match specs {
-            Ok(specs) => specs
-                .into_iter()
-                .map(|s| MongoDatabase { name: s.name, size_bytes: Some(s.size_on_disk) })
-                .collect(),
+            Ok(specs) => {
+                specs.into_iter().map(|s| MongoDatabase { name: s.name, size_bytes: Some(s.size_on_disk) }).collect()
+            }
             // A user who may not list databases can still use the one in the connection.
             Err(e) if !self.database.is_empty() && e.kind == ErrorKind::PolicyViolation => vec![],
             Err(e) => return Err(e),
@@ -573,7 +604,7 @@ impl MongoSession {
 
     /// How many documents a delete would remove.
     pub async fn delete_count(&self, database: &str, collection: &str, target: &DeleteTarget) -> Result<u64> {
-        check_deletable_collection(collection)?;
+        check_deletable_collection(database, collection)?;
         let filter = delete_filter(target)?;
         let coll = self.client.database(database).collection::<Document>(collection);
         self.timed(self.timeout, coll.count_documents(filter).max_time(self.timeout)).await
@@ -648,11 +679,54 @@ mod tests {
 
     #[test]
     fn system_collections_are_never_deleted_from() {
-        let e = check_deletable_collection("system.views").unwrap_err();
+        let e = check_deletable_collection("shop", "system.views").unwrap_err();
         assert_eq!(e.kind, ErrorKind::PolicyViolation);
-        assert!(check_deletable_collection("system.profile").is_err());
-        assert!(check_deletable_collection("orders").is_ok());
-        assert!(check_deletable_collection("my.system.log").is_ok());
+        assert!(check_deletable_collection("shop", "system.profile").is_err());
+        assert!(check_deletable_collection("shop", "orders").is_ok());
+        assert!(check_deletable_collection("shop", "my.system.log").is_ok());
+        // MongoDB's own databases: sessions, sharding metadata, the oplog.
+        for db in ["admin", "config", "local"] {
+            assert_eq!(check_deletable_collection(db, "transactions").unwrap_err().kind, ErrorKind::PolicyViolation);
+        }
+    }
+
+    #[test]
+    fn ids_that_would_match_more_than_one_value_are_refused() {
+        // Inside $in a regular expression is a pattern: it could match every document, without
+        // the typed confirmation a filter needs on production.
+        for id in [
+            r#"{"$regularExpression":{"pattern":"","options":""}}"#,
+            r#"[1, 2]"#,
+            r#"{"$gt": 0}"#,
+            r#"{"a": {"$ne": 1}}"#,
+        ] {
+            let e = delete_filter(&DeleteTarget::Ids { ids: vec![id.into()] }).unwrap_err();
+            assert_eq!(e.kind, ErrorKind::InvalidConfig, "{id}");
+        }
+        for id in [
+            r#"{"$oid":"65f1a2b3c4d5e6f708091a2b"}"#,
+            "7",
+            r#""abc""#,
+            r#"{"a": 1, "b": {"c": 2}}"#,
+            r#"{"$numberLong":"9007199254740993"}"#,
+        ] {
+            assert!(delete_filter(&DeleteTarget::Ids { ids: vec![id.into()] }).is_ok(), "{id}");
+        }
+    }
+
+    #[test]
+    fn the_auth_database_follows_the_profile_then_atlas() {
+        let mut p = crate::config::parse_connection_url("mongodb://u@db.example.com/shop").unwrap().profile;
+        assert_eq!(auth_source(&p), "shop");
+        p.auth_source = Some("users".into());
+        assert_eq!(auth_source(&p), "users");
+        // SRV (Atlas) names users in admin; the database in the address is only the default one.
+        p.auth_source = None;
+        p.srv = true;
+        assert_eq!(auth_source(&p), "admin");
+        p.srv = false;
+        p.database = " ".into();
+        assert_eq!(auth_source(&p), "admin");
     }
 
     #[test]

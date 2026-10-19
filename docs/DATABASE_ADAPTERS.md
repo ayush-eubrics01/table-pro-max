@@ -198,12 +198,18 @@ MongoDB is not SQL, so like Redis (`redis_kv.rs`) it does not implement `Session
   the rustls provider, as for SQL Server. Tested against MongoDB 7 and `mongodb-atlas-local` 8.
 * Connections: `mongodb://` with one host, or `mongodb+srv://` (hosts from DNS, as Atlas needs).
   `authSource`, `tls`/`ssl`, `tlsAllowInvalidCertificates`/`tlsInsecure`, `tlsCAFile` and
-  `directConnection` are read from URLs. An SSH tunnel connects directly to its one host.
+  `directConnection` are read from URLs (option names in any case). An SSH tunnel connects
+  directly to its one host; SRV and verified TLS through a tunnel are refused before the tunnel
+  opens. Sign-in is user and password (SCRAM); the auth database is the one given, else `admin`
+  for SRV (Atlas), else the connection's database.
 * Reads: find (filter, sort, projection as relaxed Extended JSON), count, aggregate (reading
   stages only), and vector search, whose `$vectorSearch` stage the core builds from a form. Each
   read sends `maxTimeMS`. Documents come back as relaxed Extended JSON text.
 * Deletes: by `_id` or by filter, counted first and run only while the count is unchanged; read-only
-  and locked production sessions refuse them, and `system.*` collections are never deleted from.
+  and locked production sessions refuse them, and `system.*` collections and the `admin`,
+  `config` and `local` databases are never deleted from. Ids must be exact values: a regular
+  expression, an array or a `$` operator is refused, since inside `$in` it could match many
+  documents without the typed confirmation a filter needs on production.
 * Names (database, collection, index, field path) are passed to the driver as API parameters,
   never put into query text, so there is nothing to quote.
 * Not supported: inserting or editing documents, index management, schema validation, change

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
 import { api, toError } from "../../lib/ipc";
 import { formatCount, pluralize } from "../../lib/text";
@@ -51,8 +51,8 @@ export function MongoView({ ws }: { ws: Workspace }) {
     filter: "",
   });
   const [page, setPage] = useState<MongoPage | null>(null);
-  /** The filter behind the page on screen: what "Delete matching" deletes. */
-  const [shownFilter, setShownFilter] = useState<string | null>(null);
+  /** Where the page on screen came from, and its find filter: what deletes and "Count all" act on. */
+  const [shown, setShown] = useState<{ target: Target; filter: string | null } | null>(null);
   const [total, setTotal] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [view, setView] = useState<"table" | "json">("table");
@@ -95,9 +95,13 @@ export function MongoView({ ws }: { ws: Workspace }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sid]);
 
+  /** Each run's number: a result that arrives after a newer run, or a new pick, is dropped. */
+  const runSeq = useRef(0);
   const run = useCallback(
-    async (t: Target | null = target, from = skip) => {
+    async (t: Target | null, from: number) => {
       if (!t) return;
+      const n = ++runSeq.current;
+      setSkip(from);
       setRunning(true);
       setError(null);
       setTotal(null);
@@ -124,37 +128,43 @@ export function MongoView({ ws }: { ws: Workspace }) {
                   limit: vector.limit,
                   filter: vector.filter,
                 });
+        if (n !== runSeq.current) return;
         setPage(result);
-        setShownFilter(mode === "find" ? filter : null);
+        setShown({ target: t, filter: mode === "find" ? filter : null });
         setSelected(new Set());
       } catch (e) {
-        setError(toError(e).message);
+        if (n === runSeq.current) setError(toError(e).message);
       } finally {
-        setRunning(false);
+        if (n === runSeq.current) setRunning(false);
       }
     },
-    [sid, target, mode, filter, sort, projection, skip, limit, pipeline, vector],
+    [sid, mode, filter, sort, projection, limit, pipeline, vector],
   );
 
   const pick = (database: string, c: MongoCollection) => {
     const t = { database, collection: c.name, kind: c.kind };
+    runSeq.current++;
     setTarget(t);
     setSkip(0);
     setPage(null);
+    setShown(null);
+    setSelected(new Set());
+    setRunning(false);
     if (mode === "find") void run(t, 0);
   };
 
   const countMatching = async () => {
-    if (!target) return;
+    if (!shown || shown.filter === null) return;
     try {
-      setTotal(await api.mongoCount(sid, target.database, target.collection, filter));
+      setTotal(await api.mongoCount(sid, shown.target.database, shown.target.collection, shown.filter));
     } catch (e) {
       notifyError(e, "Could not count");
     }
   };
 
   const remove = async (t: MongoDeleteTarget, what: string) => {
-    if (!target) return;
+    if (!shown) return;
+    const target = shown.target;
     try {
       const count = await api.mongoDeleteCount(sid, target.database, target.collection, t);
       if (count === 0) return notify("No documents match, so nothing was deleted.");
@@ -189,14 +199,15 @@ export function MongoView({ ws }: { ws: Workspace }) {
         typedConfirmation: production && byFilter ? ws.session.connectionName : null,
       });
       notify(`Deleted ${pluralize(deleted, "document")}`, "success");
-      await run();
+      await run(target, skip);
     } catch (e) {
       notifyError(e, "Delete failed");
     }
   };
 
   const docs = useMemo(() => page?.documents.map(parseDoc) ?? [], [page]);
-  const canDelete = !readOnly && target?.kind === "collection";
+  const canDelete = !readOnly && shown?.target.kind === "collection";
+  const shownFilter = shown?.filter ?? null;
   const selectable = canDelete && mode !== "aggregate";
 
   return (
@@ -271,8 +282,10 @@ export function MongoView({ ws }: { ws: Workspace }) {
                 onClick={() => {
                   if (m === mode) return;
                   setMode(m);
+                  runSeq.current++;
+                  setRunning(false);
                   setPage(null);
-                  setShownFilter(null);
+                  setShown(null);
                   setTotal(null);
                   setSelected(new Set());
                   setError(null);
@@ -299,7 +312,7 @@ export function MongoView({ ws }: { ws: Workspace }) {
             </>
           )}
           <span className="grow" />
-          <button className="btn btn-primary" disabled={!target || running} onClick={() => void run()}>
+          <button className="btn btn-primary" disabled={!target || running} onClick={() => void run(target, 0)}>
             <Icon name="play_arrow" size={13} /> Run
           </button>
         </div>
@@ -364,7 +377,7 @@ export function MongoView({ ws }: { ws: Workspace }) {
                   value={pipeline}
                   aria-label="Pipeline"
                   onChange={(e) => setPipeline(e.target.value)}
-                  onKeyDown={onRunKey(() => void run())}
+                  onKeyDown={onRunKey(() => void run(target, 0))}
                 />
               </label>
             )}
@@ -425,7 +438,7 @@ export function MongoView({ ws }: { ws: Workspace }) {
                     placeholder="[0.12, -0.4, 0.98, …]"
                     aria-label="Query vector"
                     onChange={(e) => setVector({ ...vector, queryVector: e.target.value })}
-                    onKeyDown={onRunKey(() => void run())}
+                    onKeyDown={onRunKey(() => void run(target, 0))}
                   />
                 </label>
                 <label className="field">
@@ -436,7 +449,7 @@ export function MongoView({ ws }: { ws: Workspace }) {
                     placeholder='{ "lang": "en" }'
                     aria-label="Vector filter"
                     onChange={(e) => setVector({ ...vector, filter: e.target.value })}
-                    onKeyDown={onRunKey(() => void run())}
+                    onKeyDown={onRunKey(() => void run(target, 0))}
                   />
                 </label>
               </>
@@ -475,9 +488,7 @@ export function MongoView({ ws }: { ws: Workspace }) {
                     aria-label="Previous page"
                     disabled={skip === 0 || running}
                     onClick={() => {
-                      const s = Math.max(0, skip - limit);
-                      setSkip(s);
-                      void run(target, s);
+                      void run(shown?.target ?? target, Math.max(0, skip - limit));
                     }}
                   >
                     <Icon name="chevron_left" size={14} />
@@ -487,9 +498,7 @@ export function MongoView({ ws }: { ws: Workspace }) {
                     aria-label="Next page"
                     disabled={!page.hasMore || running}
                     onClick={() => {
-                      const s = skip + limit;
-                      setSkip(s);
-                      void run(target, s);
+                      void run(shown?.target ?? target, skip + limit);
                     }}
                   >
                     <Icon name="chevron_right" size={14} />
@@ -507,7 +516,7 @@ export function MongoView({ ws }: { ws: Workspace }) {
                     )
                   }
                 >
-                  <Icon name="delete" size={13} /> Delete {pluralize(selected.size, "selected document")}
+                  <Icon name="delete" size={13} /> {selected.size === 1 ? "Delete the selected document" : `Delete ${selected.size} selected documents`}
                 </button>
               )}
               {canDelete && mode === "find" && shownFilter !== null && page.documents.length > 0 && (

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../components/Icon";
 import { mongoSessionInfo, useWorkspaces, type Tab, type Workspace } from "../stores/workspaces";
 import { useRestore } from "../stores/restore";
+import { useConnections } from "../stores/connections";
 import { RestorePanel } from "../features/restore/RestorePanel";
 import { usePendingEdits } from "../stores/pendingEdits";
 import { Sidebar } from "../features/database-explorer/Sidebar";
@@ -190,6 +191,18 @@ function RestoreCount({ ws }: { ws: Workspace }) {
  * workspace reconnects the other way (query tabs follow on their next run). Allowing asks for the
  * connection name; it lasts until the workspace closes.
  */
+/**
+ * Opens a MongoDB workspace's connection again and swaps the session. The saved profile is used,
+ * not the workspace's copy, so a renamed connection is what a typed confirmation asks for.
+ */
+async function reopenMongo(ws: Workspace, lockProduction: boolean, patch: Partial<Workspace> = {}) {
+  const profile = useConnections.getState().byId(ws.profile.id) ?? ws.profile;
+  const r = await connectMongoWithPrompt(profile, { lockProduction });
+  if (!r) return;
+  await api.mongoDisconnect(ws.session.sessionId).catch(() => undefined);
+  useWorkspaces.getState().update(ws.id, { ...patch, profile, session: mongoSessionInfo(profile, r.sessionId, r.info), health: "ok" });
+}
+
 export async function changeWriteAccess(ws: Workspace, allow: boolean) {
   const s = ws.session;
   if (allow) {
@@ -222,13 +235,7 @@ export async function changeWriteAccess(ws: Workspace, allow: boolean) {
     if (!ok) return;
   }
   try {
-    if (ws.kind === "mongo") {
-      const r = await connectMongoWithPrompt(ws.profile, { lockProduction: !allow });
-      if (!r) return;
-      await api.mongoDisconnect(s.sessionId).catch(() => undefined);
-      useWorkspaces.getState().update(ws.id, { session: mongoSessionInfo(ws.profile, r.sessionId, r.info), allowWrites: allow, health: "ok" });
-      return;
-    }
+    if (ws.kind === "mongo") return await reopenMongo(ws, !allow, { allowWrites: allow });
     const session = await connectWithPrompt(ws.profile, databaseToReopen(s), { lockProduction: !allow });
     if (!session) return;
     await api.disconnect(s.sessionId).catch(() => undefined);
@@ -250,13 +257,7 @@ export function StatusBar({ ws, version }: { ws: Workspace | undefined; version?
   const s = ws.session;
   const reconnect = async () => {
     try {
-      if (ws.kind === "mongo") {
-        const r = await connectMongoWithPrompt(ws.profile, { lockProduction: s.writesLocked });
-        if (!r) return;
-        await api.mongoDisconnect(s.sessionId).catch(() => undefined);
-        useWorkspaces.getState().update(ws.id, { session: mongoSessionInfo(ws.profile, r.sessionId, r.info), health: "ok" });
-        return;
-      }
+      if (ws.kind === "mongo") return await reopenMongo(ws, s.writesLocked);
       const info = await reconnectWithPrompt(s.sessionId, ws.profile);
       if (info) useWorkspaces.getState().update(ws.id, { session: info, health: "ok" });
     } catch (e) {

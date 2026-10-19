@@ -2554,6 +2554,7 @@ impl Engine {
         profile.validate()?;
         let writes_locked =
             lock_production && profile.environment == crate::config::Environment::Production && !profile.read_only();
+        crate::mongo::check_route(profile)?;
         let tunnel = match &profile.ssh {
             Some(ssh) => {
                 let known =

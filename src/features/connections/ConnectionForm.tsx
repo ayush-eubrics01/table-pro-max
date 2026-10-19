@@ -539,7 +539,7 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
             </label>
           )}
         </div>
-        {p.driver !== "redis" && (
+        {p.driver !== "redis" && p.driver !== "mongodb" && (
           <label className="toggle-card">
             <Icon name="history" size={16} />
             <span>

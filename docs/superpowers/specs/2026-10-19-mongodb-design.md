@@ -29,8 +29,9 @@ MongoDB is not SQL, so it follows the Redis pattern, not the relational adapters
 - TLS: Disable = no TLS; Require = TLS, certificate verified; Require (don't verify) = TLS without
   verification; Prefer = verified TLS with SRV (Atlas requires it) and none without, since
   MongoDB has no "TLS if offered". A CA file maps to `tlsCAFile`.
-- SSH tunnel: one host, `directConnection=true`, TLS checks the real host name. SRV with SSH is
-  refused (SRV resolves to several hosts).
+- SSH tunnel: one host, `directConnection=true`. SRV with SSH is refused (SRV resolves to several
+  hosts), and so is verified TLS through a tunnel (the certificate names the real host, not the
+  tunnel's end); TLS without verification works. Both are refused before the tunnel opens.
 - Passwords: the credential store, as for every other driver. The profile never holds one; a
   password in a pasted URL goes to the store.
 

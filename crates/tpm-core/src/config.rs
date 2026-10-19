@@ -430,15 +430,21 @@ pub fn parse_connection_url(input: &str) -> Result<ParsedUrl> {
         profile.tls.mode = if profile.srv { TlsMode::Require } else { TlsMode::Disable };
         let truthy = |v: &str| v.eq_ignore_ascii_case("true");
         let mut insecure = false;
+        // Option names are case-insensitive in MongoDB URLs.
         for (k, v) in url.query_pairs() {
-            match k.as_ref() {
-                "authSource" => profile.auth_source = Some(v.into_owned()).filter(|s| !s.is_empty()),
-                "directConnection" => profile.direct_connection = truthy(&v),
+            match k.to_ascii_lowercase().as_str() {
+                "authsource" => profile.auth_source = Some(v.into_owned()).filter(|s| !s.is_empty()),
+                "authmechanism" if !v.to_ascii_uppercase().starts_with("SCRAM-") => {
+                    return Err(AppError::unsupported(format!(
+                        "Signing in with {v} is not supported yet; use a user name and password (SCRAM)"
+                    )));
+                }
+                "directconnection" => profile.direct_connection = truthy(&v),
                 "tls" | "ssl" => {
                     profile.tls.mode = if truthy(&v) { TlsMode::Require } else { TlsMode::Disable };
                 }
-                "tlsAllowInvalidCertificates" | "tlsInsecure" => insecure = truthy(&v),
-                "tlsCAFile" => profile.tls.ca_cert_path = Some(v.into_owned()),
+                "tlsallowinvalidcertificates" | "tlsinsecure" => insecure = truthy(&v),
+                "tlscafile" => profile.tls.ca_cert_path = Some(v.into_owned()),
                 _ => {}
             }
         }
@@ -673,6 +679,18 @@ mod tests {
         assert_eq!(p.profile.to_url(), "sqlserver://app@db.example.com:1433/shop?sslmode=verify-full");
         assert_eq!(parse_connection_url("mssql://h:1444/x").unwrap().profile.port, Some(1444));
         assert_eq!(Driver::Mssql.dialect(), Dialect::Mssql);
+    }
+
+    #[test]
+    fn mongodb_url_options_ignore_case_and_unsupported_sign_in_is_refused() {
+        let p =
+            parse_connection_url("mongodb://u@h/db?authsource=users&TLS=true&DirectConnection=true").unwrap().profile;
+        assert_eq!(p.auth_source.as_deref(), Some("users"));
+        assert_eq!(p.tls.mode, TlsMode::Require);
+        assert!(p.direct_connection);
+        let e = parse_connection_url("mongodb://h/db?authMechanism=MONGODB-X509").unwrap_err();
+        assert_eq!(e.kind, crate::error::ErrorKind::Unsupported);
+        assert!(parse_connection_url("mongodb://u@h/db?authMechanism=SCRAM-SHA-256").is_ok());
     }
 
     #[test]
