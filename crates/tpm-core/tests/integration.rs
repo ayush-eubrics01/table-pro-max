@@ -1051,13 +1051,22 @@ async fn restore_point_restores(engine: &Arc<Engine>, sid: &str, schema: &str, d
     }
     run(engine, sid, "DROP TABLE tpm_it_rpd").await;
 
-    // A large restore: reviewed by a sample and its count, applied a chunk at a time with
-    // progress, and a cancel after the first chunk puts nothing back.
+    // A large restore of deleted rows goes back as a few multi-row INSERTs, reviewed as they run.
     run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rpbig").await;
     run(engine, sid, "CREATE TABLE tpm_it_rpbig (id integer PRIMARY KEY, note varchar(10))").await;
     let values = (1..=1200).map(|i| format!("({i}, 'n')")).collect::<Vec<_>>().join(", ");
     run(engine, sid, &format!("INSERT INTO tpm_it_rpbig VALUES {values}")).await;
     let r = engine.run_script(sid, "DELETE FROM tpm_it_rpbig", opts.clone(), None).await.unwrap();
+    let big = point(&r);
+    let preview = engine.preview_restore(sid, &big, None).await.unwrap();
+    let expected = if driver == Driver::Sqlite { 3 } else { 2 }; // 1,000 rows each; SQLite 499 (999 parameters)
+    assert_eq!(preview.statement_count, expected, "{driver:?}");
+    assert!(preview.sql.starts_with("INSERT INTO") && preview.sql.contains("), ("), "{driver:?}: multi-row INSERTs");
+    engine.apply_restore(sid, &big, None, true).await.unwrap_or_else(|e| panic!("{driver:?}: {e:?}"));
+    assert_eq!(text(&rows("SELECT count(*) FROM tpm_it_rpbig").await[0][0]), "1200", "{driver:?}");
+    // A large restore of changed rows (one UPDATE each): reviewed by a sample and its count,
+    // applied a chunk at a time with progress, and a cancel after the first chunk puts nothing back.
+    let r = engine.run_script(sid, "UPDATE tpm_it_rpbig SET note = 'm'", opts.clone(), None).await.unwrap();
     let big = point(&r);
     let preview = engine.preview_restore(sid, &big, None).await.unwrap();
     assert_eq!(preview.statement_count, 1200, "{driver:?}");
@@ -1072,14 +1081,15 @@ async fn restore_point_restores(engine: &Arc<Engine>, sid: &str, schema: &str, d
         .await
         .unwrap_err();
     assert_eq!(e.kind, ErrorKind::Cancelled, "{driver:?}: {e:?}");
-    assert_eq!(text(&rows("SELECT count(*) FROM tpm_it_rpbig").await[0][0]), "0", "{driver:?}: rolled back");
+    let still = "SELECT count(*) FROM tpm_it_rpbig WHERE note = 'm'";
+    assert_eq!(text(&rows(still).await[0][0]), "1200", "{driver:?}: rolled back");
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let log = seen.clone();
     let progress: tpm_core::engine::ApplyProgress =
         Arc::new(move |done, total| log.lock().unwrap().push((done, total)));
     engine.apply_restore_with(sid, &big, None, true, Some("tpm-it-restore".into()), Some(progress)).await.unwrap();
     assert_eq!(*seen.lock().unwrap(), vec![(500, 1200), (1000, 1200), (1200, 1200)], "{driver:?}");
-    assert_eq!(text(&rows("SELECT count(*) FROM tpm_it_rpbig").await[0][0]), "1200", "{driver:?}");
+    assert_eq!(text(&rows("SELECT count(*) FROM tpm_it_rpbig WHERE note = 'n'").await[0][0]), "1200", "{driver:?}");
     assert!(!engine.cancel_task("tpm-it-restore").await.unwrap(), "the task is gone once the restore ends");
     run(engine, sid, "DROP TABLE tpm_it_rpbig").await;
 
@@ -2636,6 +2646,15 @@ async fn sql_server_flow(t: Target) {
     // Variables live for the whole batch; GO starts the next one.
     let r = run(&engine, &sid, "DECLARE @x int = 41;\nSELECT @x + 1 AS v").await;
     assert_eq!(text(&rows(&r, 0)[0][0]), "42");
+    // GO n runs the batch n times, as in SQL Server Management Studio.
+    let r = run(
+        &engine,
+        &sid,
+        "CREATE TABLE #tpm_go (i int)\nGO\nINSERT INTO #tpm_go VALUES (1)\nGO 3\nSELECT count(*) FROM #tpm_go",
+    )
+    .await;
+    assert_eq!(r.statements.len(), 5, "{r:?}");
+    assert_eq!(r.statements[4].rows.as_ref().unwrap()[0][0], Cell::Text("3".into()));
     let r = run(&engine, &sid, "SELECT 1 AS a\nGO\nSELECT 2 AS b").await;
     assert_eq!((r.statements.len(), text(&rows(&r, 1)[0][0])), (2, "2"));
     let r = run(&engine, &sid, "UPDATE tpm_it_items SET tags = NULL WHERE price < 1").await;
@@ -3303,6 +3322,12 @@ async fn mongodb() {
     let colls = s.collections("tpm_test").await.unwrap();
     let o = colls.iter().find(|c| c.name == "tpm_it_orders").expect("listed");
     assert_eq!((o.kind.as_str(), o.estimated_count), ("collection", Some(50)));
+    // The counts share one time budget: with none left the collections are still listed, uncounted.
+    let quick = s.collections_within("tpm_test", Duration::ZERO).await.unwrap();
+    assert_eq!(quick.len(), colls.len());
+    assert!(quick.iter().all(|c| c.estimated_count.is_none()), "{quick:?}");
+    // The health check is a ping, not a database listing.
+    s.ping().await.unwrap();
 
     // Find: filter, sort, projection, paging; values as relaxed Extended JSON.
     let req = |filter: &str, sort: &str, limit: u32| FindRequest {
@@ -3364,6 +3389,31 @@ async fn mongodb() {
         .unwrap_err();
     assert_eq!(e.kind, ErrorKind::Timeout, "{e:?}");
     assert!(t0.elapsed() < Duration::from_secs(5));
+    // One operation at a time per session: a count waits for a running find; the health check's
+    // ping doesn't (a busy session is alive).
+    let busy = engine.mongo(&slow_id).unwrap();
+    let t0 = Instant::now();
+    let slow_find = {
+        let busy = busy.clone();
+        let r = req(r#"{ "$where": "sleep(200) || true" }"#, "", 1000);
+        tokio::spawn(async move { busy.find(&r).await })
+    };
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    busy.ping().await.unwrap();
+    assert!(t0.elapsed() < Duration::from_millis(700), "ping answered while busy: {:?}", t0.elapsed());
+    busy.count("tpm_test", "tpm_it_orders", "").await.unwrap();
+    assert!(t0.elapsed() >= Duration::from_millis(900), "the count waited for the find: {:?}", t0.elapsed());
+    assert_eq!(slow_find.await.unwrap().unwrap_err().kind, ErrorKind::Timeout);
+    // A delete that runs out of time says what may have happened: the server finishes the batch
+    // it was given, so some documents may be gone.
+    db.collection("tpm_it_slowdel").insert_many((0..20).map(|i| doc! { "i": i }).collect::<Vec<_>>()).await.unwrap();
+    let slow_s = engine.mongo(&slow_id).unwrap();
+    let all = DeleteTarget::Filter { filter: "{}".into() };
+    let ids = slow_s.matching_ids("tpm_test", "tpm_it_slowdel", &all, 20).await.unwrap();
+    let sleepy = DeleteTarget::Filter { filter: r#"{ "$where": "sleep(200) || true" }"#.into() };
+    let e = slow_s.delete_matching("tpm_test", "tpm_it_slowdel", &sleepy, &ids, true, None).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Timeout, "{e:?}");
+    assert!(e.detail.as_deref().unwrap_or_default().contains("may have been deleted"), "{e:?}");
     engine.mongo_close(&slow_id);
 
     // Deletes: counted, confirmed, and refused when the count changed.
@@ -3376,6 +3426,34 @@ async fn mongodb() {
     assert_eq!(e.kind, ErrorKind::Conflict);
     assert_eq!(s.count("tpm_test", "tpm_it_orders", "").await.unwrap(), 50, "nothing deleted");
     assert_eq!(s.delete("tpm_test", "tpm_it_orders", &paid, n, true, None).await.unwrap(), 5);
+    // A delete by filter removes exactly the documents it counted: one that starts matching
+    // between the count and the delete stays.
+    db.collection("tpm_it_race")
+        .insert_many((0..3).map(|i| doc! { "i": i, "open": true }).collect::<Vec<_>>())
+        .await
+        .unwrap();
+    let open = DeleteTarget::Filter { filter: r#"{ "open": true }"#.into() };
+    let ids = s.matching_ids("tpm_test", "tpm_it_race", &open, 3).await.unwrap();
+    assert_eq!(ids.len(), 3);
+    db.collection("tpm_it_race").insert_one(doc! { "i": 99, "open": true }).await.unwrap();
+    assert_eq!(s.delete_matching("tpm_test", "tpm_it_race", &open, &ids, true, None).await.unwrap(), 3);
+    let left: Vec<mongodb::bson::Document> =
+        db.collection("tpm_it_race").find(doc! {}).await.unwrap().try_collect().await.unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].get_i32("i").unwrap(), 99, "the late document is kept");
+    // A document that stopped matching after it was counted isn't deleted either.
+    let late = s.matching_ids("tpm_test", "tpm_it_race", &open, 1).await.unwrap();
+    db.collection::<mongodb::bson::Document>("tpm_it_race")
+        .update_one(doc! { "i": 99 }, doc! { "$set": { "open": false } })
+        .await
+        .unwrap();
+    assert_eq!(s.delete_matching("tpm_test", "tpm_it_race", &open, &late, true, None).await.unwrap(), 0);
+    // More matches than confirmed: refused before anything is deleted.
+    db.collection("tpm_it_race")
+        .insert_many((0..2).map(|i| doc! { "i": i, "open": true }).collect::<Vec<_>>())
+        .await
+        .unwrap();
+    assert_eq!(s.matching_ids("tpm_test", "tpm_it_race", &open, 1).await.unwrap_err().kind, ErrorKind::Conflict);
     let notes = s.find(&FindRequest { collection: "tpm_it_notes".into(), ..req("", "", 10) }).await.unwrap();
     assert!(notes.documents[0].contains("é 漢字"));
     let one = DeleteTarget::Ids { ids: vec![notes.ids[1].clone().unwrap()] };

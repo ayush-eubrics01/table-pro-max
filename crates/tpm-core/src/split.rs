@@ -110,9 +110,13 @@ fn word_end(s: &str, mut i: usize, to: usize) -> usize {
     i.min(to)
 }
 
-/// A `GO` line starting at `i` (the line's first non-blank byte): `GO`, then only blanks or a
-/// `--` comment. Returns where the next line starts.
-fn go_line(bytes: &[u8], i: usize) -> Option<usize> {
+/// Most times `GO n` repeats a batch; a larger count is left to the server to refuse.
+const MAX_GO_COUNT: usize = 1000;
+
+/// A `GO` line starting at `i` (the line's first non-blank byte): `GO`, an optional count
+/// (`GO 5` runs the batch five times), then only blanks or a `--` comment. Returns where the next
+/// line starts and the count.
+fn go_line(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
     if !bytes[i..].get(..2).is_some_and(|w| w.eq_ignore_ascii_case(b"go")) {
         return None;
     }
@@ -120,15 +124,31 @@ fn go_line(bytes: &[u8], i: usize) -> Option<usize> {
     if bytes.get(j).is_some_and(|&c| is_word_byte(c)) {
         return None;
     }
-    while j < bytes.len() && matches!(bytes[j], b' ' | b'\t' | b'\r') {
-        j += 1;
-    }
-    match bytes.get(j) {
-        None => Some(j),
-        Some(b'\n') => Some(j + 1),
-        Some(b'-') if bytes.get(j + 1) == Some(&b'-') => Some(skip_line(bytes, j)),
-        _ => None,
-    }
+    let blanks = |j: &mut usize| {
+        while *j < bytes.len() && matches!(bytes[*j], b' ' | b'\t' | b'\r') {
+            *j += 1;
+        }
+    };
+    blanks(&mut j);
+    let digits = bytes[j..].iter().take_while(|c| c.is_ascii_digit()).count();
+    let count = if digits == 0 {
+        1
+    } else {
+        let n: usize = std::str::from_utf8(&bytes[j..j + digits]).ok()?.parse().ok()?;
+        if !(1..=MAX_GO_COUNT).contains(&n) || bytes.get(j + digits).is_some_and(|&c| is_word_byte(c)) {
+            return None;
+        }
+        j += digits;
+        blanks(&mut j);
+        n
+    };
+    let next = match bytes.get(j) {
+        None => j,
+        Some(b'\n') => j + 1,
+        Some(b'-') if bytes.get(j + 1) == Some(&b'-') => skip_line(bytes, j),
+        _ => return None,
+    };
+    Some((next, count))
 }
 
 fn mssql_batches(input: &str) -> Vec<StatementSpan> {
@@ -136,8 +156,13 @@ fn mssql_batches(input: &str) -> Vec<StatementSpan> {
     let mut out = Vec::new();
     let (mut start, mut i, mut line_start) = (0, 0, true);
     while i < bytes.len() {
-        if line_start && let Some(next) = go_line(bytes, i) {
+        if line_start && let Some((next, count)) = go_line(bytes, i) {
+            let before = out.len();
             push_span(input, start, i, &mut out);
+            // `GO n`: the batch runs n times, each run a statement of its own.
+            if let Some(batch) = out.get(before).cloned() {
+                out.extend(std::iter::repeat_n(batch, count - 1));
+            }
             (start, i) = (next, next);
             continue;
         }
@@ -462,6 +487,31 @@ mod tests {
         assert_eq!(sqls("SELECT 1\nGOTO done", Dialect::Mssql), ["SELECT 1\nGOTO done"]);
         let spans = split_statements("SELECT 1\nGO\n  SELECT 2", Dialect::Mssql);
         assert_eq!(&"SELECT 1\nGO\n  SELECT 2"[spans[1].start..spans[1].end], "SELECT 2");
+    }
+
+    #[test]
+    fn sql_server_go_n_runs_the_batch_n_times() {
+        let s = "INSERT INTO t VALUES (1)\nGO 3\nSELECT 1\n  go 2 -- twice\nSELECT 2";
+        assert_eq!(
+            sqls(s, Dialect::Mssql),
+            [
+                "INSERT INTO t VALUES (1)",
+                "INSERT INTO t VALUES (1)",
+                "INSERT INTO t VALUES (1)",
+                "SELECT 1",
+                "SELECT 1",
+                "SELECT 2"
+            ]
+        );
+        // The repeats point at the same text (error positions and the editor's highlight).
+        let spans = split_statements(s, Dialect::Mssql);
+        assert_eq!((spans[1].start, spans[1].end), (spans[0].start, spans[0].end));
+        // GO 1 is a plain GO; a count of 0, over 1,000 or not a number isn't a separator, so the
+        // server reports it instead of a typo running a batch a million times.
+        assert_eq!(sqls("SELECT 1\nGO 1", Dialect::Mssql), ["SELECT 1"]);
+        for bad in ["GO 0", "GO 1001", "GO x", "GO 3x"] {
+            assert_eq!(sqls(&format!("SELECT 1\n{bad}"), Dialect::Mssql), [format!("SELECT 1\n{bad}")], "{bad}");
+        }
     }
 
     #[test]

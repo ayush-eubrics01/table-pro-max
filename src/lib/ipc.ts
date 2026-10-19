@@ -287,6 +287,7 @@ export const api = {
     }),
   mongoDisconnect: (sessionId: string) => call<void>("mongo_disconnect", { sessionId }),
   mongoDatabases: (sessionId: string) => call<MongoDatabase[]>("mongo_databases", { sessionId }),
+  mongoPing: (sessionId: string) => call<void>("mongo_ping", { sessionId }),
   mongoCollections: (sessionId: string, database: string) => call<MongoCollection[]>("mongo_collections", { sessionId, database }),
   mongoFind: (sessionId: string, request: MongoFindRequest) => call<MongoPage>("mongo_find", { sessionId, request }),
   mongoCount: (sessionId: string, database: string, collection: string, filter: string) =>

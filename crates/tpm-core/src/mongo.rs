@@ -40,6 +40,8 @@ pub struct MongoSession {
     connection_name: String,
     environment: Environment,
     timeout: Duration,
+    /// One operation at a time, as for every session in the app.
+    op: tokio::sync::Mutex<()>,
     _tunnel: Option<crate::ssh::Tunnel>,
 }
 
@@ -373,17 +375,23 @@ where
             page.has_more = true;
             break;
         }
-        for key in d.keys() {
-            if page.fields.len() < MAX_FIELDS && !page.fields.iter().any(|f| f == key) {
-                page.fields.push(key.clone());
+        let id = id_text(&d);
+        let keys: Vec<String> = d.keys().cloned().collect();
+        let text = to_text(d);
+        // Stop before the document that would pass the limit; the first one always shows.
+        if !page.documents.is_empty() && bytes + text.len() > MAX_RESULT_BYTES {
+            page.truncated = true;
+            break;
+        }
+        for key in keys {
+            if page.fields.len() < MAX_FIELDS && !page.fields.contains(&key) {
+                page.fields.push(key);
             }
         }
-        let id = id_text(&d);
-        let text = to_text(d);
         bytes += text.len();
         page.documents.push(text);
         page.ids.push(id);
-        if bytes > MAX_RESULT_BYTES {
+        if bytes >= MAX_RESULT_BYTES {
             page.truncated = true;
             break;
         }
@@ -466,6 +474,7 @@ impl MongoSession {
             connection_name: profile.name.clone(),
             environment: profile.environment,
             timeout,
+            op: tokio::sync::Mutex::new(()),
             _tunnel: tunnel,
         };
         // Fail fast on a wrong address or password.
@@ -485,6 +494,7 @@ impl MongoSession {
     }
 
     pub async fn info(&self) -> Result<MongoInfo> {
+        let _op = self.op.lock().await;
         let build =
             self.timed(self.timeout, self.client.database("admin").run_command(doc! { "buildInfo": 1 })).await?;
         Ok(MongoInfo {
@@ -498,6 +508,7 @@ impl MongoSession {
     }
 
     pub async fn databases(&self) -> Result<Vec<MongoDatabase>> {
+        let _op = self.op.lock().await;
         let specs = self.timed(self.timeout, self.client.list_databases().authorized_databases(true)).await;
         let mut out: Vec<MongoDatabase> = match specs {
             Ok(specs) => {
@@ -524,7 +535,23 @@ impl MongoSession {
         Ok(out)
     }
 
+    /// A light health check: the server answers `ping`.
+    pub async fn ping(&self) -> Result<()> {
+        // A session in the middle of an operation is alive; don't queue behind it.
+        let Ok(_op) = self.op.try_lock() else { return Ok(()) };
+        self.timed(PING_TIMEOUT, self.client.database("admin").run_command(doc! { "ping": 1 })).await.map(|_| ())
+    }
+
+    /// Collections and views, with estimated counts read within [`COUNTS_BUDGET`].
     pub async fn collections(&self, database: &str) -> Result<Vec<MongoCollection>> {
+        self.collections_within(database, COUNTS_BUDGET).await
+    }
+
+    /// Collections and views; their estimated counts share `budget`, and once it is spent the
+    /// rest are listed uncounted (a database with hundreds of collections still opens quickly).
+    pub async fn collections_within(&self, database: &str, budget: Duration) -> Result<Vec<MongoCollection>> {
+        let _op = self.op.lock().await;
+        let started = Instant::now();
         let db = self.client.database(database);
         let specs: Vec<_> =
             self.timed(self.timeout, async { db.list_collections().await?.try_collect::<Vec<_>>().await }).await?;
@@ -535,10 +562,11 @@ impl MongoSession {
                 mongodb::results::CollectionType::Timeseries => "timeseries",
                 _ => "collection",
             };
-            // An estimate from metadata; skipped when slow or not allowed.
-            let estimated_count = if kind == "collection" {
+            // An estimate from metadata; skipped when slow, not allowed, or out of budget.
+            let left = budget.saturating_sub(started.elapsed());
+            let estimated_count = if kind == "collection" && !left.is_zero() {
                 let c = db.collection::<Document>(&s.name);
-                self.timed(Duration::from_secs(2), c.estimated_document_count()).await.ok()
+                self.timed(left.min(Duration::from_secs(2)), c.estimated_document_count()).await.ok()
             } else {
                 None
             };
@@ -549,6 +577,7 @@ impl MongoSession {
     }
 
     pub async fn find(&self, req: &FindRequest) -> Result<MongoPage> {
+        let _op = self.op.lock().await;
         let limit = check_limit(req.limit)?;
         let filter = parse_document(&req.filter, "filter")?;
         let sort = parse_document(&req.sort, "sort")?;
@@ -562,13 +591,14 @@ impl MongoSession {
         if !projection.is_empty() {
             find = find.projection(projection);
         }
-        let cursor = self.timed(self.timeout, find).await?;
-        tokio::time::timeout(self.timeout, collect(cursor, limit, started))
+        // One deadline for opening the cursor and reading the page.
+        tokio::time::timeout(self.timeout, async { collect(find.await.map_err(map_err)?, limit, started).await })
             .await
             .map_err(|_| AppError::timeout(self.timeout.as_secs()))?
     }
 
     pub async fn count(&self, database: &str, collection: &str, filter: &str) -> Result<u64> {
+        let _op = self.op.lock().await;
         let filter = parse_document(filter, "filter")?;
         let coll = self.client.database(database).collection::<Document>(collection);
         self.timed(self.timeout, coll.count_documents(filter).max_time(self.timeout)).await
@@ -591,19 +621,21 @@ impl MongoSession {
         pipeline: &mut Vec<Document>,
         limit: u32,
     ) -> Result<MongoPage> {
+        let _op = self.op.lock().await;
         let limit = check_limit(limit)?;
         // One more than the page, to know whether there are more.
         pipeline.push(doc! { "$limit": i64::from(limit) + 1 });
         let started = Instant::now();
         let coll = self.client.database(database).collection::<Document>(collection);
-        let cursor = self.timed(self.timeout, coll.aggregate(pipeline.clone()).max_time(self.timeout)).await?;
-        tokio::time::timeout(self.timeout, collect(cursor, limit, started))
+        let aggregate = coll.aggregate(pipeline.clone()).max_time(self.timeout);
+        tokio::time::timeout(self.timeout, async { collect(aggregate.await.map_err(map_err)?, limit, started).await })
             .await
             .map_err(|_| AppError::timeout(self.timeout.as_secs()))?
     }
 
     /// How many documents a delete would remove.
     pub async fn delete_count(&self, database: &str, collection: &str, target: &DeleteTarget) -> Result<u64> {
+        let _op = self.op.lock().await;
         check_deletable_collection(database, collection)?;
         let filter = delete_filter(target)?;
         let coll = self.client.database(database).collection::<Document>(collection);
@@ -611,8 +643,8 @@ impl MongoSession {
     }
 
     /// Deletes what the target matches, after the backend's checks; `expected` is the count the
-    /// confirmation showed, and a different count now stops the delete.
-    #[allow(clippy::too_many_arguments)]
+    /// confirmation showed. Exactly the documents counted now are deleted: a different count stops
+    /// the delete, and a document that starts matching meanwhile is left alone.
     pub async fn delete(
         &self,
         database: &str,
@@ -622,6 +654,14 @@ impl MongoSession {
         confirmed: bool,
         typed: Option<&str>,
     ) -> Result<u64> {
+        self.check(target, confirmed, typed)?;
+        // Both halves under one hold of the session.
+        let _op = self.op.lock().await;
+        let ids = self.ids_to_delete(database, collection, target, expected).await?;
+        self.delete_ids(database, collection, target, &ids, confirmed, typed).await
+    }
+
+    fn check(&self, target: &DeleteTarget, confirmed: bool, typed: Option<&str>) -> Result<()> {
         check_delete(
             self.read_only,
             self.writes_locked,
@@ -630,20 +670,122 @@ impl MongoSession {
             target,
             confirmed,
             typed,
-        )?;
-        let now = self.delete_count(database, collection, target).await?;
-        if now != expected {
+        )
+    }
+
+    /// The first half of [`Self::delete`]: the `_id`s of the documents the target matches, when
+    /// there are exactly `expected` of them (at most [`MAX_FILTER_DELETE`]).
+    pub async fn matching_ids(
+        &self,
+        database: &str,
+        collection: &str,
+        target: &DeleteTarget,
+        expected: u64,
+    ) -> Result<Vec<Bson>> {
+        let _op = self.op.lock().await;
+        self.ids_to_delete(database, collection, target, expected).await
+    }
+
+    async fn ids_to_delete(
+        &self,
+        database: &str,
+        collection: &str,
+        target: &DeleteTarget,
+        expected: u64,
+    ) -> Result<Vec<Bson>> {
+        check_deletable_collection(database, collection)?;
+        if expected > MAX_FILTER_DELETE {
+            return Err(AppError::invalid_config(format!(
+                "A delete can remove at most {MAX_FILTER_DELETE} documents at once; narrow the filter and delete in parts"
+            )));
+        }
+        let filter = delete_filter(target)?;
+        let coll = self.client.database(database).collection::<Document>(collection);
+        // One more than expected, to tell "more match now" apart.
+        let limit = i64::try_from(expected.saturating_add(1)).unwrap_or(i64::MAX);
+        let find = coll.find(filter).projection(doc! { "_id": 1 }).limit(limit).max_time(self.timeout);
+        let mut cursor = self.timed(self.timeout, find).await?;
+        let mut ids = Vec::new();
+        let read = async {
+            while let Some(d) = cursor.try_next().await.map_err(map_err)? {
+                if let Some(id) = d.get("_id") {
+                    ids.push(id.clone());
+                }
+            }
+            Ok::<_, AppError>(())
+        };
+        tokio::time::timeout(self.timeout, read).await.map_err(|_| {
+            AppError::new(ErrorKind::Timeout, "Reading the documents to delete timed out. Nothing was deleted.")
+        })??;
+        let found = ids.len() as u64;
+        if found != expected {
+            let now = if found > expected { format!("More than {expected}") } else { found.to_string() };
             return Err(AppError::new(
                 ErrorKind::Conflict,
                 format!("{now} documents match now, not the {expected} you confirmed. Nothing was deleted."),
             ));
         }
+        Ok(ids)
+    }
+
+    /// The second half of [`Self::delete`]: deletes the documents with these `_id`s that still
+    /// match the target, after the same checks. Returns how many were deleted.
+    pub async fn delete_matching(
+        &self,
+        database: &str,
+        collection: &str,
+        target: &DeleteTarget,
+        ids: &[Bson],
+        confirmed: bool,
+        typed: Option<&str>,
+    ) -> Result<u64> {
+        let _op = self.op.lock().await;
+        self.delete_ids(database, collection, target, ids, confirmed, typed).await
+    }
+
+    async fn delete_ids(
+        &self,
+        database: &str,
+        collection: &str,
+        target: &DeleteTarget,
+        ids: &[Bson],
+        confirmed: bool,
+        typed: Option<&str>,
+    ) -> Result<u64> {
+        self.check(target, confirmed, typed)?;
+        check_deletable_collection(database, collection)?;
         let filter = delete_filter(target)?;
         let coll = self.client.database(database).collection::<Document>(collection);
-        let r = self.timed(self.timeout, coll.delete_many(filter)).await?;
-        Ok(r.deleted_count)
+        let mut deleted = 0;
+        for batch in ids.chunks(DELETE_BATCH) {
+            let exact = doc! { "$and": [filter.clone(), { "_id": { "$in": batch.to_vec() } }] };
+            match self.timed(self.timeout, coll.delete_many(exact)).await {
+                Ok(r) => deleted += r.deleted_count,
+                // The server keeps going with a batch the client stopped waiting for (deletes take
+                // no time limit), so say what may have happened instead of "nothing was deleted".
+                Err(e) => {
+                    return Err(e.add_context(format!(
+                        "{deleted} of {} documents were deleted before this; up to {} more may have been deleted on \
+                         the server. Count again before deleting the rest.",
+                        ids.len(),
+                        batch.len()
+                    )));
+                }
+            }
+        }
+        Ok(deleted)
     }
 }
+
+/// How long the health check waits for `ping`.
+const PING_TIMEOUT: Duration = Duration::from_secs(5);
+/// Time for all of a database's estimated counts together.
+const COUNTS_BUDGET: Duration = Duration::from_secs(3);
+
+/// Most documents one delete removes: their `_id`s are read first, to delete exactly those.
+pub const MAX_FILTER_DELETE: u64 = 1_000_000;
+/// `_id`s per delete command.
+const DELETE_BATCH: usize = 10_000;
 
 fn check_limit(limit: u32) -> Result<u32> {
     if limit == 0 || limit > MAX_PAGE {
@@ -676,6 +818,19 @@ fn map_err(e: mongodb::error::Error) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_page_stops_before_the_document_that_would_pass_the_size_limit() {
+        let big = |i: i32| Ok(doc! { "_id": i, "text": "x".repeat(MAX_RESULT_BYTES / 2 + 1) });
+        let page = collect(futures_util::stream::iter(vec![big(1), big(2), big(3)]), 10, Instant::now()).await.unwrap();
+        assert_eq!(page.documents.len(), 1, "the second would pass 16 MB");
+        assert!(page.truncated);
+        assert!(page.documents.iter().map(String::len).sum::<usize>() <= MAX_RESULT_BYTES);
+        // One document larger than the limit still shows, alone.
+        let huge = Ok(doc! { "_id": 0, "text": "x".repeat(MAX_RESULT_BYTES + 10) });
+        let page = collect(futures_util::stream::iter(vec![huge, big(1)]), 10, Instant::now()).await.unwrap();
+        assert_eq!((page.documents.len(), page.truncated), (1, true));
+    }
 
     #[test]
     fn system_collections_are_never_deleted_from() {

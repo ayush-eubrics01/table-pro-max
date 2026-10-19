@@ -207,7 +207,8 @@ MongoDB is not SQL, so like Redis (`redis_kv.rs`) it does not implement `Session
 * Reads: find (filter, sort, projection as relaxed Extended JSON), count, aggregate (reading
   stages only), and vector search, whose `$vectorSearch` stage the core builds from a form. Each
   read sends `maxTimeMS`. Documents come back as relaxed Extended JSON text.
-* Deletes: by `_id` or by filter, counted first and run only while the count is unchanged; read-only
+* Deletes: by `_id` or by filter, counted first and run only while the count is unchanged; the
+  `_id`s counted are read first and exactly those are deleted (in batches of 10,000); read-only
   and locked production sessions refuse them, and `system.*` collections and the `admin`,
   `config` and `local` databases are never deleted from. Ids must be exact values: a regular
   expression, an array or a `$` operator is refused, since inside `$in` it could match many
