@@ -22,6 +22,10 @@ export interface QueryTab {
   savedQueryId: string | null;
   /** SQL differs from the saved query (or the tab was never saved). */
   dirty: boolean;
+  /** A second editor is shown beside the first (same session). */
+  split?: boolean;
+  /** The second editor's text; kept while the split is closed. */
+  sql2?: string;
 }
 
 export interface DefinitionTab {
@@ -41,6 +45,12 @@ export interface DashboardTab {
 }
 
 export type Tab = TableTab | QueryTab | DefinitionTab | DashboardTab;
+
+/** A query tab holding text that would be lost on closing (either editor). */
+export function hasUnsavedText(t: Tab): boolean {
+  if (t.kind !== "query") return false;
+  return (t.dirty && !t.savedQueryId && t.sql.trim().length > 0) || (!!t.split && !!t.sql2?.trim());
+}
 
 export interface Workspace {
   id: string;
