@@ -315,16 +315,32 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
               <span>Host</span>
               <input className="input mono" value={p.host} onChange={(e) => set({ host: e.target.value })} spellCheck={false} />
             </label>
-            <label className="field" style={{ flex: 1 }}>
-              <span>Port</span>
-              <input
-                className="input mono"
-                inputMode="numeric"
-                value={p.port ?? ""}
-                onChange={(e) => set({ port: e.target.value ? Math.min(65535, Number(e.target.value.replace(/\D/g, "")) || 0) : null })}
-              />
-            </label>
+            {!(p.driver === "mongodb" && p.srv) && (
+              <label className="field" style={{ flex: 1 }}>
+                <span>Port</span>
+                <input
+                  className="input mono"
+                  inputMode="numeric"
+                  value={p.port ?? ""}
+                  onChange={(e) => set({ port: e.target.value ? Math.min(65535, Number(e.target.value.replace(/\D/g, "")) || 0) : null })}
+                />
+              </label>
+            )}
           </div>
+          {p.driver === "mongodb" && (
+            <>
+              <label className="checkbox">
+                <input type="checkbox" checked={!!p.srv} onChange={(e) => set({ srv: e.target.checked, port: e.target.checked ? null : (p.port ?? 27017) })} />
+                Look up servers through DNS (mongodb+srv, as Atlas uses)
+              </label>
+              {!p.srv && (
+                <label className="checkbox">
+                  <input type="checkbox" checked={!!p.directConnection} onChange={(e) => set({ directConnection: e.target.checked })} />
+                  Connect to this server only (directConnection), not the replica set it reports
+                </label>
+              )}
+            </>
+          )}
           <div className="field-row">
             <label className="field">
               <span>User</span>
@@ -335,6 +351,12 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
               <input className="input mono" value={p.database} onChange={(e) => set({ database: e.target.value })} spellCheck={false} />
             </label>
           </div>
+          {p.driver === "mongodb" && (
+            <label className="field">
+              <span>Authentication database · optional</span>
+              <input className="input mono" value={p.authSource ?? ""} placeholder="The database above, else admin" onChange={(e) => set({ authSource: e.target.value || null })} spellCheck={false} />
+            </label>
+          )}
           {p.driver === "mssql" && (
             <p className="hint">Sign in with a SQL Server login. Windows and Microsoft Entra sign-in aren't supported yet. For a named instance, use its TCP port.</p>
           )}
@@ -387,6 +409,9 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
             <p className="hint">
               SQL Server always encrypts the sign-in. Prefer and Require both verify the certificate: for a self-signed one, choose its CA certificate or skip verification. Disable leaves the rest of the traffic unencrypted.
             </p>
+          )}
+          {p.driver === "mongodb" && (
+            <p className="hint">MongoDB has no "TLS if offered": Prefer uses verified TLS with DNS lookup (Atlas requires it) and none otherwise.</p>
           )}
           {p.tls.mode === "require_insecure" && (
             <div className="notice notice-warning">Traffic is encrypted, but the server's identity is not checked. Anyone able to intercept the connection could impersonate the server.</div>
@@ -514,7 +539,7 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
             </label>
           )}
         </div>
-        {p.driver !== "redis" && (
+        {p.driver !== "redis" && p.driver !== "mongodb" && (
           <label className="toggle-card">
             <Icon name="history" size={16} />
             <span>

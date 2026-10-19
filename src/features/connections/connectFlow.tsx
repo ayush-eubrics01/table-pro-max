@@ -121,6 +121,30 @@ export async function reconnectWithPrompt(sessionId: string, profile: Connection
   return null;
 }
 
+/** MongoDB counterpart of `connectWithPrompt`: production opens read-only unless `lockProduction` is false. */
+export async function connectMongoWithPrompt(profile: ConnectionProfile, opts: { lockProduction?: boolean } = {}) {
+  let secrets: Secrets = { password: null, sshSecret: null };
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      return await api.mongoConnect(profile.id, {
+        password: secrets.password,
+        sshSecret: secrets.sshSecret,
+        rememberForSession: secrets.password !== null || secrets.sshSecret !== null,
+        lockProduction: opts.lockProduction,
+      });
+    } catch (e) {
+      const err = toError(e);
+      const next = await resolveConnectError(err, profile, secrets);
+      if (!next) {
+        if (err.code === "password_required" || err.code === "ssh_secret_required" || err.code === "ssh_unknown_host") return null;
+        throw err;
+      }
+      secrets = next;
+    }
+  }
+  return null;
+}
+
 /** Redis counterpart of `connectWithPrompt`. */
 export async function connectRedisWithPrompt(profile: ConnectionProfile) {
   let secrets: Secrets = { password: null, sshSecret: null };

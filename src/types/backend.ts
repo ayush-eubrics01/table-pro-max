@@ -1,7 +1,7 @@
 // Types mirroring the Rust IPC contract (crates/tpm-core and src-tauri/src/commands).
 // Keep in sync with the serde representations on the Rust side.
 
-export type Driver = "postgres" | "mysql" | "mariadb" | "sqlite" | "duckdb" | "redis" | "mssql";
+export type Driver = "postgres" | "mysql" | "mariadb" | "sqlite" | "duckdb" | "redis" | "mssql" | "mongodb";
 export type Dialect = "postgres" | "mysql" | "sqlite" | "mssql";
 export type Environment = "local" | "development" | "testing" | "staging" | "production";
 export type SafetyMode = "normal" | "confirm_destructive" | "confirm_writes" | "read_only";
@@ -30,6 +30,12 @@ export interface ConnectionProfile {
   ssh?: SshConfig | null;
   /** Keep restore points (copies of changed rows, on this computer). On when absent. */
   restorePoints?: boolean;
+  /** MongoDB: find the hosts through DNS (`mongodb+srv://`, as Atlas needs). */
+  srv?: boolean;
+  /** MongoDB: the database the user is defined in (`authSource`). */
+  authSource?: string | null;
+  /** MongoDB: this one server only, without discovering its replica set (`directConnection`). */
+  directConnection?: boolean;
 }
 
 export interface SshConfig {
@@ -552,6 +558,66 @@ export interface DashboardRecord {
   createdAt?: string;
   updatedAt?: string;
 }
+
+export interface MongoInfo {
+  version: string;
+  database: string;
+  user: string;
+  target: string;
+  readOnly: boolean;
+  writesLocked: boolean;
+}
+
+export interface MongoDatabase {
+  name: string;
+  sizeBytes: number | null;
+}
+
+export interface MongoCollection {
+  name: string;
+  kind: "collection" | "view" | "timeseries";
+  estimatedCount: number | null;
+}
+
+/** Documents as relaxed Extended JSON text, each `_id` as compact Extended JSON. */
+export interface MongoPage {
+  documents: string[];
+  ids: (string | null)[];
+  fields: string[];
+  hasMore: boolean;
+  truncated: boolean;
+  durationMs: number;
+}
+
+export interface MongoFindRequest {
+  database: string;
+  collection: string;
+  filter: string;
+  sort: string;
+  projection: string;
+  skip: number;
+  limit: number;
+}
+
+export interface MongoAggregateRequest {
+  database: string;
+  collection: string;
+  pipeline: string;
+  limit: number;
+}
+
+export interface MongoVectorRequest {
+  database: string;
+  collection: string;
+  index: string;
+  path: string;
+  queryVector: string;
+  numCandidates: number | null;
+  limit: number;
+  filter: string;
+}
+
+export type MongoDeleteTarget = { kind: "ids"; ids: string[] } | { kind: "filter"; filter: string };
 
 export interface RedisInfo {
   version: string;

@@ -54,7 +54,7 @@ export function OpenAnything({ onConnect }: { onConnect: (p: ConnectionProfile) 
       out.push({ kind: "action", label: "New query", where: "", run: () => useWorkspaces.getState().openQuery(active.id) });
       out.push({ kind: "action", label: "Reopen closed tab", where: "", run: () => useWorkspaces.getState().reopenClosed(active.id) });
       // Only where restore points are kept (the panel shows nothing elsewhere).
-      if (active.kind !== "redis" && !active.session.readOnly && active.profile.restorePoints !== false)
+      if (active.kind !== "redis" && active.kind !== "mongo" && !active.session.readOnly && active.profile.restorePoints !== false)
         out.push({ kind: "action", label: "Restore points", where: "", run: () => useRestore.getState().setOpen(true) });
     }
     out.push({ kind: "action", label: "Settings", where: "", run: () => useUi.getState().setSettingsOpen(true) });

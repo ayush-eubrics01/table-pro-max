@@ -52,6 +52,7 @@ export const DRIVERS: { value: Driver; label: string; short: string }[] = [
   { value: "mysql", label: "MySQL", short: "MY" },
   { value: "mariadb", label: "MariaDB", short: "MA" },
   { value: "mssql", label: "SQL Server", short: "MS" },
+  { value: "mongodb", label: "MongoDB", short: "MO" },
   { value: "sqlite", label: "SQLite", short: "SQ" },
   { value: "duckdb", label: "DuckDB", short: "DU" },
   { value: "redis", label: "Redis", short: "RD" },

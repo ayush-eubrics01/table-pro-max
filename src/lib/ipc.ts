@@ -3,6 +3,14 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  MongoAggregateRequest,
+  MongoCollection,
+  MongoDatabase,
+  MongoDeleteTarget,
+  MongoFindRequest,
+  MongoInfo,
+  MongoPage,
+  MongoVectorRequest,
   Pin,
   Snippet,
   Cell,
@@ -238,6 +246,35 @@ export const api = {
   listDashboards: () => call<DashboardRecord[]>("list_dashboards"),
   saveDashboard: (dashboard: DashboardRecord) => call<void>("save_dashboard", { dashboard }),
   deleteDashboard: (id: string) => call<void>("delete_dashboard", { id }),
+
+  // mongodb
+  mongoConnect: (
+    connectionId: string,
+    opts: { password?: string | null; sshSecret?: string | null; rememberForSession?: boolean; lockProduction?: boolean } = {},
+  ) =>
+    call<{ sessionId: string; info: MongoInfo }>("mongo_connect", {
+      request: {
+        connectionId,
+        password: opts.password ?? null,
+        sshSecret: opts.sshSecret ?? null,
+        rememberForSession: opts.rememberForSession ?? false,
+        lockProduction: opts.lockProduction ?? null,
+      },
+    }),
+  mongoDisconnect: (sessionId: string) => call<void>("mongo_disconnect", { sessionId }),
+  mongoDatabases: (sessionId: string) => call<MongoDatabase[]>("mongo_databases", { sessionId }),
+  mongoCollections: (sessionId: string, database: string) => call<MongoCollection[]>("mongo_collections", { sessionId, database }),
+  mongoFind: (sessionId: string, request: MongoFindRequest) => call<MongoPage>("mongo_find", { sessionId, request }),
+  mongoCount: (sessionId: string, database: string, collection: string, filter: string) =>
+    call<number>("mongo_count", { sessionId, database, collection, filter }),
+  mongoAggregate: (sessionId: string, request: MongoAggregateRequest) => call<MongoPage>("mongo_aggregate", { sessionId, request }),
+  mongoVectorSearch: (sessionId: string, request: MongoVectorRequest) => call<MongoPage>("mongo_vector_search", { sessionId, request }),
+  mongoDeleteCount: (sessionId: string, database: string, collection: string, target: MongoDeleteTarget) =>
+    call<number>("mongo_delete_count", { sessionId, database, collection, target }),
+  mongoDelete: (
+    sessionId: string,
+    request: { database: string; collection: string; target: MongoDeleteTarget; expected: number; confirmed: boolean; typedConfirmation?: string | null },
+  ) => call<number>("mongo_delete", { sessionId, request }),
 
   // redis
   redisConnect: (connectionId: string, opts: { password?: string | null; sshSecret?: string | null; rememberForSession?: boolean } = {}) =>

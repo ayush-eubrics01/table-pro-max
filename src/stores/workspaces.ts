@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { api, toError } from "../lib/ipc";
 import { uid } from "../lib/text";
-import type { ConnectionProfile, DbObject, FilterNode, ObjectKind, RedisInfo, SessionInfo } from "../types/backend";
+import type { ConnectionProfile, DbObject, FilterNode, MongoInfo, ObjectKind, RedisInfo, SessionInfo } from "../types/backend";
 
 export interface TableTab {
   kind: "table";
@@ -44,8 +44,8 @@ export type Tab = TableTab | QueryTab | DefinitionTab | DashboardTab;
 
 export interface Workspace {
   id: string;
-  /** SQL databases get the schema browser; Redis gets the key browser. */
-  kind: "sql" | "redis";
+  /** SQL databases get the schema browser; Redis the key browser; MongoDB the document browser. */
+  kind: "sql" | "redis" | "mongo";
   profile: ConnectionProfile;
   /** Session used for the schema tree, table browsing and grid edits. */
   session: SessionInfo;
@@ -68,6 +68,7 @@ interface WorkspacesState {
   activeId: string | null;
   open: (profile: ConnectionProfile, session: SessionInfo) => Promise<string>;
   openRedis: (profile: ConnectionProfile, sessionId: string, info: RedisInfo) => string;
+  openMongo: (profile: ConnectionProfile, sessionId: string, info: MongoInfo) => string;
   close: (id: string) => Promise<void>;
   activate: (id: string | null) => void;
   update: (id: string, patch: Partial<Workspace>) => void;
@@ -89,6 +90,38 @@ function defaultSchema(session: SessionInfo, schemas: string[]): string {
   if (session.dialect === "mysql") return session.database || schemas[0] || "";
   if (session.dialect === "mssql") return schemas.includes("dbo") ? "dbo" : (schemas[0] ?? "dbo");
   return "main";
+}
+
+/**
+ * MongoDB has no SQL session; as for Redis, a SessionInfo-shaped record keeps the status bar,
+ * confirmations and connection strip uniform. Its dialect is never used.
+ */
+export function mongoSessionInfo(profile: ConnectionProfile, sessionId: string, info: MongoInfo): SessionInfo {
+  return {
+    sessionId,
+    connectionId: profile.id,
+    connectionName: profile.name,
+    dialect: "postgres",
+    database: info.database,
+    capabilities: {
+      multipleDatabases: true,
+      schemas: false,
+      cancel: "native",
+      transactions: false,
+      transactionalDdl: false,
+      explain: false,
+      explainAnalyze: false,
+      materializedViews: false,
+      routines: false,
+      sequences: false,
+    },
+    server: { product: "MongoDB", version: info.version, currentDatabase: info.database, currentUser: info.user },
+    readOnly: info.readOnly,
+    writesLocked: info.writesLocked,
+    safetyMode: profile.safetyMode,
+    environment: profile.environment,
+    target: info.target,
+  };
 }
 
 export const useWorkspaces = create<WorkspacesState>((set, get) => {
@@ -166,6 +199,26 @@ export const useWorkspaces = create<WorkspacesState>((set, get) => {
       return ws.id;
     },
 
+    openMongo: (profile, sessionId, info) => {
+      const session = mongoSessionInfo(profile, sessionId, info);
+      const ws: Workspace = {
+        id: uid(),
+        kind: "mongo",
+        profile,
+        session,
+        schema: "",
+        schemas: [],
+        objects: {},
+        columns: {},
+        tabs: [],
+        activeTabId: null,
+        closed: [],
+        health: "ok",
+      };
+      set((s) => ({ workspaces: [...s.workspaces, ws], activeId: ws.id }));
+      return ws.id;
+    },
+
     close: async (id) => {
       const ws = get().workspaces.find((w) => w.id === id);
       set((s) => {
@@ -173,6 +226,7 @@ export const useWorkspaces = create<WorkspacesState>((set, get) => {
         return { workspaces: rest, activeId: s.activeId === id ? (rest[rest.length - 1]?.id ?? null) : s.activeId };
       });
       if (ws?.kind === "redis") await api.redisDisconnect(ws.session.sessionId).catch(() => undefined);
+      else if (ws?.kind === "mongo") await api.mongoDisconnect(ws.session.sessionId).catch(() => undefined);
       else if (ws) await api.disconnect(ws.session.sessionId).catch(() => undefined);
     },
 

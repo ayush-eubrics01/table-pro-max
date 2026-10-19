@@ -36,7 +36,7 @@ For PostgreSQL 16, MySQL 8.4, MariaDB 11.4 and SQLite, the same `exercise` funct
 
 A driver whose URL variable is unset prints `BLOCKED: …` and is skipped. It is never
 reported as passing. Tests use only the `tpm_test` database in disposable containers
-(`tpm-test-*`, tmpfs storage, ports 55432/53306/53307/51433). **Never point these variables at a
+(`tpm-test-*`, tmpfs storage, ports 55432/53306/53307/51433/57017/57018). **Never point these variables at a
 real database.**
 
 SQL Server has a flow of its own (`sql_server`, `TPM_TEST_MSSQL_URL`), because its batches,
@@ -47,6 +47,13 @@ column origins, every common type rendered and bound back equal, restore points 
 values and a dropped table, and the shared export/import round trip. Its container,
 `tpm-test-mssql`, runs SQL Server 2022 Developer edition (free for development and testing;
 starting it accepts Microsoft's licence for that use).
+
+MongoDB has one too (`mongodb`, `TPM_TEST_MONGO_URL` and `TPM_TEST_MONGO_ATLAS_URL`): browse, find
+with filter, sort, projection, skip and dates, count, aggregate with `$out` refused, a slow
+`$where` stopped by the time limit, deletes (confirmation, a changed count refused, by id, by
+filter), read-only and production lock refused, typed confirmation, a wrong password, and vector
+search with a filter against `tpm-test-mongo-atlas` (`mongodb/mongodb-atlas-local`), with an index
+created in the test. `tpm-test-mongo` runs `mongo:7` on port 57017; the Atlas image runs on 57018.
 
 ## Driving the real app (Linux, manual)
 WebKitGTK has no packaged WebDriver on the development machine, so the desktop app is checked

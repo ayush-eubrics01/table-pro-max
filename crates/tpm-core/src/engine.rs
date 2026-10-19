@@ -327,6 +327,7 @@ pub struct Engine {
     limiter: Semaphore,
     known_hosts: Option<crate::ssh::KnownHosts>,
     redis: Mutex<HashMap<String, Arc<tokio::sync::Mutex<crate::redis_kv::RedisSession>>>>,
+    mongo: Mutex<HashMap<String, Arc<crate::mongo::MongoSession>>>,
     /// Where restore points are kept (the app's local storage); without one, none are made.
     restore_store: Mutex<Option<Arc<dyn crate::restore::RestoreStore>>>,
     /// Connection attempts that can be cancelled, by the caller's id.
@@ -355,6 +356,7 @@ impl Engine {
             limiter: Semaphore::new(MAX_CONCURRENT_EXECUTIONS),
             known_hosts: None,
             redis: Mutex::new(HashMap::new()),
+            mongo: Mutex::new(HashMap::new()),
             restore_store: Mutex::new(None),
             connects: Mutex::new(HashMap::new()),
         }
@@ -2539,6 +2541,52 @@ impl Engine {
     pub fn redis_close(&self, id: &str) {
         lock(&self.redis).remove(id);
     }
+
+    /// Opens a MongoDB session. As for SQL connections, production opens read-only until the
+    /// user allows writes (`lock_production`), and the session enforces it.
+    pub async fn mongo_open(
+        &self,
+        profile: &ConnectionProfile,
+        password: Option<&str>,
+        ssh_secret: Option<&str>,
+        lock_production: bool,
+    ) -> Result<(String, crate::mongo::MongoInfo)> {
+        profile.validate()?;
+        let writes_locked =
+            lock_production && profile.environment == crate::config::Environment::Production && !profile.read_only();
+        crate::mongo::check_route(profile)?;
+        let tunnel = match &profile.ssh {
+            Some(ssh) => {
+                let known =
+                    self.known_hosts.clone().ok_or_else(|| AppError::internal("SSH known hosts are not configured"))?;
+                Some(
+                    crate::ssh::open_tunnel(
+                        ssh,
+                        ssh_secret,
+                        &profile.host,
+                        profile.port_or_default(),
+                        known,
+                        Duration::from_secs(profile.connect_timeout_secs),
+                    )
+                    .await?,
+                )
+            }
+            None => None,
+        };
+        let session = crate::mongo::MongoSession::connect(profile, password, tunnel, writes_locked).await?;
+        let info = session.info().await?;
+        let id = uuid::Uuid::new_v4().to_string();
+        lock(&self.mongo).insert(id.clone(), Arc::new(session));
+        Ok((id, info))
+    }
+
+    pub fn mongo(&self, id: &str) -> Result<Arc<crate::mongo::MongoSession>> {
+        lock(&self.mongo).get(id).cloned().ok_or_else(|| AppError::not_found("This MongoDB connection is closed"))
+    }
+
+    pub fn mongo_close(&self, id: &str) {
+        lock(&self.mongo).remove(id);
+    }
 }
 
 fn has_raw(node: &FilterNode) -> bool {
@@ -3287,7 +3335,7 @@ pub fn default_schema_sql(driver: crate::config::Driver, schema: &str) -> Result
             Some(format!("SET schema = {}", Dialect::Postgres.quote_literal(schema)))
         }
         // SQL Server resolves names through the user's default schema, which a session can't change.
-        Driver::Sqlite | Driver::Redis | Driver::Mssql => None,
+        Driver::Sqlite | Driver::Redis | Driver::Mssql | Driver::Mongodb => None,
     })
 }
 

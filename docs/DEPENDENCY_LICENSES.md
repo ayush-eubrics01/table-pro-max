@@ -32,6 +32,8 @@ check the npm packages' `license` fields before each release.
 | reqwest (rustls, no default provider) | 0.13 | MIT OR Apache-2.0 | github.com/seanmonstar/reqwest | HTTPS client for optional AI |
 | redis | 1.7 | BSD-3-Clause | github.com/redis-rs/redis-rs | Redis client |
 | tiberius (rustls, tds73, chrono) | 0.13 | MIT OR Apache-2.0 | github.com/prisma/tiberius | SQL Server driver |
+| mongodb (rustls, dns-resolver; with bson 2) | 3.9 | Apache-2.0 (bson: MIT) | github.com/mongodb/mongo-rust-driver | MongoDB driver |
+| hickory-resolver (through mongodb) | 0.26 | MIT OR Apache-2.0 | github.com/hickory-dns/hickory-dns | DNS lookups for `mongodb+srv://` |
 | duckdb (bundled engine) | 1.10506 | MIT (DuckDB: MIT) | github.com/duckdb/duckdb-rs | DuckDB driver |
 | hex, bytes, futures-util | — | MIT / MIT OR Apache-2.0 | — | Utilities |
 

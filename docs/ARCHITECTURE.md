@@ -30,6 +30,7 @@ destinations: the AI service the user configures, and GitHub for update checks t
 │ ssh.rs         SSH tunnels (russh), known-hosts verification, ssh_config aliases      │
 │ transfer.rs    streaming import/export (CSV, JSON, JSON Lines, SQL, XLSX)            │
 │ redis_kv.rs    Redis key browser and console with command classification            │
+│ mongo.rs       MongoDB find, aggregate, vector search and confirmed deletes          │
 │ ai.rs          optional AI: prompt builder, Anthropic / OpenAI-compatible HTTPS      │
 │ updates.rs     update-check rules: consent, daily interval, versions, install kinds  │
 │ config.rs      ConnectionProfile, URL parsing · dialect.rs quoting · redact.rs       │

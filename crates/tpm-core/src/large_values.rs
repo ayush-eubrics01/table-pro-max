@@ -31,7 +31,7 @@ pub fn defer_by_default(driver: Driver, data_type: &str) -> bool {
             t.ends_with("(max)")
                 || matches!(base, "text" | "ntext" | "image" | "xml" | "geography" | "geometry" | "sql_variant")
         }
-        Driver::Redis => false,
+        Driver::Redis | Driver::Mongodb => false,
     }
 }
 

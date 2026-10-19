@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../components/Icon";
-import { useWorkspaces, type Tab, type Workspace } from "../stores/workspaces";
+import { mongoSessionInfo, useWorkspaces, type Tab, type Workspace } from "../stores/workspaces";
 import { useRestore } from "../stores/restore";
+import { useConnections } from "../stores/connections";
 import { RestorePanel } from "../features/restore/RestorePanel";
 import { usePendingEdits } from "../stores/pendingEdits";
 import { Sidebar } from "../features/database-explorer/Sidebar";
@@ -13,11 +14,12 @@ import { QueryTab } from "../features/sql-editor/QueryTab";
 import { DefinitionView } from "../features/schema-browser/DefinitionView";
 import { DashboardView } from "../features/dashboards/DashboardView";
 import { RedisView } from "../features/redis/RedisView";
+import { MongoView } from "../features/mongo/MongoView";
 import { api } from "../lib/ipc";
 import { databaseToReopen } from "../lib/dialect";
 import { envColorVar, envLabel, envStyle, safetyLabel } from "../lib/env";
 import { confirmAction, notifyError } from "../stores/ui";
-import { connectWithPrompt, reconnectWithPrompt } from "../features/connections/connectFlow";
+import { connectMongoWithPrompt, connectWithPrompt, reconnectWithPrompt } from "../features/connections/connectFlow";
 import { ConnectionLine } from "../features/connections/nameConfirm";
 
 export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean }) {
@@ -98,14 +100,14 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
 
   const s = ws.session;
   const restoreOpen = useRestore((r) => r.open) && keepsRestorePoints(ws);
-  if (ws.kind === "redis") {
+  if (ws.kind === "redis" || ws.kind === "mongo") {
     return (
       <div
         className="workspace"
         data-env={s.environment}
         style={{ ["--env-color" as string]: envColorVar(s.environment), display: visible ? "flex" : "none" }}
       >
-        <RedisView ws={ws} />
+        {ws.kind === "redis" ? <RedisView ws={ws} /> : <MongoView ws={ws} />}
       </div>
     );
   }
@@ -158,7 +160,7 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
 
 /** Whether restore points are kept for this workspace's connection. */
 function keepsRestorePoints(ws: Workspace): boolean {
-  return ws.kind !== "redis" && !ws.session.readOnly && ws.profile.restorePoints !== false;
+  return ws.kind !== "redis" && ws.kind !== "mongo" && !ws.session.readOnly && ws.profile.restorePoints !== false;
 }
 
 /** "Restore points · N" in the status bar; opens the panel. */
@@ -189,6 +191,18 @@ function RestoreCount({ ws }: { ws: Workspace }) {
  * workspace reconnects the other way (query tabs follow on their next run). Allowing asks for the
  * connection name; it lasts until the workspace closes.
  */
+/**
+ * Opens a MongoDB workspace's connection again and swaps the session. The saved profile is used,
+ * not the workspace's copy, so a renamed connection is what a typed confirmation asks for.
+ */
+async function reopenMongo(ws: Workspace, lockProduction: boolean, patch: Partial<Workspace> = {}) {
+  const profile = useConnections.getState().byId(ws.profile.id) ?? ws.profile;
+  const r = await connectMongoWithPrompt(profile, { lockProduction });
+  if (!r) return;
+  await api.mongoDisconnect(ws.session.sessionId).catch(() => undefined);
+  useWorkspaces.getState().update(ws.id, { ...patch, profile, session: mongoSessionInfo(profile, r.sessionId, r.info), health: "ok" });
+}
+
 export async function changeWriteAccess(ws: Workspace, allow: boolean) {
   const s = ws.session;
   if (allow) {
@@ -198,8 +212,9 @@ export async function changeWriteAccess(ws: Workspace, allow: boolean) {
         <>
           <ConnectionLine session={s} />
           <p style={{ margin: 0 }}>
-            Statements and edits can change this production database until you go back to read-only or close the connection. Query tabs reconnect on their next run, and a transaction open in
-            one is rolled back.
+            {ws.kind === "mongo"
+              ? "Deletes can change this production database until you go back to read-only or close the connection."
+              : "Statements and edits can change this production database until you go back to read-only or close the connection. Query tabs reconnect on their next run, and a transaction open in one is rolled back."}
           </p>
         </>
       ),
@@ -220,6 +235,7 @@ export async function changeWriteAccess(ws: Workspace, allow: boolean) {
     if (!ok) return;
   }
   try {
+    if (ws.kind === "mongo") return await reopenMongo(ws, !allow, { allowWrites: allow });
     const session = await connectWithPrompt(ws.profile, databaseToReopen(s), { lockProduction: !allow });
     if (!session) return;
     await api.disconnect(s.sessionId).catch(() => undefined);
@@ -241,6 +257,7 @@ export function StatusBar({ ws, version }: { ws: Workspace | undefined; version?
   const s = ws.session;
   const reconnect = async () => {
     try {
+      if (ws.kind === "mongo") return await reopenMongo(ws, s.writesLocked);
       const info = await reconnectWithPrompt(s.sessionId, ws.profile);
       if (info) useWorkspaces.getState().update(ws.id, { session: info, health: "ok" });
     } catch (e) {

@@ -12,7 +12,7 @@ import { Overlays } from "../components/Overlays";
 import { Home } from "../features/connections/Home";
 import { ConnectingDialog } from "../features/connections/ConnectingDialog";
 import { exclusive } from "../lib/exclusive";
-import { connectRedisWithPrompt } from "../features/connections/connectFlow";
+import { connectMongoWithPrompt, connectRedisWithPrompt } from "../features/connections/connectFlow";
 import { listenConnectProgress, openTracked } from "../features/connections/connecting";
 import { OpenAnything } from "../features/command-palette/OpenAnything";
 import { SettingsDialog } from "../features/settings/SettingsDialog";
@@ -51,6 +51,10 @@ export function App() {
           if (profile.driver === "redis") {
             const r = await connectRedisWithPrompt(profile);
             return r ? useWorkspaces.getState().openRedis(profile, r.sessionId, r.info) : null;
+          }
+          if (profile.driver === "mongodb") {
+            const r = await connectMongoWithPrompt(profile);
+            return r ? useWorkspaces.getState().openMongo(profile, r.sessionId, r.info) : null;
           }
           // Steps in the connecting dialog, and Cancel.
           return await openTracked(profile);
@@ -136,7 +140,7 @@ export function App() {
   useEffect(() => {
     const t = setInterval(() => {
       for (const w of useWorkspaces.getState().workspaces) {
-        (w.kind === "redis" ? api.redisInfo(w.session.sessionId) : api.ping(w.session.sessionId))
+        (w.kind === "redis" ? api.redisInfo(w.session.sessionId) : w.kind === "mongo" ? api.mongoDatabases(w.session.sessionId) : api.ping(w.session.sessionId))
           .then(() => w.health !== "ok" && useWorkspaces.getState().update(w.id, { health: "ok" }))
           .catch(() => useWorkspaces.getState().update(w.id, { health: "down" }));
       }

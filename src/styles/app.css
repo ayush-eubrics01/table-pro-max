@@ -2686,6 +2686,61 @@ pre,
   color: var(--danger);
 }
 
+/* ---- mongodb -------------------------------------------------------------- */
+
+.mongo {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: 0;
+}
+.mongo-query {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border-hairline);
+  flex: none;
+}
+.mongo-query .textarea {
+  font-family: var(--font-code);
+  font-size: var(--text-sm);
+}
+.mongo-results-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  flex: none;
+}
+.mongo-results-head .grow {
+  flex: 1;
+}
+.mongo-docs {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+.mongo-docs .table td {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mongo-doc {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+.mongo-doc .code-block {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-3);
+}
+
 /* ---- grouped settings & AI panel ----------------------------------------- */
 
 .fieldset {

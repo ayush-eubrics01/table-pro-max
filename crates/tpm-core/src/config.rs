@@ -23,6 +23,8 @@ pub enum Driver {
     Redis,
     /// Microsoft SQL Server and Azure SQL.
     Mssql,
+    /// Document store; handled by `mongo`, not the relational adapters.
+    Mongodb,
 }
 
 impl Driver {
@@ -37,6 +39,8 @@ impl Driver {
             Driver::Sqlite => table.to_ascii_lowercase().starts_with("sqlite_"),
             Driver::Duckdb => matches!(schema.as_str(), "information_schema" | "pg_catalog"),
             Driver::Mssql => matches!(schema.as_str(), "sys" | "information_schema"),
+            // MongoDB's own collections (users, roles, views, profiles) live in system.*.
+            Driver::Mongodb => table.starts_with("system."),
             Driver::Redis => false,
         }
     }
@@ -47,8 +51,8 @@ impl Driver {
             Driver::Mysql | Driver::Mariadb => Dialect::Mysql,
             Driver::Sqlite => Dialect::Sqlite,
             Driver::Mssql => Dialect::Mssql,
-            // Redis is not SQL; the dialect is never used for it.
-            Driver::Duckdb | Driver::Redis => Dialect::Postgres,
+            // Redis and MongoDB are not SQL; the dialect is never used for them.
+            Driver::Duckdb | Driver::Redis | Driver::Mongodb => Dialect::Postgres,
         }
     }
 
@@ -59,6 +63,7 @@ impl Driver {
             Driver::Sqlite | Driver::Duckdb => None,
             Driver::Redis => Some(6379),
             Driver::Mssql => Some(1433),
+            Driver::Mongodb => Some(27017),
         }
     }
 
@@ -75,6 +80,7 @@ impl Driver {
             Driver::Duckdb => "duckdb",
             Driver::Redis => "redis",
             Driver::Mssql => "sqlserver",
+            Driver::Mongodb => "mongodb",
         }
     }
 }
@@ -182,6 +188,16 @@ pub struct ConnectionProfile {
     /// Keep restore points (copies of rows before a change, on this computer). On by default.
     #[serde(default = "default_true")]
     pub restore_points: bool,
+    /// MongoDB: find the hosts through DNS (`mongodb+srv://`, as Atlas needs).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub srv: bool,
+    /// MongoDB: the database the user is defined in (`authSource`), when not the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_source: Option<String>,
+    /// MongoDB: talk to this one server only, without discovering the rest of its replica set
+    /// (`directConnection=true`: Docker and port-forwarded servers).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub direct_connection: bool,
 }
 
 fn default_true() -> bool {
@@ -217,6 +233,9 @@ impl ConnectionProfile {
             keepalive_secs: default_keepalive(),
             ssh: None,
             restore_points: true,
+            srv: false,
+            auth_source: None,
+            direct_connection: false,
         }
     }
 
@@ -275,6 +294,9 @@ impl ConnectionProfile {
 
     /// Connection URL without the password (used for export and display).
     pub fn to_url(&self) -> String {
+        if self.driver == Driver::Mongodb {
+            return self.mongo_url();
+        }
         if self.driver.is_file_based() {
             return format!("{}://{}", self.driver.scheme(), self.file_path.clone().unwrap_or_default());
         }
@@ -291,6 +313,42 @@ impl ConnectionProfile {
         };
         url.query_pairs_mut().append_pair("sslmode", ssl);
         url.to_string()
+    }
+}
+
+impl ConnectionProfile {
+    fn mongo_url(&self) -> String {
+        let scheme = if self.srv { "mongodb+srv" } else { "mongodb" };
+        let mut url = Url::parse(&format!("{scheme}://placeholder")).expect("static url");
+        let _ = url.set_host(Some(&self.host));
+        if !self.srv {
+            let _ = url.set_port(self.port);
+        }
+        let _ = url.set_username(&self.user);
+        url.set_path(&format!("/{}", self.database));
+        {
+            let mut q = url.query_pairs_mut();
+            if let Some(source) = &self.auth_source {
+                q.append_pair("authSource", source);
+            }
+            if self.direct_connection {
+                q.append_pair("directConnection", "true");
+            }
+            match self.tls.mode {
+                TlsMode::Disable => {}
+                TlsMode::Prefer if !self.srv => {}
+                _ => {
+                    q.append_pair("tls", "true");
+                }
+            }
+            if self.tls.mode == TlsMode::RequireInsecure {
+                q.append_pair("tlsAllowInvalidCertificates", "true");
+            }
+            if let Some(ca) = &self.tls.ca_cert_path {
+                q.append_pair("tlsCAFile", ca);
+            }
+        }
+        url.to_string().replace("?&", "?").trim_end_matches('?').to_string()
     }
 }
 
@@ -323,6 +381,16 @@ pub fn parse_connection_url(input: &str) -> Result<ParsedUrl> {
         return Ok(ParsedUrl { profile, password: None });
     }
 
+    if let Some(rest) = input.strip_prefix("mongodb://").or_else(|| input.strip_prefix("mongodb+srv://")) {
+        let authority = rest.split(['/', '?']).next().unwrap_or_default();
+        let hosts = authority.rsplit('@').next().unwrap_or_default();
+        if hosts.contains(',') {
+            return Err(AppError::unsupported(
+                "MongoDB connections take one host, or a mongodb+srv:// address; several hosts aren't supported yet",
+            ));
+        }
+    }
+
     // Parse without echoing the input: it may contain a password.
     let url = Url::parse(input).map_err(|e| AppError::invalid_config(format!("Invalid connection URL: {e}")))?;
     let driver = match url.scheme() {
@@ -331,6 +399,7 @@ pub fn parse_connection_url(input: &str) -> Result<ParsedUrl> {
         "mariadb" => Driver::Mariadb,
         "redis" | "rediss" => Driver::Redis,
         "sqlserver" | "mssql" => Driver::Mssql,
+        "mongodb" | "mongodb+srv" => Driver::Mongodb,
         other => return Err(AppError::invalid_config(format!("Unsupported URL scheme '{other}'"))),
     };
 
@@ -348,6 +417,48 @@ pub fn parse_connection_url(input: &str) -> Result<ParsedUrl> {
     profile.user = user;
     profile.database = database;
     profile.password_mode = if password.is_some() { PasswordMode::Keychain } else { PasswordMode::Ask };
+    if driver == Driver::Mongodb {
+        profile.srv = url.scheme() == "mongodb+srv";
+        if profile.srv {
+            profile.port = None;
+        }
+        // Without a user there is nothing to sign in with.
+        if password.is_none() && profile.user.is_empty() {
+            profile.password_mode = PasswordMode::None;
+        }
+        // MongoDB's defaults: TLS with SRV (Atlas), none without, unless the URL says.
+        profile.tls.mode = if profile.srv { TlsMode::Require } else { TlsMode::Disable };
+        let truthy = |v: &str| v.eq_ignore_ascii_case("true");
+        let mut insecure = false;
+        // Option names are case-insensitive in MongoDB URLs.
+        for (k, v) in url.query_pairs() {
+            match k.to_ascii_lowercase().as_str() {
+                "authsource" => profile.auth_source = Some(v.into_owned()).filter(|s| !s.is_empty()),
+                "authmechanism" if !v.to_ascii_uppercase().starts_with("SCRAM-") => {
+                    return Err(AppError::unsupported(format!(
+                        "Signing in with {v} is not supported yet; use a user name and password (SCRAM)"
+                    )));
+                }
+                "directconnection" => profile.direct_connection = truthy(&v),
+                "tls" | "ssl" => {
+                    profile.tls.mode = if truthy(&v) { TlsMode::Require } else { TlsMode::Disable };
+                }
+                "tlsallowinvalidcertificates" | "tlsinsecure" => insecure = truthy(&v),
+                "tlscafile" => profile.tls.ca_cert_path = Some(v.into_owned()),
+                _ => {}
+            }
+        }
+        if insecure && profile.tls.mode != TlsMode::Disable {
+            profile.tls.mode = TlsMode::RequireInsecure;
+        }
+        let password = password.or_else(|| {
+            url.query_pairs().find(|(k, _)| k.eq_ignore_ascii_case("password")).map(|(_, v)| v.into_owned())
+        });
+        if password.is_some() {
+            profile.password_mode = PasswordMode::Keychain;
+        }
+        return Ok(ParsedUrl { profile, password });
+    }
     if driver == Driver::Redis {
         // Redis usually has no password; `rediss://` means TLS.
         if password.is_none() {
@@ -568,6 +679,51 @@ mod tests {
         assert_eq!(p.profile.to_url(), "sqlserver://app@db.example.com:1433/shop?sslmode=verify-full");
         assert_eq!(parse_connection_url("mssql://h:1444/x").unwrap().profile.port, Some(1444));
         assert_eq!(Driver::Mssql.dialect(), Dialect::Mssql);
+    }
+
+    #[test]
+    fn mongodb_url_options_ignore_case_and_unsupported_sign_in_is_refused() {
+        let p =
+            parse_connection_url("mongodb://u@h/db?authsource=users&TLS=true&DirectConnection=true").unwrap().profile;
+        assert_eq!(p.auth_source.as_deref(), Some("users"));
+        assert_eq!(p.tls.mode, TlsMode::Require);
+        assert!(p.direct_connection);
+        let e = parse_connection_url("mongodb://h/db?authMechanism=MONGODB-X509").unwrap_err();
+        assert_eq!(e.kind, crate::error::ErrorKind::Unsupported);
+        assert!(parse_connection_url("mongodb://u@h/db?authMechanism=SCRAM-SHA-256").is_ok());
+    }
+
+    #[test]
+    fn parses_mongodb_urls() {
+        let p =
+            parse_connection_url("mongodb://app:s%3Acret@db.example.com:27018/shop?authSource=admin&tls=true").unwrap();
+        assert_eq!(p.profile.driver, Driver::Mongodb);
+        assert_eq!((p.profile.host.as_str(), p.profile.port), ("db.example.com", Some(27018)));
+        assert_eq!((p.profile.user.as_str(), p.profile.database.as_str()), ("app", "shop"));
+        assert_eq!(p.password.as_deref(), Some("s:cret"));
+        assert_eq!(p.profile.auth_source.as_deref(), Some("admin"));
+        assert!(!p.profile.srv);
+        assert_eq!(p.profile.tls.mode, TlsMode::Require);
+        assert!(!serde_json::to_string(&p.profile).unwrap().contains("s:cret"));
+        let p = parse_connection_url("mongodb://h/db").unwrap();
+        assert_eq!((p.profile.port, p.profile.tls.mode), (Some(27017), TlsMode::Disable));
+        assert_eq!(p.profile.password_mode, PasswordMode::None);
+        // Atlas: hosts from DNS, TLS on unless the URL says otherwise.
+        let p = parse_connection_url("mongodb+srv://app:pw@cluster0.abcd.mongodb.net/?retryWrites=true").unwrap();
+        assert!(p.profile.srv);
+        assert_eq!(p.profile.port, None);
+        assert_eq!(p.profile.tls.mode, TlsMode::Require);
+        assert_eq!(p.profile.to_url(), "mongodb+srv://app@cluster0.abcd.mongodb.net/?tls=true");
+        let p = parse_connection_url("mongodb://h:27019/db?directConnection=true").unwrap();
+        assert!(p.profile.direct_connection);
+        assert_eq!(p.profile.to_url(), "mongodb://h:27019/db?directConnection=true");
+        let p = parse_connection_url("mongodb://h/db?tls=true&tlsAllowInvalidCertificates=true&tlsCAFile=%2Fca.pem")
+            .unwrap();
+        assert_eq!(p.profile.tls.mode, TlsMode::RequireInsecure);
+        assert_eq!(p.profile.tls.ca_cert_path.as_deref(), Some("/ca.pem"));
+        assert!(parse_connection_url("mongodb://a:1,b:2/db").unwrap_err().message.contains("one host"));
+        assert!(Driver::Mongodb.is_system_table("admin", "system.users"));
+        assert!(!Driver::Mongodb.is_system_table("shop", "orders"));
     }
 
     #[test]
