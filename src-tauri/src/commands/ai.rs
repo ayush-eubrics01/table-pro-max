@@ -1,7 +1,8 @@
 //! Optional AI assistance. Off by default; the UI previews the exact prompt
 //! (`ai_preview`) and only that prompt is sent (`ai_send`). Prompts and keys are never logged.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -80,19 +81,57 @@ pub fn ai_preview(state: State<'_, AppState>, request: AiRequest) -> Result<AiPr
 
 #[tauri::command]
 pub async fn ai_send(state: State<'_, AppState>, prompt: AiPrompt, job_id: String) -> Result<AiAnswer> {
-    let config = config(&state)?;
-    let key = load_key(&state, config.provider).await?;
-    let token = Arc::new(CancellationToken::new());
-    state.ai_jobs.lock().unwrap_or_else(|p| p.into_inner()).insert(job_id.clone(), token.clone());
-    let result = ai::send(&config, &prompt, key.as_deref(), token).await;
-    state.ai_jobs.lock().unwrap_or_else(|p| p.into_inner()).remove(&job_id);
-    tracing::info!(provider = ?config.provider, ok = result.is_ok(), "ai request");
+    // The job can be cancelled from now on, also while the key is read.
+    let token = job_token(&state.ai_jobs, &job_id);
+    let result = async {
+        let config = config(&state)?;
+        let key = load_key(&state, config.provider).await?;
+        let r = ai::send(&config, &prompt, key.as_deref(), token).await;
+        tracing::info!(provider = ?config.provider, ok = r.is_ok(), "ai request");
+        r
+    }
+    .await;
+    finish_job(&state.ai_jobs, &job_id);
     result
+}
+
+type Jobs = Mutex<HashMap<String, Arc<CancellationToken>>>;
+
+/// A request's cancel token, made by whichever comes first: the request, or a Cancel clicked
+/// before it got going (which then stops it).
+fn job_token(jobs: &Jobs, job_id: &str) -> Arc<CancellationToken> {
+    jobs.lock().unwrap_or_else(|p| p.into_inner()).entry(job_id.to_string()).or_default().clone()
+}
+
+fn cancel_job(jobs: &Jobs, job_id: &str) {
+    job_token(jobs, job_id).cancel();
+}
+
+fn finish_job(jobs: &Jobs, job_id: &str) {
+    jobs.lock().unwrap_or_else(|p| p.into_inner()).remove(job_id);
 }
 
 #[tauri::command]
 pub fn ai_cancel(state: State<'_, AppState>, job_id: String) {
-    if let Some(t) = state.ai_jobs.lock().unwrap_or_else(|p| p.into_inner()).get(&job_id) {
-        t.cancel();
+    cancel_job(&state.ai_jobs, &job_id);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cancel_before_the_request_starts_still_stops_it() {
+        let jobs = Mutex::new(HashMap::new());
+        // Cancel clicked while the key is being read: the job isn't running yet.
+        cancel_job(&jobs, "j1");
+        let token = job_token(&jobs, "j1");
+        assert!(token.is_cancelled(), "the send sees the earlier cancel");
+        finish_job(&jobs, "j1");
+        assert!(jobs.lock().unwrap().is_empty());
+        // The usual order: started, then cancelled.
+        let token = job_token(&jobs, "j2");
+        cancel_job(&jobs, "j2");
+        assert!(token.is_cancelled());
     }
 }

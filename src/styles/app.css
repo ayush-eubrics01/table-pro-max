@@ -822,6 +822,13 @@ pre,
   color: var(--text-faint);
   cursor: default;
 }
+/* A saved-query folder sits one step in from its group, its queries one more. */
+.tree-group.tree-folder {
+  padding-left: 22px;
+}
+.tree-item.in-folder {
+  padding-left: 40px;
+}
 .tree-item {
   display: flex;
   align-items: center;

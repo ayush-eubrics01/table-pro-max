@@ -160,6 +160,53 @@ jobs:
           path: target/release/bundle/
           if-no-files-found: warn
 
+  e2e:
+    name: End to end (Linux)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Linux packages
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-${{ runner.arch }}-webkit41-e2e-v1
+      - name: Linux system dependencies, WebKitWebDriver and Xvfb
+        run: |
+          mkdir -p ~/apt-archives/partial
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/apt-archives" \
+            libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev build-essential pkg-config file \
+            webkit2gtk-driver xvfb
+          sudo chown -R "$USER" ~/apt-archives
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: tauri-driver
+        run: cargo install tauri-driver --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # A debug build with the UI embedded (no dev server), as the app runs for users.
+      - run: npx tauri build --debug --no-bundle
+      - name: Main flows through the app's UI (WebDriver)
+        run: xvfb-run -a npm run e2e
+        env:
+          TPM_E2E_APP: target/debug/table-pro-max
+          TPM_E2E_SHOTS: ${{ runner.temp }}/e2e-shots
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-screenshots
+          path: ${{ runner.temp }}/e2e-shots
+          if-no-files-found: ignore
+
   audit:
     name: Dependency audit
     needs: changes
@@ -181,7 +228,7 @@ jobs:
   ci-passed:
     name: CI passed
     if: always()
-    needs: [changes, core, frontend, desktop, audit]
+    needs: [changes, core, frontend, desktop, e2e, audit]
     runs-on: ubuntu-24.04
     steps:
       - name: Every job passed or was skipped for a docs-only change
