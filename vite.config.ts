@@ -23,5 +23,14 @@ export default defineConfig({
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.test.{ts,tsx}", "scripts/**/*.test.mjs"],
     css: false,
+    // `npm run test:coverage` (CI): coverage of the components may not drop below what their
+    // tests reach now. Raise the numbers as tests are added; never lower them to pass.
+    coverage: {
+      provider: "v8",
+      include: ["src/features/**", "src/components/**"],
+      exclude: ["**/*.test.{ts,tsx}", "src/components/icons.generated.ts"],
+      reporter: ["text-summary", "json-summary"],
+      thresholds: { lines: 80, statements: 79, branches: 74, functions: 75 },
+    },
   },
 });

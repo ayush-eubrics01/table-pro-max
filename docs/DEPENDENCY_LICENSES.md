@@ -61,7 +61,7 @@ check the npm packages' `license` fields before each release.
 | @fontsource-variable/geist, @fontsource-variable/geist-mono | OFL-1.1 (Geist fonts, bundled locally) |
 | Material Symbols Rounded icon paths (from the dev dependency @material-symbols/svg-300, copied into `src/components/icons.generated.ts`) | Apache-2.0 |
 
-Dev dependencies (Vite, Vitest, TypeScript, ESLint, Testing Library, jsdom) are MIT,
+Dev dependencies (Vite, Vitest and @vitest/coverage-v8, TypeScript, ESLint, Testing Library, jsdom) are MIT,
 Apache-2.0 or BSD and are not shipped in the app bundle.
 
 ## Regenerating the Rust inventory

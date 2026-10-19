@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { listen } from "@tauri-apps/api/event";
+import { listenFor } from "../../lib/events";
 import { format as formatSql } from "sql-formatter";
 import type { SQLNamespace } from "@codemirror/lang-sql";
 import type { AiTask, Environment, ExplainResult, ScriptResult, SessionInfo, StatementResult } from "../../types/backend";
@@ -345,11 +345,9 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
   // Live progress while a long script runs.
   useEffect(() => {
     if (!running) return;
-    let unlisten: (() => void) | undefined;
-    void listen<{ taskId: string }>("query-progress", (e) => {
-      if (e.payload.taskId === running.taskId) setRunning((r) => (r ? { ...r, done: r.done + 1 } : r));
-    }).then((u) => (unlisten = u));
-    return () => unlisten?.();
+    return listenFor<{ taskId: string }>("query-progress", (p) => {
+      if (p.taskId === running.taskId) setRunning((r) => (r ? { ...r, done: r.done + 1 } : r));
+    });
   }, [running?.taskId, running]);
 
   const cancel = async () => {
