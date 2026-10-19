@@ -11,7 +11,7 @@ export const ICONS = [
   "function", "grid_view", "history", "info", "keep", "key", "keyboard_arrow_down", "keyboard_return",
   "layers", "link", "link_off", "lock", "minimize", "more_horiz", "new_window", "open_in_new", "play_arrow",
   "play_circle", "refresh", "right_panel_open", "save", "schedule", "search", "settings", "speed", "star_shine", "stop",
-  "system_update_alt", "table", "tag", "terminal", "undo", "unfold_more", "upload", "visibility", "warning",
+  "system_update_alt", "table", "tag", "terminal", "undo", "unfold_more", "upload", "vertical_split", "visibility", "warning",
 ];
 
 export function extractPath(svg, name) {
