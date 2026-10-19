@@ -14,6 +14,7 @@ import { DefinitionView } from "../features/schema-browser/DefinitionView";
 import { DashboardView } from "../features/dashboards/DashboardView";
 import { RedisView } from "../features/redis/RedisView";
 import { api } from "../lib/ipc";
+import { databaseToReopen } from "../lib/dialect";
 import { envColorVar, envLabel, envStyle, safetyLabel } from "../lib/env";
 import { confirmAction, notifyError } from "../stores/ui";
 import { connectWithPrompt, reconnectWithPrompt } from "../features/connections/connectFlow";
@@ -219,7 +220,7 @@ export async function changeWriteAccess(ws: Workspace, allow: boolean) {
     if (!ok) return;
   }
   try {
-    const session = await connectWithPrompt(ws.profile, s.dialect === "postgres" ? s.database : null, { lockProduction: !allow });
+    const session = await connectWithPrompt(ws.profile, databaseToReopen(s), { lockProduction: !allow });
     if (!session) return;
     await api.disconnect(s.sessionId).catch(() => undefined);
     useWorkspaces.getState().update(ws.id, { session, allowWrites: allow, health: "ok" });

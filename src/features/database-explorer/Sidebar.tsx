@@ -5,6 +5,7 @@ import { createDashboard } from "../dashboards/DashboardView";
 import { uid } from "../../lib/text";
 import type { DashboardRecord, DbObject, ObjectKind, Pin, SavedQuery } from "../../types/backend";
 import { api } from "../../lib/ipc";
+import { quoteName } from "../../lib/dialect";
 import { useWorkspaces, type Workspace } from "../../stores/workspaces";
 import { notify, notifyError } from "../../stores/ui";
 import { ContextMenu, useContextMenu } from "../../components/Menu";
@@ -130,7 +131,7 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
     }
   };
 
-  const q = (name: string) => (ws.session.dialect === "mysql" ? `\`${name.replace(/`/g, "``")}\`` : `"${name.replace(/"/g, '""')}"`);
+  const q = (name: string) => quoteName(ws.session.dialect, name);
   const qualified = (o: DbObject) => (ws.session.dialect === "sqlite" && o.schema === "main" ? q(o.name) : `${q(o.schema)}.${q(o.name)}`);
 
   const objectMenu = (e: React.MouseEvent, o: DbObject) => {

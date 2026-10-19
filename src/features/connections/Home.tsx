@@ -10,6 +10,7 @@ import { EnvBadge } from "../../components/EnvBadge";
 import { ContextMenu, useContextMenu } from "../../components/Menu";
 import { confirmAction, notify, notifyError } from "../../stores/ui";
 import { ConnectionForm } from "./ConnectionForm";
+import { isConnectionString } from "../../lib/url";
 
 interface Props {
   appInfo: AppInfo | null;
@@ -25,8 +26,6 @@ const SORTS: { key: SortKey; label: string }[] = [
   { key: "name", label: "Name" },
 ];
 
-/** `scheme://…` with no spaces: offer to create a connection from it instead of searching. */
-const URL_LIKE = /^[a-z][a-z0-9+.-]*:\/\/\S+$/i;
 
 function target(p: ConnectionProfile): string {
   return isFileDriver(p.driver) ? (p.filePath ?? "") : `${p.user ? `${p.user}@` : ""}${p.host}:${p.port ?? ""}/${p.database}`;
@@ -41,7 +40,8 @@ export function Home({ appInfo, onConnect, connecting }: Props) {
   const [editing, setEditing] = useState<ConnectionProfile | "new" | null>(null);
   const [pendingUrl, setPendingUrl] = useState<string | null>(null);
   const menu = useContextMenu();
-  const isUrl = URL_LIKE.test(search.trim());
+  // A pasted URL or ADO.NET string offers a new connection instead of searching.
+  const isUrl = isConnectionString(search);
 
   const groups = useMemo(() => {
     const needle = isUrl ? "" : search.trim().toLowerCase();
@@ -159,7 +159,7 @@ export function Home({ appInfo, onConnect, connecting }: Props) {
 
         {connections.length === 0 && (
           <div className="empty" style={{ height: "auto", padding: 48 }}>
-            <p>Add a PostgreSQL, MySQL, MariaDB, SQLite, DuckDB or Redis connection to get started.</p>
+            <p>Add a PostgreSQL, MySQL, MariaDB, SQL Server, SQLite, DuckDB or Redis connection to get started.</p>
             <p className="hint">
               Connections, history and saved queries stay on this computer.{" "}
               {appInfo && !appInfo.credentialStoreAvailable ? "Passwords are asked for each time you connect." : "Passwords go to your system keychain."}

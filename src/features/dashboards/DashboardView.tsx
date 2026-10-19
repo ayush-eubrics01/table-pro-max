@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
 import type { Cell, ColumnMeta, DashboardRecord, SessionInfo, WidgetDef } from "../../types/backend";
 import { api, toError } from "../../lib/ipc";
+import { databaseToReopen } from "../../lib/dialect";
 import { uid } from "../../lib/text";
 import { confirmAction, notify, notifyError, promptText } from "../../stores/ui";
 import { useWorkspaces, type DashboardTab, type Workspace } from "../../stores/workspaces";
@@ -51,7 +52,7 @@ export function DashboardView({ ws, tab, active }: { ws: Workspace; tab: Dashboa
   // Widgets run on a dedicated session opened read-only at the database level.
   useEffect(() => {
     let alive = true;
-    connectWithPrompt(ws.profile, ws.session.dialect === "postgres" ? ws.session.database : null, { readOnly: true })
+    connectWithPrompt(ws.profile, databaseToReopen(ws.session), { readOnly: true })
       .then((s) => {
         if (!alive) {
           if (s) void api.disconnect(s.sessionId);

@@ -26,6 +26,7 @@ import { queryTarget } from "./queryTarget";
 import type { GroupNode } from "../filters/filterModel";
 import { isMacPlatform } from "../../app/WindowControls";
 import { shortcut } from "../../lib/shortcut";
+import { databaseToReopen, formatterLanguage } from "../../lib/dialect";
 
 /** Tables named after FROM/JOIN/UPDATE/INTO, resolved against the default schema. */
 export function referencedTables(sql: string, defaultSchema: string): { schema: string; table: string }[] {
@@ -160,7 +161,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
     if (sessionRef.current) return sessionRef.current;
     for (;;) {
       const lockProduction = lockedRef.current;
-      const s = await connectWithPrompt(ws.profile, ws.session.dialect === "postgres" ? ws.session.database : null, { lockProduction });
+      const s = await connectWithPrompt(ws.profile, databaseToReopen(ws.session), { lockProduction });
       if (s && lockedRef.current !== lockProduction) {
         // Writes were allowed or taken back while connecting: open it the new way instead.
         void api.disconnect(s.sessionId).catch(() => undefined);
@@ -346,7 +347,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
   const format = () => {
     const text = editor.current?.getText() ?? "";
     try {
-      const language = ws.session.dialect === "postgres" ? "postgresql" : ws.session.dialect === "sqlite" ? "sqlite" : ws.profile.driver === "mariadb" ? "mariadb" : "mysql";
+      const language = formatterLanguage(ws.session.dialect, ws.profile.driver);
       editor.current?.setText(formatSql(text, { language, keywordCase: "upper", tabWidth: 2 }));
     } catch (e) {
       notify(`Could not format: ${(e as Error).message}`, "error");

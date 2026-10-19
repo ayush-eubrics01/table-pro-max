@@ -89,6 +89,12 @@ describe("Home", () => {
     expect(search.value).toBe("");
   });
 
+  it("offers a new connection for a pasted ADO.NET string too", () => {
+    render(<Home appInfo={null} connecting={null} onConnect={() => undefined} />);
+    fireEvent.change(screen.getByLabelText("Search connections"), { target: { value: "Server=tcp:db.internal,1433;Database=shop;User ID=app" } });
+    expect(screen.getByRole("button", { name: /Create connection from this URL/ })).toBeInTheDocument();
+  });
+
   it("opens the edit form from the card's edit button without connecting", () => {
     const onConnect = vi.fn();
     render(<Home appInfo={null} connecting={null} onConnect={onConnect} />);

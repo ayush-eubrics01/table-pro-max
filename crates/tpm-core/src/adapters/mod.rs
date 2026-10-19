@@ -20,6 +20,7 @@ use crate::model::{
 
 #[cfg(feature = "duckdb")]
 pub mod duckdb;
+pub mod mssql;
 pub mod mysql;
 pub mod postgres;
 pub mod sqlite;
@@ -54,6 +55,9 @@ pub trait Canceller: Send + Sync {
     /// Requests cancellation of the statement currently running on the session. Racy by
     /// nature: the statement may complete before the request arrives.
     async fn cancel(&self) -> Result<()>;
+
+    /// Forgets a cancel that arrived for an earlier run: called when a run takes the session.
+    fn reset(&self) {}
 }
 
 #[async_trait]
@@ -90,6 +94,12 @@ pub trait Session: Send {
     /// grid edits refuse to run then, because their BEGIN/COMMIT would end it.
     async fn in_transaction(&mut self) -> Result<bool> {
         Ok(false)
+    }
+
+    /// Whether the connection was opened again since the last call (SQL Server, after a cancel),
+    /// which ended any transaction it had.
+    fn take_connection_reset(&mut self) -> bool {
+        false
     }
 
     /// Runs an application-generated, parameterised query returning rows as text.
@@ -143,6 +153,7 @@ pub async fn connect(
         #[cfg(not(feature = "duckdb"))]
         Driver::Duckdb => Err(crate::AppError::unsupported("This build does not include DuckDB support")),
         Driver::Redis => Err(crate::AppError::unsupported("Redis connections use the key browser, not SQL sessions")),
+        Driver::Mssql => Ok(Box::new(mssql::MsSession::connect(profile, password, options).await?)),
     }
 }
 

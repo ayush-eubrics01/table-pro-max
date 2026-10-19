@@ -26,6 +26,11 @@ pub fn defer_by_default(driver: Driver, data_type: &str) -> bool {
         Driver::Sqlite => {
             t.is_empty() || matches!(t.as_str(), "text" | "blob" | "json" | "clob" | "mediumtext" | "longtext")
         }
+        Driver::Mssql => {
+            let base = t.split('(').next().unwrap_or("").trim();
+            t.ends_with("(max)")
+                || matches!(base, "text" | "ntext" | "image" | "xml" | "geography" | "geometry" | "sql_variant")
+        }
         Driver::Redis => false,
     }
 }
@@ -54,10 +59,13 @@ pub fn deferred_columns(driver: Driver, s: &TableStructure, load: &[String], def
         .collect()
 }
 
-fn is_binary_type(data_type: &str) -> bool {
+pub(crate) fn is_binary_type(data_type: &str) -> bool {
     let t = data_type.trim().to_ascii_lowercase();
     let base = t.split(['(', ' ']).next().unwrap_or("");
-    matches!(base, "bytea" | "binary" | "varbinary" | "blob" | "tinyblob" | "mediumblob" | "longblob")
+    matches!(
+        base,
+        "bytea" | "binary" | "varbinary" | "blob" | "tinyblob" | "mediumblob" | "longblob" | "image" | "rowversion"
+    )
 }
 
 pub fn expand_deferred(
@@ -166,6 +174,13 @@ mod tests {
         for t in ["INTEGER", "REAL", "NUMERIC", "varchar(20)", "BOOLEAN"] {
             assert!(!defer_by_default(Driver::Sqlite, t), "sqlite {t}");
         }
+        for t in ["nvarchar(max)", "varchar(max)", "varbinary(max)", "text", "ntext", "image", "xml", "geography"] {
+            assert!(defer_by_default(Driver::Mssql, t), "mssql {t}");
+        }
+        for t in ["nvarchar(200)", "varbinary(16)", "int", "datetime2(7)", "uniqueidentifier", "money"] {
+            assert!(!defer_by_default(Driver::Mssql, t), "mssql {t}");
+        }
+        assert!(is_binary_type("image") && is_binary_type("rowversion") && is_binary_type("varbinary(max)"));
     }
 
     #[test]

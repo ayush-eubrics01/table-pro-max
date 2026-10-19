@@ -12,13 +12,13 @@ Milestones follow the engineering plan. Status reflects the code in this reposit
 | 5 | MySQL/MariaDB and SQLite | Done (integration verified; UI verified on MySQL and SQLite) |
 | 6 | Advanced data tools: filters, schema editing, quick open, explain, import/export | Done |
 | 7 | Metrics board: dashboards, charts, SQL widgets with bounded concurrency | Done |
-| 8 | SQL Server, DuckDB, Redis; optional AI; optional MCP | DuckDB, Redis and AI done; SQL Server evaluated; MCP not started |
+| 8 | SQL Server, DuckDB, Redis; optional AI; optional MCP | DuckDB, Redis, AI and SQL Server done (SQL Server: SQL logins; no query plans yet); MCP not started |
 | 9 | Cross-platform readiness: Linux packages, Windows and macOS CI builds, credential stores, installers | Linux, Windows and macOS installers built in CI; tag-triggered draft releases (`release.yml`); Linux `.deb` run. Windows/macOS installers not yet launched; no code signing |
 | 10 | Release hardening: regression, security review, licenses, reproducible builds, checklist | Release checklist written (`docs/RELEASING.md`); the rest not started |
 
 ## Next up (in order)
 1. Launch the Windows and macOS installers on real machines; code signing when certificates exist.
 2. Optional local MCP server (off by default, read-only by default).
-3. SQL Server adapter (`tiberius`).
-4. TLS test fixture; automated UI end-to-end in CI (tauri-driver on Linux runners).
-5. macOS Intel build; auto-update (signed update manifests only).
+3. TLS test fixture; automated UI end-to-end in CI (tauri-driver on Linux runners).
+4. macOS Intel build.
+5. SQL Server: query plans, Windows and Microsoft Entra sign-in.

@@ -9,6 +9,9 @@ MY_PORT="${TPM_TEST_MYSQL_PORT:-53306}"
 MA_PORT="${TPM_TEST_MARIADB_PORT:-53307}"
 SSH_PORT="${TPM_TEST_SSH_PORT:-52222}"
 REDIS_PORT="${TPM_TEST_REDIS_PORT:-56379}"
+MSSQL_PORT="${TPM_TEST_MSSQL_PORT:-51433}"
+# SQL Server wants an upper-case letter, a digit and a symbol in the sa password.
+MSSQL_PASS="Tpm_test_pw1"
 PASS="tpm_test_pw"
 SSH_PASS="tpm_ssh_pw"
 NET="tpm-test-net"
@@ -22,6 +25,7 @@ up() {
   docker run -d --rm --name tpm-test-mariadb -p "127.0.0.1:${MA_PORT}:3306" --tmpfs /var/lib/mysql \
     -e MARIADB_ROOT_PASSWORD="$PASS" -e MARIADB_DATABASE=tpm_test mariadb:11.4 >/dev/null
   docker run -d --rm --name tpm-test-redis -p "127.0.0.1:${REDIS_PORT}:6379" redis:7-alpine >/dev/null
+  mssql_up
   wait_ready
   ssh_up
   print_env
@@ -45,13 +49,31 @@ ssh_up() {
   docker exec -i tpm-test-ssh sh -c 'cat > /home/tpm/.ssh/authorized_keys && chown tpm /home/tpm/.ssh/authorized_keys && chmod 600 /home/tpm/.ssh/authorized_keys' < "$KEY_DIR/id_ed25519.pub"
 }
 
+# SQL Server Developer edition: free for development and testing, never shipped. Starting it
+# accepts Microsoft's licence for that use (ACCEPT_EULA=Y).
+mssql_up() {
+  docker run -d --rm --name tpm-test-mssql -p "127.0.0.1:${MSSQL_PORT}:1433" \
+    -e ACCEPT_EULA=Y -e MSSQL_PID=Developer -e MSSQL_SA_PASSWORD="$MSSQL_PASS" \
+    mcr.microsoft.com/mssql/server:2022-latest >/dev/null
+}
+
+mssql_ready() {
+  for i in $(seq 1 90); do
+    docker exec tpm-test-mssql /opt/mssql-tools18/bin/sqlcmd -C -S 127.0.0.1 -U sa -P "$MSSQL_PASS" \
+      -Q "IF DB_ID('tpm_test') IS NULL CREATE DATABASE tpm_test" >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  echo "SQL Server did not become ready" >&2
+  return 1
+}
+
 wait_ready() {
   for i in $(seq 1 90); do
     ok=0
     docker exec tpm-test-postgres pg_isready -U postgres -d tpm_test >/dev/null 2>&1 && ok=$((ok+1))
     docker exec tpm-test-mysql mysqladmin ping -h 127.0.0.1 -uroot -p"$PASS" --silent >/dev/null 2>&1 && ok=$((ok+1))
     docker exec tpm-test-mariadb mariadb-admin ping -h 127.0.0.1 -uroot -p"$PASS" --silent >/dev/null 2>&1 && ok=$((ok+1))
-    [ "$ok" = 3 ] && return 0
+    [ "$ok" = 3 ] && mssql_ready && return 0
     sleep 2
   done
   echo "databases did not become ready" >&2
@@ -63,12 +85,13 @@ print_env() {
   echo "export TPM_TEST_MYSQL_URL=mysql://root:${PASS}@127.0.0.1:${MY_PORT}/tpm_test?ssl-mode=disabled"
   echo "export TPM_TEST_MARIADB_URL=mariadb://root:${PASS}@127.0.0.1:${MA_PORT}/tpm_test?ssl-mode=disabled"
   echo "export TPM_TEST_REDIS_URL=redis://127.0.0.1:${REDIS_PORT}/15"
+  echo "export TPM_TEST_MSSQL_URL=sqlserver://sa:${MSSQL_PASS}@127.0.0.1:${MSSQL_PORT}/tpm_test?sslmode=require"
   echo "export TPM_TEST_SSH=127.0.0.1:${SSH_PORT}:tpm:${SSH_PASS}"
   echo "export TPM_TEST_SSH_KEY=${KEY_DIR}/id_ed25519"
 }
 
 down() {
-  docker rm -f tpm-test-postgres tpm-test-mysql tpm-test-mariadb tpm-test-ssh tpm-test-redis >/dev/null 2>&1 || true
+  docker rm -f tpm-test-postgres tpm-test-mysql tpm-test-mariadb tpm-test-ssh tpm-test-redis tpm-test-mssql >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
 }
 
@@ -77,6 +100,7 @@ case "${1:-}" in
   down) down ;;
   env) print_env ;;
   ssh) ssh_up && print_env ;;
+  mssql) mssql_up && mssql_ready && print_env ;;
   redis) docker run -d --rm --name tpm-test-redis -p "127.0.0.1:${REDIS_PORT}:6379" redis:7-alpine >/dev/null && print_env ;;
-  *) echo "usage: $0 up|down|env|ssh|redis" >&2; exit 2 ;;
+  *) echo "usage: $0 up|down|env|ssh|redis|mssql" >&2; exit 2 ;;
 esac

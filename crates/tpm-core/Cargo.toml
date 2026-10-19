@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 tokio.workspace = true
-tokio-util.workspace = true
+tokio-util = { workspace = true, features = ["compat"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -31,6 +31,7 @@ futures-util = "0.3.34"
 keyring = { version = "4", optional = true }
 rust_xlsxwriter = { version = "0.99.1", features = ["constant_memory"] }
 russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
+tiberius = { version = "0.13.0", default-features = false, features = ["tds73", "rustls", "chrono"] }
 duckdb = { version = "1.10506", features = ["bundled"], optional = true }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json"] }
 redis = { version = "1.7", default-features = false, features = ["tokio-comp", "tokio-rustls-comp", "tls-rustls-insecure", "streams"] }

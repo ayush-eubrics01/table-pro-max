@@ -4,6 +4,7 @@
 //! so they are validated and quoted here, using the escaping rules of each dialect.
 
 use serde::{Deserialize, Serialize};
+use sqlparser::dialect::{Dialect as ParserDialect, MsSqlDialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect};
 
 use crate::error::{AppError, Result};
 
@@ -13,6 +14,8 @@ pub enum Dialect {
     Postgres,
     Mysql,
     Sqlite,
+    /// Microsoft SQL Server (T-SQL).
+    Mssql,
 }
 
 /// Upper bound on identifier length. PostgreSQL truncates at 63 bytes, MySQL at 64
@@ -26,6 +29,7 @@ impl Dialect {
         Ok(match self {
             Dialect::Postgres | Dialect::Sqlite => format!("\"{}\"", ident.replace('"', "\"\"")),
             Dialect::Mysql => format!("`{}`", ident.replace('`', "``")),
+            Dialect::Mssql => format!("[{}]", ident.replace(']', "]]")),
         })
     }
 
@@ -43,15 +47,18 @@ impl Dialect {
             Dialect::Postgres => format!("${n}"),
             Dialect::Mysql => "?".to_string(),
             Dialect::Sqlite => format!("?{n}"),
+            Dialect::Mssql => format!("@P{n}"),
         }
     }
 
-    /// Null-safe equality operator: `a <op> b` is true when both are NULL.
-    pub fn null_safe_eq(self) -> &'static str {
+    /// `lhs` equals `rhs`, where two NULLs count as equal.
+    pub fn null_safe_eq(self, lhs: &str, rhs: &str) -> String {
         match self {
-            Dialect::Postgres => "IS NOT DISTINCT FROM",
-            Dialect::Mysql => "<=>",
-            Dialect::Sqlite => "IS",
+            Dialect::Postgres => format!("{lhs} IS NOT DISTINCT FROM {rhs}"),
+            Dialect::Mysql => format!("{lhs} <=> {rhs}"),
+            Dialect::Sqlite => format!("{lhs} IS {rhs}"),
+            // IS NOT DISTINCT FROM needs SQL Server 2022; spelled out it works on every version.
+            Dialect::Mssql => format!("({lhs} = {rhs} OR ({lhs} IS NULL AND {rhs} IS NULL))"),
         }
     }
 
@@ -61,7 +68,8 @@ impl Dialect {
             Dialect::Postgres => "ILIKE",
             // MySQL's default collations are case-insensitive; SQLite's LIKE is
             // case-insensitive for ASCII.
-            Dialect::Mysql | Dialect::Sqlite => "LIKE",
+            // SQL Server's default collations are case-insensitive too.
+            Dialect::Mysql | Dialect::Sqlite | Dialect::Mssql => "LIKE",
         }
     }
 
@@ -78,6 +86,29 @@ impl Dialect {
                 }
             }
             Dialect::Sqlite => format!("'{}'", value.replace('\'', "''")),
+            // N'' keeps text outside the database's code page.
+            Dialect::Mssql => format!("N'{}'", value.replace('\'', "''")),
+        }
+    }
+
+    /// A column as the app reads it back: SQL Server's money is cast to decimal, which the driver
+    /// reads exactly (it reads money as a float).
+    pub(crate) fn read_column(self, qualified: &str, quoted: &str, data_type: &str) -> String {
+        let base = data_type.trim().to_ascii_lowercase();
+        if self == Dialect::Mssql && matches!(base.as_str(), "money" | "smallmoney") {
+            format!("CAST({qualified} AS decimal(19,4)) AS {quoted}")
+        } else {
+            qualified.to_string()
+        }
+    }
+
+    /// The SQL parser's dialect, for analysing statements.
+    pub(crate) fn parser(self) -> Box<dyn ParserDialect> {
+        match self {
+            Dialect::Postgres => Box::new(PostgreSqlDialect {}),
+            Dialect::Mysql => Box::new(MySqlDialect {}),
+            Dialect::Sqlite => Box::new(SQLiteDialect {}),
+            Dialect::Mssql => Box::new(MsSqlDialect {}),
         }
     }
 
@@ -86,6 +117,7 @@ impl Dialect {
             Dialect::Postgres => "PostgreSQL",
             Dialect::Mysql => "MySQL",
             Dialect::Sqlite => "SQLite",
+            Dialect::Mssql => "SQL Server",
         }
     }
 }
@@ -146,5 +178,20 @@ mod tests {
         assert_eq!(Dialect::Postgres.quote_literal("it's"), "'it''s'");
         assert_eq!(Dialect::Postgres.quote_literal("a\\b"), "E'a\\\\b'");
         assert_eq!(Dialect::Mysql.quote_literal("a\\'b"), "'a\\\\''b'");
+    }
+
+    #[test]
+    fn sql_server_brackets_placeholders_and_literals() {
+        let d = Dialect::Mssql;
+        assert_eq!(d.quote_ident("order").unwrap(), "[order]");
+        assert_eq!(d.quote_ident("a]b").unwrap(), "[a]]b]");
+        assert_eq!(d.quote_ident("x]; DROP TABLE t; --").unwrap(), "[x]]; DROP TABLE t; --]");
+        assert_eq!(d.qualified(Some("dbo"), "t").unwrap(), "[dbo].[t]");
+        assert_eq!(d.placeholder(3), "@P3");
+        // N'' keeps non-ASCII text intact; backslashes are ordinary characters.
+        assert_eq!(d.quote_literal("it's é\\n"), "N'it''s é\\n'");
+        assert_eq!(d.ilike(), "LIKE");
+        assert_eq!(d.null_safe_eq("[a]", "@P1"), "([a] = @P1 OR ([a] IS NULL AND @P1 IS NULL))");
+        assert_eq!(d.name(), "SQL Server");
     }
 }

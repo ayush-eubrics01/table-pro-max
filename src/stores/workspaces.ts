@@ -87,6 +87,7 @@ interface WorkspacesState {
 function defaultSchema(session: SessionInfo, schemas: string[]): string {
   if (session.dialect === "postgres") return schemas.includes("public") ? "public" : (schemas[0] ?? "public");
   if (session.dialect === "mysql") return session.database || schemas[0] || "";
+  if (session.dialect === "mssql") return schemas.includes("dbo") ? "dbo" : (schemas[0] ?? "dbo");
   return "main";
 }
 
