@@ -248,6 +248,7 @@ pub(crate) mod tests {
 
     pub fn users() -> TableStructure {
         let col = |name: &str, ty: &str, pk: Option<u32>| ColumnInfo {
+            enum_values: Vec::new(),
             name: name.into(),
             data_type: ty.into(),
             nullable: pk.is_none(),

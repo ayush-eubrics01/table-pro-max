@@ -729,6 +729,7 @@ impl Session for MsSession {
                 };
                 let generated = r.bool(9);
                 ColumnInfo {
+                    enum_values: Vec::new(),
                     primary_key: pk_pos(&name),
                     name,
                     data_type,

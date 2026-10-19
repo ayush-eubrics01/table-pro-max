@@ -128,6 +128,7 @@ mod tests {
 
     fn col(name: &str, ty: &str, pk: Option<u32>) -> ColumnInfo {
         ColumnInfo {
+            enum_values: Vec::new(),
             name: name.into(),
             data_type: ty.into(),
             nullable: pk.is_none(),

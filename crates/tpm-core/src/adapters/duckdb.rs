@@ -353,6 +353,7 @@ impl Session for DuckSession {
                 // A generated column's expression is reported as its default.
                 let default = if generated { None } else { r.opt(3) };
                 ColumnInfo {
+                    enum_values: Vec::new(),
                     primary_key: pk.iter().position(|p| *p == name).map(|i| i as u32 + 1),
                     auto_increment: default.as_deref().is_some_and(|d| d.starts_with("nextval(")),
                     nullable: r.bool(2),

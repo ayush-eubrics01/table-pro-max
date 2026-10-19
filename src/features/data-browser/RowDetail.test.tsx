@@ -28,6 +28,21 @@ describe("RowDetail", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("edits an enum field with a list of its values", () => {
+    const onEdit = vi.fn();
+    const columns = [
+      { name: "id", dataType: "integer", nullable: false, default: null, primaryKey: 1, autoIncrement: false, comment: null },
+      { name: "mood", dataType: "mood", nullable: true, default: null, primaryKey: null, autoIncrement: false, comment: null, enumValues: ["sad", "ok", "happy"] },
+    ];
+    render(<RowDetail {...base} columns={columns} row={["1", "ok"]} onEdit={onEdit} />);
+    const list = screen.getByRole("combobox", { name: "mood" });
+    expect(list).toHaveValue("ok");
+    fireEvent.change(list, { target: { value: "sad" } });
+    expect(onEdit).toHaveBeenCalledWith(1, "sad");
+    fireEvent.click(screen.getByRole("button", { name: "Set NULL" }));
+    expect(onEdit).toHaveBeenCalledWith(1, null);
+  });
+
   it("locks fields that cannot be edited", () => {
     render(<RowDetail {...base} />);
     expect(screen.queryByLabelText("id")).not.toBeInTheDocument();

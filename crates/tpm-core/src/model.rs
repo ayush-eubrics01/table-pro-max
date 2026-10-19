@@ -178,6 +178,9 @@ pub struct ColumnInfo {
     /// Computed by the database (`GENERATED ALWAYS AS …`); it can't be written.
     #[serde(default)]
     pub generated: bool,
+    /// The allowed values of an enum column, in declared order (PostgreSQL); empty otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enum_values: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

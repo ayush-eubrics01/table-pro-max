@@ -3099,6 +3099,7 @@ fn restored_structure(point: &crate::restore::RestorePoint, current: Option<Tabl
     for (i, name) in d.columns.iter().enumerate() {
         if s.column(name).is_none() {
             s.columns.push(ColumnInfo {
+                enum_values: Vec::new(),
                 name: name.clone(),
                 data_type: d.types.get(i).cloned().unwrap_or_default(),
                 nullable: true,

@@ -232,6 +232,7 @@ impl Session for SqliteSession {
                     let pk = r.i64(4).filter(|&n| n > 0).map(|n| n as u32);
                     let ty = r.str(1);
                     ColumnInfo {
+                        enum_values: Vec::new(),
                         name: r.str(0),
                         // INTEGER PRIMARY KEY aliases the rowid and auto-assigns values.
                         auto_increment: pk.is_some() && pk_count == 1 && ty.eq_ignore_ascii_case("INTEGER"),
