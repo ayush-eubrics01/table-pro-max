@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { ObjectTabs } from "./ObjectTabs";
 import { useWorkspaces, type Tab, type Workspace } from "../stores/workspaces";
@@ -48,6 +48,54 @@ describe("ObjectTabs", () => {
     expect(screen.getByRole("button", { name: "Close orders" }).closest('[role="tab"]')).toBeNull();
     fireEvent.keyDown(screen.getByRole("tab", { name: /Query 1/ }), { key: " " });
     expect(useWorkspaces.getState().workspaces[0]!.activeTabId).toBe("q1");
+  });
+
+  it("is one Tab stop: only the selected tab is tabbable", () => {
+    render(<ObjectTabs ws={ws} dirtyTables={{}} onClose={() => undefined} />);
+    expect(screen.getByRole("tab", { name: /orders/ })).toHaveAttribute("tabindex", "0");
+    expect(screen.getByRole("tab", { name: /Query 1/ })).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("keeps the first tab tabbable when none is selected", () => {
+    render(<ObjectTabs ws={{ ...ws, activeTabId: null }} dirtyTables={{}} onClose={() => undefined} />);
+    expect(screen.getByRole("tab", { name: /orders/ })).toHaveAttribute("tabindex", "0");
+  });
+
+  it("moves between tabs with the arrow keys, Home and End, wrapping around", () => {
+    const three: Tab[] = [...tabs, { kind: "query", id: "q2", title: "Query 2", sql: "", savedQueryId: null, dirty: false }];
+    const w = { ...ws, tabs: three };
+    useWorkspaces.setState({ workspaces: [w], activeId: w.id });
+    const { rerender } = render(<ObjectTabs ws={w} dirtyTables={{}} onClose={() => undefined} />);
+    const active = () => useWorkspaces.getState().workspaces[0]!.activeTabId;
+    const keyOn = (name: RegExp, key: string) => {
+      fireEvent.keyDown(screen.getByRole("tab", { name }), { key });
+      rerender(<ObjectTabs ws={useWorkspaces.getState().workspaces[0]!} dirtyTables={{}} onClose={() => undefined} />);
+    };
+    keyOn(/orders/, "ArrowRight");
+    expect(active()).toBe("q1");
+    expect(document.activeElement).toBe(screen.getByRole("tab", { name: /Query 1/ }));
+    keyOn(/Query 1/, "End");
+    expect(active()).toBe("q2");
+    keyOn(/Query 2/, "ArrowRight");
+    expect(active()).toBe("t1");
+    keyOn(/orders/, "ArrowLeft");
+    expect(active()).toBe("q2");
+    keyOn(/Query 2/, "Home");
+    expect(active()).toBe("t1");
+    // With a modifier the key belongs to someone else (e.g. the window manager).
+    keyOn(/orders/, "ArrowRight");
+    fireEvent.keyDown(screen.getByRole("tab", { name: /Query 1/ }), { key: "ArrowRight", altKey: true });
+    expect(active()).toBe("q1");
+  });
+
+  it("closes the focused tab with Delete and keeps focus in the strip", async () => {
+    const onClose = vi.fn((t: Tab) => useWorkspaces.getState().closeTab(ws.id, t.id));
+    const { rerender } = render(<ObjectTabs ws={ws} dirtyTables={{}} onClose={onClose} />);
+    screen.getByRole("tab", { name: /orders/ }).focus();
+    fireEvent.keyDown(screen.getByRole("tab", { name: /orders/ }), { key: "Delete" });
+    expect(onClose).toHaveBeenCalledWith(tabs[0]);
+    rerender(<ObjectTabs ws={useWorkspaces.getState().workspaces[0]!} dirtyTables={{}} onClose={onClose} />);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("tab", { name: /Query 1/ })));
   });
 
   it("makes the whole tab clickable: padding sits inside the tab element", () => {
