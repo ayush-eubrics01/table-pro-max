@@ -1781,6 +1781,7 @@ impl Engine {
     /// `apply_change_sets`, keeping a restore point of `kind` per table for the updated and
     /// deleted rows (inserted rows are not kept). `statement` is the point's description; by
     /// default the generated SQL.
+    #[allow(clippy::too_many_arguments)]
     async fn apply_change_sets_as(
         &self,
         session_id: &str,
