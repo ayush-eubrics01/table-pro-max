@@ -7,6 +7,7 @@ use crate::changes::{ChangeSet, ColumnEdit, ColumnValue, EditValue, RowChange};
 use crate::config::Driver;
 use crate::dialect::Dialect;
 use crate::error::{AppError, Result};
+use crate::large_values::is_binary_type;
 use crate::model::Param;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +108,17 @@ pub struct RestoreActions {
     pub after: Vec<String>,
 }
 
+/// A kept value as written back: a binary column's `\x` hex goes back as bytes, for the database
+/// to decode (see `EditValue::Bytes`); everything else as the text it was read as.
+fn restored(d: &RestoreData, column: &str, value: Param) -> EditValue {
+    let binary =
+        d.columns.iter().position(|c| c == column).and_then(|i| d.types.get(i)).is_some_and(|t| is_binary_type(t));
+    match value.as_deref().and_then(|v| v.strip_prefix("\\x")) {
+        Some(hex) if binary => EditValue::Bytes { hex: hex.to_string() },
+        _ => EditValue::Value { value },
+    }
+}
+
 fn value_at(d: &RestoreData, row: &[Param], column: &str) -> Param {
     d.columns.iter().position(|c| c == column).and_then(|i| row.get(i).cloned()).flatten()
 }
@@ -124,7 +136,7 @@ fn reinsert(d: &RestoreData, row: &[Param]) -> RowChange {
             .filter(|(_, c)| !d.generated.contains(c))
             .map(|(i, c)| ColumnEdit {
                 column: c.clone(),
-                value: EditValue::Value { value: row.get(i).cloned().flatten() },
+                value: restored(d, c, row.get(i).cloned().flatten()),
                 original: None,
             })
             .collect(),
@@ -171,7 +183,7 @@ pub fn build_restore(
                             })
                             .map(|(j, c)| ColumnEdit {
                                 column: c.clone(),
-                                value: EditValue::Value { value: before.get(j).cloned().flatten() },
+                                value: restored(d, c, before.get(j).cloned().flatten()),
                                 // The value the change left behind: if it differs now, someone
                                 // changed the row since, and the restore stops.
                                 original: Some(after.get(j).cloned().flatten()),
@@ -217,7 +229,7 @@ pub fn build_restore(
                     key: key_of(d, before),
                     edits: vec![ColumnEdit {
                         column: col.clone(),
-                        value: EditValue::Value { value: value_at(d, before, &col) },
+                        value: restored(d, &col, value_at(d, before, &col)),
                         original: None,
                     }],
                 });
@@ -346,6 +358,22 @@ mod tests {
             row_count: 0,
             bytes: 0,
         }
+    }
+
+    #[test]
+    fn binary_values_go_back_as_bytes() {
+        let mut p = point(
+            RestoreKind::Delete,
+            vec![vec![s("1"), s("\\xdead00"), s("\\x")], vec![s("2"), None, s("plain")]],
+            vec![None, None],
+        );
+        p.data.types = vec!["integer".into(), "BLOB".into(), "text".into()];
+        let a = build_restore(&p, Driver::Sqlite, None, true).unwrap();
+        let RowChange::Insert { values } = &a.sets[0].changes[0] else { panic!() };
+        assert_eq!(values[1].value, EditValue::Bytes { hex: "dead00".into() });
+        assert_eq!(values[2].value, EditValue::Value { value: s("\\x") }, "text that looks like hex stays text");
+        let RowChange::Insert { values } = &a.sets[0].changes[1] else { panic!() };
+        assert_eq!(values[1].value, EditValue::Value { value: None }, "NULL stays NULL");
     }
 
     #[test]
