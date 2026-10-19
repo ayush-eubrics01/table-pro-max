@@ -25,7 +25,7 @@ export function Legend({ names }: { names: string[] }) {
   return (
     <div className="chart-legend" role="list">
       {names.map((n, i) => (
-        <span key={n} role="listitem">
+        <span key={i} role="listitem">
           <i style={{ background: color(i) }} aria-hidden />
           {n}
         </span>
@@ -40,7 +40,7 @@ function Tooltip({ x, y, title, rows, width }: { x: number; y: number; title: st
     <div className="chart-tooltip" style={{ left, top: Math.max(0, y - 10) }} role="tooltip">
       <div className="chart-tooltip-title">{title}</div>
       {rows.map((r) => (
-        <div key={r.name} className="chart-tooltip-row">
+        <div key={r.i} className="chart-tooltip-row">
           <i style={{ background: color(r.i) }} aria-hidden />
           <span>{r.name}</span>
           <strong>{r.value}</strong>
@@ -124,12 +124,12 @@ export function LineChart({ data }: { data: Dataset }) {
           />
         )}
         {data.series.map((s, i) => (
-          <path key={s.name} d={path(s.values)} fill="none" stroke={color(i)} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+          <path key={i} d={path(s.values)} fill="none" stroke={color(i)} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
         ))}
         {data.series.map((s, i) => {
           const v = s.values[last];
           return v === null || v === undefined ? null : (
-            <circle key={s.name} cx={xAt(last)} cy={y(v)} r={4} fill={color(i)} stroke="var(--surface)" strokeWidth={2} />
+            <circle key={i} cx={xAt(last)} cy={y(v)} r={4} fill={color(i)} stroke="var(--surface)" strokeWidth={2} />
           );
         })}
         {hover !== null && (
@@ -138,7 +138,7 @@ export function LineChart({ data }: { data: Dataset }) {
             {data.series.map((s, i) => {
               const v = s.values[hover];
               return v === null || v === undefined ? null : (
-                <circle key={s.name} cx={xAt(hover)} cy={y(v)} r={4} fill={color(i)} stroke="var(--surface)" strokeWidth={2} />
+                <circle key={i} cx={xAt(hover)} cy={y(v)} r={4} fill={color(i)} stroke="var(--surface)" strokeWidth={2} />
               );
             })}
           </g>
@@ -201,7 +201,7 @@ export function BarChart({ data }: { data: Dataset }) {
               {data.series.map((s, j) => {
                 const v = s.values[i];
                 if (v === null || v === undefined) return null;
-                return <path key={s.name} d={bar(xAt(i) - groupW / 2 + j * (barW + GAP), v)} fill={color(j)} opacity={hover === null || hover === i ? 1 : 0.55} />;
+                return <path key={j} d={bar(xAt(i) - groupW / 2 + j * (barW + GAP), v)} fill={color(j)} opacity={hover === null || hover === i ? 1 : 0.55} />;
               })}
             </g>
           );
@@ -243,10 +243,10 @@ export function DonutChart({ slices }: { slices: Slice[] }) {
   return (
     <div className="chart chart-donut">
       <svg width={180} height={180} role="img" aria-label="Share chart" fillRule="evenodd">
-        {arcs.map(({ d, i, s }) => (
+        {arcs.map(({ d, i }) => (
           // The 2px surface-colored stroke is the gap between neighbouring slices.
           <path
-            key={s.label}
+            key={i}
             d={d}
             fill={color(i)}
             stroke="var(--surface)"
@@ -262,7 +262,7 @@ export function DonutChart({ slices }: { slices: Slice[] }) {
       </svg>
       <div className="chart-legend chart-legend-col" role="list">
         {slices.map((s, i) => (
-          <span key={s.label} role="listitem" className={hover === i ? "active" : undefined}>
+          <span key={i} role="listitem" className={hover === i ? "active" : undefined}>
             <i style={{ background: color(i) }} aria-hidden />
             {s.label}
             <strong>

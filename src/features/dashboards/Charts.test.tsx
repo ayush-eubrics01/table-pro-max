@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { BarChart, DonutChart, Kpi, Legend, LineChart } from "./Charts";
 import type { Dataset } from "./chartData";
@@ -262,5 +262,18 @@ describe("Kpi", () => {
     render(<Kpi value={5} previous={0} />);
     expect(screen.getByText("5")).toBeInTheDocument();
     expect(document.querySelector(".kpi-delta")).not.toBeInTheDocument();
+  });
+});
+
+describe("charts with repeated names", () => {
+  it("draw every series and slice when names repeat (count(*) twice, two NULL labels)", () => {
+    const errors: unknown[][] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...a) => void errors.push(a));
+    const twice: Dataset = { x: days, series: [{ name: "count", values: [1, 2, 3] }, { name: "count", values: [4, 5, 6] }] };
+    render(<BarChart data={twice} />);
+    render(<LineChart data={twice} />);
+    render(<DonutChart slices={[{ label: "NULL", value: 5 }, { label: "NULL", value: 4 }, { label: "Other", value: 3 }, { label: "Other", value: 2 }]} />);
+    spy.mockRestore();
+    expect(errors.filter((a) => String(a[0]).includes("same key"))).toEqual([]);
   });
 });

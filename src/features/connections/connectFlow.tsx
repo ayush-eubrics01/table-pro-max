@@ -80,6 +80,8 @@ export async function connectWithPrompt(
   } = {},
 ): Promise<SessionInfo | null> {
   let secrets: Secrets = { password: null, sshSecret: null };
+  // Five wrong answers in a row: the last error says why it stopped.
+  let last: BackendError | null = null;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       options.onAttempt?.();
@@ -97,33 +99,42 @@ export async function connectWithPrompt(
       if (options.cancelled?.()) throw err;
       const next = await resolveConnectError(err, profile, secrets);
       if (!next) {
-        if (err.code === "password_required" || err.code === "ssh_secret_required" || err.code === "ssh_unknown_host") return null;
+        if (declined(err)) return null;
         throw err;
       }
       secrets = next;
+      last = err;
     }
   }
-  return null;
+  throw last;
 }
 
 export async function reconnectWithPrompt(sessionId: string, profile: ConnectionProfile): Promise<SessionInfo | null> {
   let secrets: Secrets = { password: null, sshSecret: null };
+  // Five wrong answers in a row: the last error says why it stopped.
+  let last: BackendError | null = null;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       return await api.reconnect(sessionId, secrets.password, secrets.sshSecret);
     } catch (e) {
       const err = toError(e);
       const next = await resolveConnectError(err, profile, secrets);
-      if (!next) throw err;
+      if (!next) {
+        if (declined(err)) return null;
+        throw err;
+      }
       secrets = next;
+      last = err;
     }
   }
-  return null;
+  throw last;
 }
 
 /** MongoDB counterpart of `connectWithPrompt`: production opens read-only unless `lockProduction` is false. */
 export async function connectMongoWithPrompt(profile: ConnectionProfile, opts: { lockProduction?: boolean } = {}) {
   let secrets: Secrets = { password: null, sshSecret: null };
+  // Five wrong answers in a row: the last error says why it stopped.
+  let last: BackendError | null = null;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       return await api.mongoConnect(profile.id, {
@@ -136,18 +147,21 @@ export async function connectMongoWithPrompt(profile: ConnectionProfile, opts: {
       const err = toError(e);
       const next = await resolveConnectError(err, profile, secrets);
       if (!next) {
-        if (err.code === "password_required" || err.code === "ssh_secret_required" || err.code === "ssh_unknown_host") return null;
+        if (declined(err)) return null;
         throw err;
       }
       secrets = next;
+      last = err;
     }
   }
-  return null;
+  throw last;
 }
 
 /** Redis counterpart of `connectWithPrompt`. */
 export async function connectRedisWithPrompt(profile: ConnectionProfile) {
   let secrets: Secrets = { password: null, sshSecret: null };
+  // Five wrong answers in a row: the last error says why it stopped.
+  let last: BackendError | null = null;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       return await api.redisConnect(profile.id, {
@@ -159,11 +173,17 @@ export async function connectRedisWithPrompt(profile: ConnectionProfile) {
       const err = toError(e);
       const next = await resolveConnectError(err, profile, secrets);
       if (!next) {
-        if (err.code === "password_required" || err.code === "ssh_secret_required" || err.code === "ssh_unknown_host") return null;
+        if (declined(err)) return null;
         throw err;
       }
       secrets = next;
+      last = err;
     }
   }
-  return null;
+  throw last;
+}
+
+/** The user closed a password, SSH secret or host-key prompt: nothing to report. */
+function declined(err: BackendError): boolean {
+  return err.code === "password_required" || err.code === "ssh_secret_required" || err.code === "ssh_unknown_host";
 }

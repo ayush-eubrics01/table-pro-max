@@ -726,7 +726,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
               {error.detail && <pre>{error.detail}</pre>}
               {(error.kind === "network" || error.code === "broken") && (
                 <div style={{ marginTop: 8 }}>
-                  <button className="btn" onClick={() => onReconnect().then(() => load())}>
+                  <button className="btn" onClick={() => void onReconnect().then(() => load(), (e) => notifyError(e, "Reconnect failed"))}>
                     Reconnect
                   </button>
                 </div>

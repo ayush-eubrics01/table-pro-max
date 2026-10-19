@@ -176,9 +176,35 @@ describe("ImportDialog: parsing options", () => {
   it("turns the NULL list into values, with (empty) standing for an empty field", async () => {
     renderDialog();
     await chooseFile();
-    fireEvent.change(screen.getByRole("textbox", { name: "Treat as NULL" }), { target: { value: "(empty), NA ,null" } });
+    const box = screen.getByRole("textbox", { name: "Treat as NULL" });
+    fireEvent.change(box, { target: { value: "(empty), NA ,null" } });
+    fireEvent.blur(box);
     await waitFor(() => expect(lastPreviewOptions().nullValues).toEqual(["", "NA", "null"]));
-    expect(screen.getByRole("textbox", { name: "Treat as NULL" })).toHaveValue("(empty), NA, null");
+  });
+
+  it("lets the NULL list be typed as written, and applies it when the field is left", async () => {
+    renderDialog();
+    await chooseFile();
+    const reads = callsOf("preview_import").length;
+    const box = screen.getByRole("textbox", { name: "Treat as NULL" });
+    fireEvent.change(box, { target: { value: "(empty), NULL," } });
+    expect(box).toHaveValue("(empty), NULL,");
+    fireEvent.change(box, { target: { value: "(empty), NULL, N" } });
+    expect(box).toHaveValue("(empty), NULL, N");
+    expect(callsOf("preview_import")).toHaveLength(reads);
+    fireEvent.blur(box);
+    await waitFor(() => expect(lastPreviewOptions().nullValues).toEqual(["", "NULL", "N"]));
+  });
+
+  it("goes back to commas when a .csv follows a .tsv", async () => {
+    pickedPath = "/data/a.tsv";
+    renderDialog();
+    await chooseFile();
+    await waitFor(() => expect(lastPreviewOptions().delimiter).toBe("\t"));
+    pickedPath = "/data/b.csv";
+    fireEvent.click(screen.getByRole("button", { name: /Choose|Change/ }));
+    await waitFor(() => expect(callsOf("preview_import").at(-1)!.path).toBe("/data/b.csv"));
+    expect(lastPreviewOptions().delimiter).toBe(",");
   });
 
   it("clears an earlier preview error once the file reads cleanly with new options", async () => {
@@ -302,6 +328,12 @@ describe("ImportDialog: into a new table", () => {
     expect(callsOf("import_file")).toHaveLength(0);
   });
 
+  it("opens on an existing table on a read-only session", async () => {
+    renderDialog({ session: { ...session, readOnly: true } });
+    await chooseFile();
+    expect(combo("Import into").value).toBe("existing");
+  });
+
   it("does not offer a new table on a read-only session", async () => {
     renderDialog({ session: { ...session, readOnly: true }, initialTable: "users" });
     await chooseFile();
@@ -385,6 +417,34 @@ describe("ImportDialog: into an existing table", () => {
     expect(reviewButton()).toBeDisabled();
   });
 
+  it("keeps the table's column error when a file is chosen afterwards", async () => {
+    setup({
+      table_structure: () => {
+        throw { kind: "not_found", message: 'relation "users" does not exist' };
+      },
+    });
+    renderDialog({ initialTable: "users" });
+    await chooseFile();
+    expect(await screen.findByText('relation "users" does not exist')).toBeInTheDocument();
+  });
+
+  it("maps the table chosen last, even when an earlier table's columns arrive later", async () => {
+    const orders = { ...usersStructure, name: "orders", columns: [{ ...usersStructure.columns[0]!, name: "total" }] };
+    setup({
+      table_structure: (args) =>
+        args.table === "users" ? new Promise((r) => setTimeout(() => r(usersStructure), 80)) : orders,
+    });
+    renderDialog();
+    await chooseFile();
+    fireEvent.change(combo("Import into"), { target: { value: "existing" } });
+    fireEvent.change(combo("Table"), { target: { value: "users" } });
+    fireEvent.change(combo("Table"), { target: { value: "orders" } });
+    await screen.findByRole("combobox", { name: "Source for total" });
+    await new Promise((r) => setTimeout(r, 150));
+    expect(screen.queryByRole("combobox", { name: "Source for id" })).toBeNull();
+    expect(screen.getByRole("combobox", { name: "Source for total" })).toBeInTheDocument();
+  });
+
   it("switching to a new table maps every file column and clears the table name", async () => {
     renderDialog({ initialTable: "users" });
     await chooseFile();
@@ -466,6 +526,20 @@ describe("ImportDialog: review and running", () => {
     expect(useUi.getState().toasts.at(-1)?.message).toBe("Imported 5 rows into users");
     const [first, second] = callsOf("import_file").map((a) => (a.request as { jobId: string }).jobId);
     expect(first).not.toBe(second);
+  });
+
+  it("says so when a cancel can't be sent, instead of failing silently", async () => {
+    setup({
+      import_file: () => new Promise(() => undefined),
+      cancel_job: () => {
+        throw { kind: "internal", message: "the job is gone" };
+      },
+    });
+    renderDialog({ initialTable: "users" });
+    const dialog = await toReview();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Import rows" }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Cancel import" }));
+    await waitFor(() => expect(useUi.getState().toasts.map((t) => t.message).join()).toMatch(/Could not cancel the import/));
   });
 
   it("shows progress for its own job and cancels it on request", async () => {

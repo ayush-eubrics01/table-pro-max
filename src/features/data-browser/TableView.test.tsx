@@ -144,6 +144,25 @@ describe("TableView", () => {
     expect(set.changes).toEqual([{ type: "update", key: [{ column: "id", value: "1" }], edits: [{ column: "photo", value: { kind: "bytes", hex: "cafe" }, original: null }] }]);
   });
 
+  it("says why a Reconnect from a table failed, instead of failing silently", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "table_structure") return structure;
+      if (cmd === "browse_table") throw { kind: "network", message: "server closed the connection" };
+      return cmd === "list_filter_presets" ? [] : null;
+    });
+    const onReconnect = vi.fn(async () => {
+      throw { kind: "authentication", message: "password authentication failed" };
+    });
+    render(
+      <>
+        <TableView session={session} schema="public" table="users" onReconnect={onReconnect} />
+        <Overlays />
+      </>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Reconnect" }));
+    await waitFor(() => expect(useUi.getState().toasts.map((t) => t.message).join()).toMatch(/Reconnect failed.*password authentication failed/));
+  });
+
   it("discard drops pending edits without touching the database", async () => {
     renderView();
     const editor = await openEditor("grace@example.com");

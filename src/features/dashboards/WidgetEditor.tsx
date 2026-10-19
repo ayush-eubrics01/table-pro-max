@@ -6,7 +6,7 @@ import { Dialog } from "../../components/Dialog";
 import { WidgetContent } from "./WidgetContent";
 
 const TYPES: { value: WidgetType; label: string; help: string }[] = [
-  { value: "kpi", label: "Number", help: "First numeric value of the first row. A second numeric column is shown as the previous value." },
+  { value: "kpi", label: "Number", help: "First numeric value of the first row. The column right after it, if numeric, is shown as the previous value." },
   { value: "line", label: "Line chart", help: "First column on the x-axis (often a date), numeric columns as lines." },
   { value: "bar", label: "Bar chart", help: "First column as categories, numeric columns as bars." },
   { value: "pie", label: "Share (donut)", help: "Label column and a positive numeric column; the largest five slices plus Other." },

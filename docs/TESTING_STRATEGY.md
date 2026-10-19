@@ -7,6 +7,7 @@
 | Rust unit tests | `cargo test -p tpm-core --lib` | Redaction, URL parsing, quoting, splitting, safety analysis, filter/browse/change/DDL generation, storage migrations and CRUD, credential memory store |
 | Rust integration | `scripts/test-db.sh up` then `eval "$(scripts/test-db.sh env)"` and `cargo test -p tpm-core --test integration` | One shared scenario per driver against real servers (below) |
 | Frontend unit + component | `npm test`; CI runs `npm run test:coverage`, which fails if coverage of `src/features` and `src/components` drops below the floor in `vite.config.ts` (raise it as tests are added) | Pending-change model, filter model, fuzzy ranking, workspace store (tab isolation, reopen, reorder, restore snapshot), TableView edit → review → commit and discard with mocked IPC, read-only grids, FilterBuilder (type-aware operators, nesting, 40+ conditions), ConnectionForm (URL import, secrets kept out of profiles, keychain fallback, TLS warning) |
+| End to end (the built app) | `npm run e2e` (Linux: a debug build from `npx tauri build --debug --no-bundle`, `tauri-driver`, `WebKitWebDriver` and a display; CI runs it under `xvfb-run`; see `e2e/harness.mjs`) | The app driven through its UI with WebDriver, cut off from the user's data (scratch XDG dirs, no D-Bus, no keyring): the first-run update question answered without any network call, a SQLite connection added and opened, a query run, Ctrl+K opening a table, a cell edited, reviewed and committed, a DELETE of every row confirmed with its restore point kept and restored, Explain. A failed step saves a screenshot (a CI artifact) |
 | Rust HTTP (AI) | `cargo test -p tpm-core --test ai_http` (add `TPM_AI_LIVE_TLS=1` for one live TLS check against api.anthropic.com with an invalid key) | AI client against a fake OpenAI-compatible server on 127.0.0.1: request body equals the preview, bearer auth, 404 mapping, cancel within 200 ms, connection refused |
 | Updates | `cargo test -p tpm-core updates::`, `cargo test -p table-pro-max --lib update` (needs the WebKitGTK toolchain), `npx vitest run src/features/updates scripts` | Consent and daily-interval rules (including a clock that moved backwards), plugin error mapping, install-kind detection, consent dialog, banner (notes as text, pending-edit warning, one install per click, Download fallback), manifest generation for every platform and for pre-release versions |
 | Static checks | `cargo clippy --workspace --all-targets`, `cargo fmt --check`, `npm run typecheck`, `npm run lint` | |
@@ -112,9 +113,8 @@ draining a million rows. Imports run in one transaction with parameterised multi
 Network latency to a remote server will dominate these numbers in real use.
 
 ## Planned
-* Automated UI end-to-end: either `tauri-driver` + WebKitWebDriver in CI (Linux runners can
-  install `webkit2gtk-driver`) or Playwright against the Vite build with a command bridge.
-  (Roadmap 0.11.0, H10: tauri-driver.)
+* More end-to-end flows: server databases from the test containers, MongoDB, production opening
+  read-only; Windows (tauri-driver drives Edge WebDriver). macOS has no WebDriver for its webview.
 * QueryTab component tests (CodeMirror in jsdom).
 * TLS integration fixture (self-signed CA) for all network drivers.
 * Grid scrolling frame-time measurement in the webview.
