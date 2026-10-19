@@ -2,7 +2,9 @@
 //! their rows. See docs/superpowers/specs/2026-10-14-restore-history-design.md.
 
 use sqlparser::ast::{
-    AlterTableOperation, AssignmentTarget, FromTable, ObjectName, ObjectType, SetExpr, Statement, TableFactor,
+    AlterTableOperation, Assignment, AssignmentTarget, ConflictTarget, Expr, FromTable, Ident, Insert, ObjectName,
+    ObjectType, OnConflictAction, OnInsert, SetExpr, SqliteOnConflict, Statement, TableFactor, TableObject,
+    UnaryOperator, Value,
 };
 use sqlparser::parser::Parser;
 
@@ -25,6 +27,9 @@ pub const BINARY: &str = "the table has binary columns";
 pub const MERGE: &str = "uses MERGE";
 pub const DROPS_KEY: &str = "drops a primary-key column";
 pub const DROPPED_UNCLEAR: &str = "the dropped column could not be identified";
+pub const UPSERT_QUERY: &str = "the upsert's rows come from a query";
+pub const UPSERT_CONSTRAINT: &str = "the upsert names a constraint, not columns";
+pub const UPSERT_KEY: &str = "the upsert's key values are not plain values";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureKind {
@@ -51,6 +56,20 @@ pub struct CapturePlan {
     pub where_sql: Option<String>,
     pub set_columns: Vec<String>,
     pub column: Option<String>,
+    /// An upsert: its rows are found by the keys they hold, not by a WHERE.
+    pub upsert: Option<Box<Upsert>>,
+}
+
+/// The rows an upsert (`INSERT … ON CONFLICT`, `ON DUPLICATE KEY UPDATE`, `REPLACE`) inserts,
+/// from which the existing rows it may overwrite are found before it runs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Upsert {
+    /// The inserted columns as named; empty means the table's columns in order.
+    pub columns: Vec<String>,
+    /// Each row's values: the literal as written, or `None` for any other expression.
+    pub rows: Vec<Vec<Option<String>>>,
+    /// `ON CONFLICT (columns)`; `None` when any unique key may conflict.
+    pub target: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,7 +90,7 @@ fn table_ref(name: &ObjectName) -> TableRef {
 }
 
 fn new_plan(kind: CaptureKind, table: TableRef) -> CapturePlan {
-    CapturePlan { kind, table, alias: None, where_sql: None, set_columns: vec![], column: None }
+    CapturePlan { kind, table, alias: None, where_sql: None, set_columns: vec![], column: None, upsert: None }
 }
 
 /// Statements whose leading keyword means they change rows or drop things.
@@ -160,7 +179,154 @@ pub fn plan_statement(sql: &str, dialect: Dialect) -> PlanOutcome {
         }
         Statement::Query(q) if matches!(*q.body, SetExpr::Update(_) | SetExpr::Delete(_)) => unsupported(WITH),
         Statement::Merge(_) => unsupported(MERGE),
+        Statement::Insert(i) => plan_upsert(i, dialect),
         _ => PlanOutcome::None,
+    }
+}
+
+/// An identifier as the database stores it: PostgreSQL folds unquoted names to lower case.
+fn ident_name(i: &Ident, dialect: Dialect) -> String {
+    if i.quote_style.is_none() && dialect == Dialect::Postgres { i.value.to_lowercase() } else { i.value.clone() }
+}
+
+fn assigned_columns(assignments: &[Assignment]) -> Vec<String> {
+    assignments
+        .iter()
+        .flat_map(|a| match &a.target {
+            AssignmentTarget::ColumnName(n) => vec![table_ref(n).name],
+            AssignmentTarget::Tuple(ns) => ns.iter().map(|n| table_ref(n).name).collect(),
+        })
+        .collect()
+}
+
+/// A value an upsert's key can be looked up by: a literal (a negative number too), not a
+/// placeholder or any other expression.
+fn literal(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Value(v) if !matches!(v.value, Value::Placeholder(_)) => Some(v.to_string()),
+        Expr::UnaryOp { op: UnaryOperator::Minus, expr } => match expr.as_ref() {
+            Expr::Value(v) if matches!(v.value, Value::Number(..)) => Some(format!("-{v}")),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Upserts overwrite existing rows; a plain INSERT (or one that does nothing on a conflict) doesn't.
+fn plan_upsert(i: &Insert, dialect: Dialect) -> PlanOutcome {
+    let replaces = i.replace_into || matches!(i.or, Some(SqliteOnConflict::Replace));
+    let (target, set_columns) = match &i.on {
+        Some(OnInsert::OnConflict(c)) => match &c.action {
+            OnConflictAction::DoNothing => return PlanOutcome::None,
+            OnConflictAction::DoUpdate(u) => match &c.conflict_target {
+                Some(ConflictTarget::Columns(cols)) => {
+                    (Some(cols.iter().map(|c| ident_name(c, dialect)).collect()), assigned_columns(&u.assignments))
+                }
+                Some(ConflictTarget::OnConstraint(_)) => return unsupported(UPSERT_CONSTRAINT),
+                None => (None, assigned_columns(&u.assignments)),
+            },
+        },
+        Some(OnInsert::DuplicateKeyUpdate(a)) => (None, assigned_columns(a)),
+        None if replaces => (None, vec![]),
+        _ => return PlanOutcome::None,
+    };
+    let TableObject::TableName(name) = &i.table else { return unsupported(UNREADABLE) };
+    let Some(source) = &i.source else { return unsupported(UNREADABLE) };
+    if source.with.is_some() {
+        return unsupported(WITH);
+    }
+    let SetExpr::Values(values) = source.body.as_ref() else { return unsupported(UPSERT_QUERY) };
+    let columns = i
+        .columns
+        .iter()
+        .map(|c| c.0.last().and_then(|p| p.as_ident()).map(|i| ident_name(i, dialect)).unwrap_or_default())
+        .collect();
+    let rows = values.rows.iter().map(|r| r.content.iter().map(literal).collect()).collect();
+    let mut p = new_plan(CaptureKind::Update, table_ref(name));
+    p.set_columns = set_columns;
+    p.upsert = Some(Box::new(Upsert { columns, rows, target }));
+    PlanOutcome::Capture(p)
+}
+
+/// The keys an upsert's rows can conflict on, as the table's own column names: its target, or
+/// else the primary key and each unique index, among those whose columns it inserts.
+fn upsert_keys<'a>(u: &Upsert, s: &'a TableStructure) -> Vec<Vec<&'a ColumnInfo>> {
+    let column = |name: &str| {
+        s.columns
+            .iter()
+            .find(|c| c.name == name)
+            .or_else(|| s.columns.iter().find(|c| c.name.eq_ignore_ascii_case(name)))
+    };
+    let resolve = |names: &[String]| -> Option<Vec<&'a ColumnInfo>> { names.iter().map(|n| column(n)).collect() };
+    let mut keys: Vec<Vec<&'a ColumnInfo>> = Vec::new();
+    let pk: Vec<&ColumnInfo> = s.primary_key();
+    let unique: Vec<Vec<&ColumnInfo>> =
+        s.indexes.iter().filter(|i| i.unique && !i.primary).filter_map(|i| resolve(&i.columns)).collect();
+    let same = |a: &[&ColumnInfo], b: &[&ColumnInfo]| {
+        a.len() == b.len() && a.iter().all(|x| b.iter().any(|y| y.name == x.name))
+    };
+    match &u.target {
+        Some(t) => {
+            // The target must be a key of the table; otherwise its rows can't be told apart.
+            if let Some(t) = resolve(t)
+                && (same(&t, &pk) || unique.iter().any(|k| same(&t, k)))
+            {
+                keys.push(t);
+            }
+        }
+        None => {
+            if !pk.is_empty() {
+                keys.push(pk);
+            }
+            keys.extend(unique);
+        }
+    }
+    let inserted: Vec<&str> = if u.columns.is_empty() {
+        s.columns.iter().map(|c| c.name.as_str()).collect()
+    } else {
+        u.columns.iter().map(String::as_str).collect()
+    };
+    keys.retain(|k| k.iter().all(|c| inserted.iter().any(|i| i.eq_ignore_ascii_case(&c.name))));
+    keys
+}
+
+/// The WHERE that finds the existing rows an upsert may overwrite; `None` when a key value is
+/// not a plain value, or no key can be matched.
+fn upsert_where(u: &Upsert, s: &TableStructure, dialect: Dialect) -> Option<String> {
+    let keys = upsert_keys(u, s);
+    if keys.is_empty() {
+        return None;
+    }
+    let position = |name: &str| -> Option<usize> {
+        if u.columns.is_empty() {
+            s.columns.iter().position(|c| c.name == name)
+        } else {
+            u.columns.iter().position(|c| c.eq_ignore_ascii_case(name))
+        }
+    };
+    let mut rows = Vec::with_capacity(u.rows.len());
+    for row in &u.rows {
+        let mut terms = Vec::with_capacity(keys.len());
+        for key in &keys {
+            let mut parts = Vec::with_capacity(key.len());
+            for c in key {
+                let value = row.get(position(&c.name)?)?.as_ref()?;
+                parts.push(format!("{} = {value}", dialect.quote_ident(&c.name).ok()?));
+            }
+            terms.push(parts.join(" AND "));
+        }
+        rows.push(format!("({})", terms.join(" OR ")));
+    }
+    Some(rows.join(" OR "))
+}
+
+/// The statement's own WHERE, or for an upsert the one built from its keys.
+fn plan_where(plan: &CapturePlan, s: &TableStructure, dialect: Dialect) -> Result<Option<String>> {
+    match &plan.upsert {
+        None => Ok(plan.where_sql.clone()),
+        Some(u) => {
+            upsert_where(u, s, dialect).map(Some).ok_or_else(|| crate::error::AppError::invalid_config(UPSERT_KEY))
+        }
     }
 }
 
@@ -180,6 +346,11 @@ pub fn structure_reason(plan: &CapturePlan, s: &TableStructure, driver: Driver) 
     if plan.kind == CaptureKind::Update && plan.set_columns.iter().any(|c| pk.iter().any(|k| k.eq_ignore_ascii_case(c)))
     {
         return Some(CHANGES_KEY.into());
+    }
+    if let Some(u) = &plan.upsert
+        && upsert_where(u, s, driver.dialect()).is_none()
+    {
+        return Some(UPSERT_KEY.into());
     }
     if has_binary_columns(s, driver) {
         return Some(BINARY.into());
@@ -244,7 +415,7 @@ pub fn capture_select(plan: &CapturePlan, s: &TableStructure, dialect: Dialect, 
     if lock && dialect == Dialect::Mssql {
         sql.push_str(" WITH (UPDLOCK, HOLDLOCK)");
     }
-    if let Some(w) = &plan.where_sql {
+    if let Some(w) = plan_where(plan, s, dialect)? {
         sql.push_str(&format!(" WHERE {w}"));
     }
     if lock && dialect != Dialect::Mssql {
@@ -277,7 +448,7 @@ pub fn count_select(plan: &CapturePlan, s: &TableStructure, driver: Driver, limi
         // An estimate: it must not wait behind another session's open transaction.
         inner.push_str(" WITH (NOLOCK)");
     }
-    if let (Some(w), CaptureKind::Update | CaptureKind::Delete) = (&plan.where_sql, plan.kind) {
+    if let (Some(w), CaptureKind::Update | CaptureKind::Delete) = (plan_where(plan, s, dialect)?, plan.kind) {
         inner.push_str(&format!(" WHERE {w}"));
     }
     if driver == Driver::Mssql {
@@ -323,6 +494,89 @@ mod tests {
             columns: vec![col("id", "integer", Some(1)), col("status", "text", None), col("doc", "bytea", None)],
             ..Default::default()
         }
+    }
+
+    fn users() -> TableStructure {
+        use crate::model::IndexInfo;
+        TableStructure {
+            name: "users".into(),
+            columns: vec![col("id", "integer", Some(1)), col("email", "text", None), col("name", "text", None)],
+            indexes: vec![IndexInfo {
+                name: "users_email".into(),
+                columns: vec!["email".into()],
+                unique: true,
+                primary: false,
+                definition: None,
+            }],
+            ..orders()
+        }
+    }
+
+    #[test]
+    fn upserts_with_values_capture_the_rows_they_may_overwrite() {
+        let p = cap("INSERT INTO users (id, email, name) VALUES (1, 'a@x', 'A'), (2, 'b@x', now()) \
+                     ON CONFLICT (id) DO UPDATE SET name = excluded.name");
+        assert_eq!(p.kind, CaptureKind::Update);
+        assert_eq!(p.set_columns, vec!["name"]);
+        assert_eq!(structure_reason(&p, &users(), Driver::Postgres), None);
+        // The conflict target decides which existing rows can be overwritten.
+        let sql = capture_select(&p, &users(), Dialect::Postgres, false).unwrap();
+        assert!(sql.ends_with(r#"FROM users WHERE ("id" = 1) OR ("id" = 2)"#), "{sql}");
+        // Nothing existing changes with DO NOTHING; a plain INSERT keeps no restore point either.
+        assert_eq!(plan("INSERT INTO users (id) VALUES (1) ON CONFLICT (id) DO NOTHING"), PlanOutcome::None);
+        assert_eq!(plan("INSERT INTO users (id) VALUES (1)"), PlanOutcome::None);
+    }
+
+    #[test]
+    fn upserts_without_a_target_match_every_key_they_hold() {
+        // MySQL's ON DUPLICATE KEY and REPLACE conflict on the primary key or any unique key.
+        let p = match plan_statement(
+            "INSERT INTO users (id, email, name) VALUES (1, 'a@x', 'A') ON DUPLICATE KEY UPDATE name = VALUES(name)",
+            Dialect::Mysql,
+        ) {
+            PlanOutcome::Capture(p) => p,
+            other => panic!("{other:?}"),
+        };
+        let sql = capture_select(&p, &users(), Dialect::Mysql, false).unwrap();
+        assert!(sql.ends_with("FROM users WHERE (`id` = 1 OR `email` = 'a@x')"), "{sql}");
+        for (sql, dialect) in [
+            ("REPLACE INTO users (id, name) VALUES (-3, 'C')", Dialect::Mysql),
+            ("INSERT OR REPLACE INTO users (id, name) VALUES (-3, 'C')", Dialect::Sqlite),
+        ] {
+            let PlanOutcome::Capture(p) = plan_statement(sql, dialect) else { panic!("{sql}") };
+            let select = capture_select(&p, &users(), dialect, false).unwrap();
+            assert!(select.ends_with(" = -3)"), "{sql}: {select}");
+            let where_part = select.split(" WHERE ").nth(1).unwrap_or_default();
+            assert!(!where_part.contains("email"), "{sql}: email isn't given, so it can't conflict");
+        }
+        // Without a column list the values follow the table's columns.
+        let p = cap("INSERT INTO users VALUES (5, 'e@x', 'E') ON CONFLICT (email) DO UPDATE SET name = 'E'");
+        let sql = capture_select(&p, &users(), Dialect::Postgres, false).unwrap();
+        assert!(sql.ends_with(r#"WHERE ("email" = 'e@x')"#), "{sql}");
+    }
+
+    #[test]
+    fn upserts_that_cannot_be_matched_say_why() {
+        assert_eq!(
+            plan(
+                "INSERT INTO users (id, name) SELECT id, name FROM staging ON CONFLICT (id) DO UPDATE SET name = excluded.name"
+            ),
+            PlanOutcome::Unsupported(UPSERT_QUERY.into())
+        );
+        assert_eq!(
+            plan("INSERT INTO users (id) VALUES (1) ON CONFLICT ON CONSTRAINT users_pkey DO UPDATE SET name = 'x'"),
+            PlanOutcome::Unsupported(UPSERT_CONSTRAINT.into())
+        );
+        // A key value that isn't a plain value (a function, a parameter) can't be looked up first.
+        let p =
+            cap("INSERT INTO users (id, name) VALUES (nextval('s'), 'x') ON CONFLICT (id) DO UPDATE SET name = 'x'");
+        assert_eq!(structure_reason(&p, &users(), Driver::Postgres), Some(UPSERT_KEY.into()));
+        // Updating the key on conflict moves the row: no restore point.
+        let p = cap("INSERT INTO users (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET id = 9");
+        assert_eq!(structure_reason(&p, &users(), Driver::Postgres), Some(CHANGES_KEY.into()));
+        // A target that is no key of the table, or a table without one.
+        let p = cap("INSERT INTO users (name) VALUES ('x') ON CONFLICT (name) DO UPDATE SET email = 'y'");
+        assert_eq!(structure_reason(&p, &users(), Driver::Postgres), Some(UPSERT_KEY.into()));
     }
 
     #[test]

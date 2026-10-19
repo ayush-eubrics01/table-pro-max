@@ -243,8 +243,25 @@ export const api = {
   ) => call<number>("import_file", { request: { sessionId, import: importReq, createStatements, jobId, confirmed: true } }),
   readSqlFile: (path: string) => call<string>("read_sql_file", { path }),
   writeSqlFile: (path: string, contents: string) => call<void>("write_sql_file", { path, contents }),
-  runSqlFile: (sessionId: string, path: string, taskId: string, confirmed: boolean, typedConfirmation?: string) =>
-    call<RunFileResult>("run_sql_file", { request: { sessionId, path, taskId, confirmed, typedConfirmation: typedConfirmation ?? null } }),
+  runSqlFile: (
+    sessionId: string,
+    path: string,
+    taskId: string,
+    confirmed: boolean,
+    typedConfirmation?: string,
+    restore?: { maxRows: number; maxMb: number },
+  ) =>
+    call<RunFileResult>("run_sql_file", {
+      request: {
+        sessionId,
+        path,
+        taskId,
+        confirmed,
+        typedConfirmation: typedConfirmation ?? null,
+        restoreMaxRows: restore?.maxRows ?? null,
+        restoreMaxMb: restore?.maxMb ?? null,
+      },
+    }),
 
   runWidget: (sessionId: string, sql: string, params: Record<string, string>, timeoutSecs = 30) =>
     call<{ columns: ColumnMeta[]; rows: Row[]; truncated: boolean }>("run_widget_query", {

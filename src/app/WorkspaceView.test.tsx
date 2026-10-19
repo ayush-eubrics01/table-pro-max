@@ -360,6 +360,29 @@ describe("production safety: SQL files", () => {
   });
 });
 
+describe("SQL files keep restore points", () => {
+  it("passes the restore limits and says how many restore points the file kept", async () => {
+    const runs: Record<string, unknown>[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "connect") return session;
+      if (cmd === "plugin:dialog|open") return "/tmp/fix.sql";
+      if (cmd === "run_sql_file") {
+        runs.push((args as { request: Record<string, unknown> }).request);
+        return { statementsRun: 4, failures: [], cancelled: false, durationMs: 5, restorePoints: 2 };
+      }
+      return cmd.startsWith("list_") || cmd.startsWith("search_") ? [] : null;
+    });
+    renderWs(ws({ kind: "query", id: "q61", title: "Query 61", sql: "", savedQueryId: null, dirty: false }));
+    fireEvent.click(screen.getByRole("button", { name: "Run SQL file" }));
+    const dialog = await screen.findByRole("dialog", { name: "Run SQL file?" });
+    expect(dialog).toHaveTextContent(/restore points are kept/i);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Run file" }));
+    await waitFor(() => expect(runs).toHaveLength(1));
+    expect(runs[0]).toMatchObject({ restoreMaxRows: 100000, restoreMaxMb: 50 });
+    expect(await screen.findByText(/fix.sql: 4 statements .*, 2 restore points kept/)).toBeInTheDocument();
+  });
+});
+
 describe("query parameters", () => {
   it("asks for :name values before running, binds them (NULL too), and remembers them for the tab", async () => {
     const runs: Record<string, unknown>[] = [];

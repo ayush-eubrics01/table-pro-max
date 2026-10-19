@@ -543,6 +543,8 @@ export interface RunFileResult {
   failures: StatementResult[];
   cancelled: boolean;
   durationMs: number;
+  /** Restore points kept for the file's statements. */
+  restorePoints: number;
 }
 
 export type WidgetType = "kpi" | "table" | "line" | "bar" | "pie";
