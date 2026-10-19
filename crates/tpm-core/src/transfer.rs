@@ -155,6 +155,38 @@ pub fn rows_as_text(columns: &[ColumnMeta], rows: &[Row], opts: &ExportOptions) 
 
 /// A grid cell as the UI holds it (text, null, or `{"$bytes": hex, "size": n}`), for copying. A
 /// binary value the UI has only in part, or a value not loaded yet, is refused.
+/// Largest file loaded as a binary cell's value (it travels to the UI as hex, twice the size).
+pub const MAX_BINARY_FILE: u64 = 16 * 1024 * 1024;
+
+fn absolute(path: &Path) -> Result<()> {
+    if path.is_absolute() { Ok(()) } else { Err(AppError::file("Choose an absolute path")) }
+}
+
+/// A file's contents as hex digits, to set a binary cell from (see `EditValue::Bytes`).
+pub fn read_binary_file(path: &Path, limit: u64) -> Result<String> {
+    absolute(path)?;
+    let meta = std::fs::metadata(path).map_err(|e| AppError::file(format!("Cannot read {}: {e}", path.display())))?;
+    if meta.len() > limit {
+        return Err(AppError::file(format!("The file is larger than {} MB", limit / 1024 / 1024)));
+    }
+    Ok(hex::encode(std::fs::read(path)?))
+}
+
+/// Writes a cell's full value to a file: bytes as they are, text as UTF-8. Returns the size.
+pub fn write_cell_file(path: &Path, cell: &Cell) -> Result<u64> {
+    absolute(path)?;
+    let bytes: &[u8] = match cell {
+        Cell::Bytes(b) => b,
+        Cell::Text(t) => t.as_bytes(),
+        Cell::Null => return Err(AppError::invalid_config("The value is NULL, so there is nothing to save")),
+        Cell::NotLoaded | Cell::Partial { .. } => {
+            return Err(AppError::internal("Only a fully loaded value can be saved"));
+        }
+    };
+    std::fs::write(path, bytes)?;
+    Ok(bytes.len() as u64)
+}
+
 pub fn cell_from_ui(value: &serde_json::Value) -> Result<Cell> {
     use serde_json::Value;
     match value {
@@ -859,6 +891,26 @@ pub fn batch_rows(dialect: Dialect, columns: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binary_values_load_from_and_save_to_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("pixel.png");
+        std::fs::write(&png, [0x89, b'P', b'N', b'G', 0x00, 0xff]).unwrap();
+        assert_eq!(read_binary_file(&png, 1024).unwrap(), "89504e4700ff");
+        let e = read_binary_file(&png, 4).unwrap_err();
+        assert!(e.message.contains("larger than"), "{}", e.message);
+        assert!(read_binary_file(Path::new("relative.png"), 1024).is_err(), "absolute paths only");
+
+        let out = dir.path().join("out.bin");
+        assert_eq!(write_cell_file(&out, &Cell::Bytes(vec![1, 2, 3])).unwrap(), 3);
+        assert_eq!(std::fs::read(&out).unwrap(), vec![1, 2, 3]);
+        assert_eq!(write_cell_file(&out, &Cell::Text("héllo".into())).unwrap(), 6);
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "héllo");
+        let e = write_cell_file(&out, &Cell::Null).unwrap_err();
+        assert!(e.message.contains("NULL"), "{}", e.message);
+        assert!(write_cell_file(Path::new("relative.bin"), &Cell::Bytes(vec![1])).is_err());
+    }
 
     fn cols() -> Vec<ColumnMeta> {
         vec![ColumnMeta::new("id", "integer"), ColumnMeta::new("name", "text"), ColumnMeta::new("data", "bytea")]

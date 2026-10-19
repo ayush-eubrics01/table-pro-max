@@ -384,7 +384,7 @@ export interface BrowseResult {
   hasMore: boolean;
 }
 
-export type EditValue = { kind: "value"; value: string | null } | { kind: "default" };
+export type EditValue = { kind: "value"; value: string | null } | { kind: "default" } | { kind: "bytes"; hex: string };
 
 export interface ColumnEdit {
   column: string;

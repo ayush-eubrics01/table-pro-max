@@ -243,6 +243,11 @@ export const api = {
   ) => call<number>("import_file", { request: { sessionId, import: importReq, createStatements, jobId, confirmed: true } }),
   readSqlFile: (path: string) => call<string>("read_sql_file", { path }),
   writeSqlFile: (path: string, contents: string) => call<void>("write_sql_file", { path, contents }),
+  /** A file's contents as hex, to set a binary cell from. */
+  readBinaryFile: (path: string) => call<string>("read_binary_file", { path }),
+  /** Saves a table cell's full value (read again by its key) to a file; returns its size. */
+  saveValueToFile: (sessionId: string, schema: string, table: string, key: { column: string; value: string | null }[], column: string, path: string) =>
+    call<number>("save_value_to_file", { sessionId, schema, table, key, column, path }),
   runSqlFile: (
     sessionId: string,
     path: string,

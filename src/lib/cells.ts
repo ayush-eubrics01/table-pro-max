@@ -1,5 +1,11 @@
 import type { Cell } from "../types/backend";
 
+/** Binary column types (as `large_values::is_binary_type` in the core). */
+export function isBinaryType(dataType: string): boolean {
+  const base = dataType.trim().toLowerCase().split(/[( ]/)[0] ?? "";
+  return ["bytea", "binary", "varbinary", "blob", "tinyblob", "mediumblob", "longblob", "image", "rowversion"].includes(base);
+}
+
 export function isBinary(c: Cell): c is { $bytes: string; size: number } {
   return typeof c === "object" && c !== null && "$bytes" in c;
 }

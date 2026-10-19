@@ -4,12 +4,14 @@ import { Icon } from "../../components/Icon";
 import type { BrowseResult, Cell, ColumnFetch, FetchMode, ReferencingKey, SessionInfo, SortSpec, TableStructure } from "../../types/backend";
 import { api, toError, type BackendError } from "../../lib/ipc";
 import { committedMessage, useRestore } from "../../stores/restore";
-import { cellCopy, cellParam, isBinary, isJsonType, isLargeText, isNotLoaded, toTsv } from "../../lib/cells";
+import { cellCopy, cellParam, isBinary, isBinaryType, isJsonType, isLargeText, isNotLoaded, toTsv } from "../../lib/cells";
 import { formatCount, formatDuration, pluralize, uid } from "../../lib/text";
 import { confirmAction, notify, notifyError } from "../../stores/ui";
 import { useSettings } from "../../stores/settings";
 import { DataGrid, type CellPos, type GridHandle, type GridSelection } from "../data-grid/DataGrid";
 import { ValueEditor } from "../value-editor/ValueEditor";
+import { BinaryEditor } from "../value-editor/BinaryEditor";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { firstLink, linkFilter, referencingItems, tableLinks } from "./fkLinks";
 import type { MenuEntry } from "../../components/Menu";
 import { FilterBuilder } from "../filters/FilterBuilder";
@@ -24,6 +26,7 @@ import {
   newInsertedRow,
   pendingCount,
   toggleDelete,
+  type EditedValue,
   type Pending,
 } from "./pending";
 import { ReviewChangesDialog } from "./ReviewChangesDialog";
@@ -226,13 +229,16 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
       if (!canEditRow(row)) return false;
       if (row >= rows.length) return true;
       const v = rows[row]?.[col];
+      // Binary values change through their editor (hex, a file or NULL), loaded or not.
+      if (isBinaryType(structure?.columns[col]?.dataType ?? "")) return v !== undefined;
       // A Not loaded cell becomes editable once its value is loaded.
       return v !== undefined && !isBinary(v) && !isNotLoaded(v);
     },
-    [canEditRow, rows],
+    [canEditRow, rows, structure],
   );
 
-  const onEdit = (row: number, col: number, value: string | null) => setPending((p) => editCell(p, rows, row, col, value));
+  const onEdit = (row: number, col: number, value: EditedValue) => setPending((p) => editCell(p, rows, row, col, value));
+  const binaryCol = (col: number) => isBinaryType(structure?.columns[col]?.dataType ?? "");
 
   // ---- large values on demand ------------------------------------------------------------
 
@@ -304,6 +310,11 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
   }, [editAfterLoad, rows]);
 
   const onOpenCell = (row: number, col: number, how: "click" | "open") => {
+    // Binary values open in their own editor (typing or pasting text would store text).
+    if (how === "open" && binaryCol(col)) {
+      setEditorAt({ row, col });
+      return true;
+    }
     if (row >= rows.length) return false; // new rows edit inline
     const cell = getRow(row)?.[col];
     if (cell !== undefined && isNotLoaded(cell)) {
@@ -826,7 +837,46 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
         </>
       )}
 
-      {editorAt && structure && columns[editorAt.col] && (
+      {editorAt && structure && columns[editorAt.col] && binaryCol(editorAt.col) && (
+        <BinaryEditor
+          title={`${table} · ${columns[editorAt.col]!.name}`}
+          typeName={columns[editorAt.col]!.dataType}
+          load={async () => {
+            const c = getRow(editorAt.row)?.[editorAt.col] ?? null;
+            if (c !== null && isNotLoaded(c)) {
+              const seq = loadSeq.current;
+              const v = await api.fetchValue(session.sessionId, schema, table, keyOf(editorAt.row), columns[editorAt.col]!.name);
+              putCells([{ row: editorAt.row, col: editorAt.col, value: v }], seq);
+              return v;
+            }
+            return c;
+          }}
+          readOnlyReason={canEditRow(editorAt.row) ? null : (readOnlyReason ?? "This value can't be changed here")}
+          nullable={columns[editorAt.col]!.nullable}
+          onSave={(v) => {
+            onEdit(editorAt.row, editorAt.col, v);
+            setEditorAt(null);
+          }}
+          onSaveToFile={
+            // The stored value: a row in the table whose value isn't edited yet.
+            editorAt.row < rows.length && !(editorAt.col in (pending.edits[editorAt.row] ?? {}))
+              ? async () => {
+                  const column = columns[editorAt.col]!.name;
+                  const path = await saveDialog({ defaultPath: `${table}-${column}.bin` });
+                  if (!path) return;
+                  try {
+                    const n = await api.saveValueToFile(session.sessionId, schema, table, keyOf(editorAt.row), column, path);
+                    notify(`Saved ${n.toLocaleString()} bytes to ${path}`, "success");
+                  } catch (e) {
+                    notifyError(e, "Could not save the value");
+                  }
+                }
+              : undefined
+          }
+          onClose={() => setEditorAt(null)}
+        />
+      )}
+      {editorAt && structure && columns[editorAt.col] && !binaryCol(editorAt.col) && (
         <ValueEditor
           title={`${table} · ${columns[editorAt.col]!.name} · ${keyOf(editorAt.row)
             .map((k) => `${k.column} = ${k.value ?? "NULL"}`)
