@@ -102,6 +102,8 @@ pub fn run() {
             commands::mongo::mongo_vector_search,
             commands::mongo::mongo_delete_count,
             commands::mongo::mongo_delete,
+            commands::mongo::mongo_replace,
+            commands::mongo::mongo_insert,
             commands::redis::redis_connect,
             commands::redis::redis_disconnect,
             commands::redis::redis_info,

@@ -6,7 +6,8 @@ use tauri::State;
 use tpm_core::credentials::{CredentialStore, connection_account, ssh_account};
 use tpm_core::error::Result;
 use tpm_core::mongo::{
-    AggregateRequest, DeleteTarget, FindRequest, MongoCollection, MongoDatabase, MongoInfo, MongoPage, VectorRequest,
+    AggregateRequest, DeleteTarget, FindRequest, MongoCollection, MongoDatabase, MongoInfo, MongoPage, ReplaceRequest,
+    VectorRequest,
 };
 
 use crate::state::AppState;
@@ -151,5 +152,28 @@ pub async fn mongo_delete(state: State<'_, AppState>, session_id: String, reques
         )
         .await;
     tracing::info!(ok = r.is_ok(), "mongodb delete");
+    r
+}
+
+/// Saves an edited document if it is still as it was read.
+#[tauri::command]
+pub async fn mongo_replace(state: State<'_, AppState>, session_id: String, request: ReplaceRequest) -> Result<()> {
+    let r = state.engine.mongo(&session_id)?.replace(&request).await;
+    tracing::info!(ok = r.is_ok(), "mongodb replace");
+    r
+}
+
+/// Inserts one document; returns its `_id`.
+#[tauri::command]
+pub async fn mongo_insert(
+    state: State<'_, AppState>,
+    session_id: String,
+    database: String,
+    collection: String,
+    document: String,
+    confirmed: bool,
+) -> Result<String> {
+    let r = state.engine.mongo(&session_id)?.insert(&database, &collection, &document, confirmed).await;
+    tracing::info!(ok = r.is_ok(), "mongodb insert");
     r
 }

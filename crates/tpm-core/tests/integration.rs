@@ -3304,7 +3304,7 @@ async fn cancels_reach_their_own_run() {
 async fn mongodb() {
     use futures_util::TryStreamExt;
     use mongodb::bson::{DateTime, doc, oid::ObjectId};
-    use tpm_core::mongo::{AggregateRequest, DeleteTarget, FindRequest, VectorRequest};
+    use tpm_core::mongo::{AggregateRequest, DeleteTarget, FindRequest, ReplaceRequest, VectorRequest};
     let Ok(url) = std::env::var("TPM_TEST_MONGO_URL") else {
         eprintln!("BLOCKED: TPM_TEST_MONGO_URL not set; run scripts/test-db.sh up");
         return;
@@ -3518,6 +3518,57 @@ async fn mongodb() {
         .unwrap_err();
     assert_eq!(e.code.as_deref(), Some("confirm_typed"));
     assert_eq!(s.count("tpm_test", "tpm_it_orders", "").await.unwrap(), 45);
+    // Inserts likewise: refused read-only and locked, confirmed on production.
+    let one_doc = r#"{ "status": "x" }"#;
+    for id in [&ro_id, &prod_id] {
+        let e = engine.mongo(id).unwrap().insert("tpm_test", "tpm_it_orders", one_doc, true).await.unwrap_err();
+        assert_eq!(e.kind, ErrorKind::PolicyViolation);
+    }
+    let e = engine.mongo(&prod_rw).unwrap().insert("tpm_test", "tpm_it_orders", one_doc, false).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::ConfirmationRequired);
+    assert_eq!(s.count("tpm_test", "tpm_it_orders", "").await.unwrap(), 45);
+
+    // Edits: a document is replaced only while it is as it was read, with its types kept.
+    let edits = db.collection::<mongodb::bson::Document>("tpm_it_edits");
+    edits
+        .insert_one(doc! { "_id": 1, "status": "shiped", "n": 9_007_199_254_740_993_i64, "small": 5_i64, "at": DateTime::from_millis(0) })
+        .await
+        .unwrap();
+    let read =
+        || async { s.find(&FindRequest { collection: "tpm_it_edits".into(), ..req("", "", 10) }).await.unwrap() };
+    let page = read().await;
+    let (text, id) = (page.documents[0].clone(), page.ids[0].clone().unwrap());
+    let rq = |document: String, original: &str| ReplaceRequest {
+        database: "tpm_test".into(),
+        collection: "tpm_it_edits".into(),
+        id: id.clone(),
+        original: original.into(),
+        document,
+        confirmed: false,
+    };
+    s.replace(&rq(text.replace("shiped", "shipped"), &text)).await.unwrap();
+    let got = edits.find_one(doc! { "_id": 1 }).await.unwrap().unwrap();
+    assert_eq!(got.get_str("status").unwrap(), "shipped");
+    assert_eq!(got.get_i64("n").unwrap(), 9_007_199_254_740_993, "a large Int64 exactly");
+    assert_eq!(got.get_i64("small").unwrap(), 5, "a small Int64 stays Int64");
+    assert!(got.get_datetime("at").is_ok(), "a date stays a date");
+    // Saved over a document that changed since it was read: refused, nothing written.
+    let e = s.replace(&rq(text.replace("shiped", "again"), &text)).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Conflict, "{e:?}");
+    assert_eq!(edits.find_one(doc! { "_id": 1 }).await.unwrap().unwrap().get_str("status").unwrap(), "shipped");
+    let fresh = read().await.documents[0].clone();
+    let e = s.replace(&rq(fresh.replace("\"_id\": 1", "\"_id\": 2"), &fresh)).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::InvalidConfig, "the _id can't change: {e:?}");
+    // Inserted documents get an id; a gone document says so.
+    let new_id = s
+        .insert("tpm_test", "tpm_it_edits", r#"{ "status": "new", "at": { "$date": "2024-01-02T00:00:00Z" } }"#, false)
+        .await
+        .unwrap();
+    assert!(new_id.contains("$oid"), "{new_id}");
+    assert_eq!(edits.count_documents(doc! { "status": "new" }).await.unwrap(), 1);
+    edits.delete_one(doc! { "_id": 1 }).await.unwrap();
+    assert_eq!(s.replace(&rq(fresh.clone(), &fresh)).await.unwrap_err().kind, ErrorKind::NotFound);
+    assert_eq!(s.insert("admin", "x", "{}", false).await.unwrap_err().kind, ErrorKind::PolicyViolation);
 
     // A wrong password says so.
     let e = engine.mongo_open(&profile, Some("not-the-password"), None, false).await.unwrap_err();

@@ -300,6 +300,12 @@ export const api = {
     sessionId: string,
     request: { database: string; collection: string; target: MongoDeleteTarget; expected: number; confirmed: boolean; typedConfirmation?: string | null },
   ) => call<number>("mongo_delete", { sessionId, request }),
+  /** Saves an edited document if it still reads as `original` (the text the page showed). */
+  mongoReplace: (sessionId: string, request: { database: string; collection: string; id: string; original: string; document: string; confirmed: boolean }) =>
+    call<void>("mongo_replace", { sessionId, request }),
+  /** Inserts one document; returns its `_id` as Extended JSON. */
+  mongoInsert: (sessionId: string, database: string, collection: string, document: string, confirmed: boolean) =>
+    call<string>("mongo_insert", { sessionId, database, collection, document, confirmed }),
 
   // redis
   redisConnect: (connectionId: string, opts: { password?: string | null; sshSecret?: string | null; rememberForSession?: boolean } = {}) =>
