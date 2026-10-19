@@ -154,7 +154,7 @@ No feature has a paid tier, license check, quota or artificial limit.
 | Safety: T-SQL batches analysed (IF/WHILE/CASE by their contents; unparsed batches by every destructive keyword; UPDATE … FROM without WHERE, MERGE … BY SOURCE … DELETE, RESTORE, SHUTDOWN, DBCC REPAIR destructive; OPENQUERY & co. unknown); read-only sessions roll every batch back and refuse COMMIT, ROLLBACK, IMPLICIT_TRANSACTIONS and pass-through queries | VERIFIED | unit `sql_server_batches`; integration (raw read-only INSERT keeps nothing; COMMIT refused); independent review with reproductions, mutation-checked | Effects outside the transaction log (sequences) are not undone in read-only; use a `db_datareader` login for full protection |
 | Restore points (UPDATE, DELETE, TRUNCATE, DROP TABLE) with identity values kept | VERIFIED | unit `sql_server_counts_and_captures`, `sql_server_inserts_and_restores_keep_identity_values`; integration (identity seed and step survive a dropped table) | None for tables with binary columns, as on MySQL |
 | Import (batches under 2,100 parameters), export (SQL with `N''` and `0x…`, 1,000 rows per INSERT) | VERIFIED | unit tests; integration (shared round trip) | |
-| Query plans | NOT_STARTED | | Explain is hidden for SQL Server |
+| Query plans: estimated (`SHOWPLAN_XML`) and actual (`STATISTICS XML`, behind the same confirmation as ANALYZE elsewhere) drawn as an operator tree with objects, indexes, predicates, costs and estimated vs actual rows | VERIFIED | integration `sql_server` (estimated, actual, confirmation, read-only rollback, session runs normally afterwards); `ExplainView.test.tsx`; manual (Xvfb) | A plan that can't be read shows its XML |
 
 ## Redis (Tier 2)
 
