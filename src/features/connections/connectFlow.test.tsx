@@ -154,11 +154,12 @@ describe("connectWithPrompt", () => {
     await failed;
   });
 
-  it("gives up after five attempts", async () => {
+  it("gives up after five attempts and says why", async () => {
     answers.connect = [fail({ kind: "authentication", message: "password authentication failed" })];
-    const attempt = connectWithPrompt(profile);
+    // Handled from the start: it rejects while the prompts are still being answered.
+    const attempt = expect(connectWithPrompt(profile)).rejects.toMatchObject({ kind: "authentication" });
     for (let i = 0; i < 5; i++) await answerPrompt(`try${i}`);
-    expect(await attempt).toBeNull();
+    await attempt;
     expect(sent("connect")).toHaveLength(5);
   });
 
@@ -312,19 +313,20 @@ describe("reconnectWithPrompt", () => {
     expect(sent("trust_ssh_host")).toHaveLength(1);
   });
 
-  it("passes the error on when the password prompt is cancelled", async () => {
+  it("returns nothing when the password prompt is cancelled, as a connect does", async () => {
     answers.reconnect = [fail(passwordRequired)];
-    const failed = expect(reconnectWithPrompt("sess-1", profile)).rejects.toMatchObject({ code: "password_required" });
+    const attempt = reconnectWithPrompt("sess-1", profile);
     await dismissDialog();
-    await failed;
+    expect(await attempt).toBeNull();
     expect(sent("reconnect")).toHaveLength(1);
   });
 
-  it("gives up after five attempts", async () => {
+  it("gives up after five attempts and says why", async () => {
     answers.reconnect = [fail({ kind: "authentication", message: "password authentication failed" })];
-    const attempt = reconnectWithPrompt("sess-1", profile);
+    // Handled from the start: it rejects while the prompts are still being answered.
+    const attempt = expect(reconnectWithPrompt("sess-1", profile)).rejects.toMatchObject({ kind: "authentication" });
     for (let i = 0; i < 5; i++) await answerPrompt(`try${i}`);
-    expect(await attempt).toBeNull();
+    await attempt;
     expect(sent("reconnect")).toHaveLength(5);
   });
 });
@@ -363,11 +365,12 @@ describe("connectMongoWithPrompt", () => {
     await expect(connectMongoWithPrompt(mongo)).rejects.toMatchObject({ message: "Server selection timed out" });
   });
 
-  it("gives up after five attempts", async () => {
+  it("gives up after five attempts and says why", async () => {
     answers.mongo_connect = [fail({ kind: "authentication", message: "Authentication failed." })];
-    const attempt = connectMongoWithPrompt(mongo);
+    // Handled from the start: it rejects while the prompts are still being answered.
+    const attempt = expect(connectMongoWithPrompt(mongo)).rejects.toMatchObject({ kind: "authentication" });
     for (let i = 0; i < 5; i++) await answerPrompt(`try${i}`);
-    expect(await attempt).toBeNull();
+    await attempt;
     expect(sent("mongo_connect")).toHaveLength(5);
   });
 });
@@ -405,11 +408,12 @@ describe("connectRedisWithPrompt", () => {
     await expect(connectRedisWithPrompt(redis)).rejects.toMatchObject({ message: "Connection refused" });
   });
 
-  it("gives up after five attempts", async () => {
+  it("gives up after five attempts and says why", async () => {
     answers.redis_connect = [fail({ kind: "authentication", message: "WRONGPASS" })];
-    const attempt = connectRedisWithPrompt(redis);
+    // Handled from the start: it rejects while the prompts are still being answered.
+    const attempt = expect(connectRedisWithPrompt(redis)).rejects.toMatchObject({ kind: "authentication" });
     for (let i = 0; i < 5; i++) await answerPrompt(`try${i}`);
-    expect(await attempt).toBeNull();
+    await attempt;
     expect(sent("redis_connect")).toHaveLength(5);
   });
 });
