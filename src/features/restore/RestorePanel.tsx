@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { Icon } from "../../components/Icon";
 import { ReviewChangesDialog } from "../data-browser/ReviewChangesDialog";
 import { api } from "../../lib/ipc";
 import { formatBytes } from "../../lib/cells";
-import { pluralize } from "../../lib/text";
+import { pluralize, uid } from "../../lib/text";
 import { useRestore } from "../../stores/restore";
 import { useSettings } from "../../stores/settings";
 import { confirmAction, notify, notifyError } from "../../stores/ui";
@@ -27,6 +28,8 @@ interface Review {
   statements: number;
   atomic: boolean;
   rows: number[] | null;
+  /** Names the run for its progress events and Stop. */
+  taskId: string;
 }
 
 /** Restore points of a connection: what each change replaced, and putting it back. */
@@ -168,6 +171,7 @@ function PointDetail({
   const [point, setPoint] = useState<RestorePoint | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [review, setReview] = useState<Review | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
 
   // The parent passes a new onBack each render; loading must depend on the point only.
   const onBackRef = useRef(onBack);
@@ -205,7 +209,7 @@ function PointDetail({
   const startReview = async (rows: number[] | null) => {
     try {
       const p = await api.previewRestore(session.sessionId, point.id, rows);
-      setReview({ sql: p.sql, statements: p.statementCount, atomic: p.atomic, rows });
+      setReview({ sql: p.sql, statements: p.statementCount, atomic: p.atomic, rows, taskId: uid() });
     } catch (e) {
       notifyError(e, "Could not prepare the restore");
     }
@@ -331,8 +335,22 @@ function PointDetail({
           splitHint="The column or table comes back first, then its rows."
           commitLabel="Restore"
           cancelLabel="Cancel"
+          progress={progress}
+          stopLabel="Stop restore"
+          onStop={() => void api.cancelQuery(review.taskId).catch(() => false)}
           onCommit={async () => {
-            const counts = await api.applyRestore(session.sessionId, point.id, review.rows);
+            setProgress(null);
+            // Progress of this restore only: events carry the task they belong to.
+            const off = await listen<{ taskId: string; done: number; total: number }>("restore-progress", (e) => {
+              if (e.payload.taskId === review.taskId) setProgress({ done: e.payload.done, total: e.payload.total });
+            });
+            let counts: number[];
+            try {
+              counts = await api.applyRestore(session.sessionId, point.id, review.rows, review.taskId);
+            } finally {
+              off();
+              setProgress(null);
+            }
             const changed = counts.reduce((a, b) => a + b, 0);
             setReview(null);
             setSelected(new Set());

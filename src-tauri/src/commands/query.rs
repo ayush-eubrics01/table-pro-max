@@ -234,15 +234,32 @@ pub async fn preview_restore(
     state.engine.preview_restore(&session_id, &point_id, rows).await
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RestoreProgress {
+    task_id: String,
+    done: usize,
+    total: usize,
+}
+
 #[tauri::command]
 pub async fn apply_restore(
+    app: AppHandle,
     state: State<'_, AppState>,
     session_id: String,
     point_id: String,
     rows: Option<Vec<usize>>,
     confirmed: bool,
+    task_id: Option<String>,
 ) -> Result<Vec<u64>> {
-    let r = state.engine.apply_restore(&session_id, &point_id, rows, confirmed).await;
+    // "restore-progress" after each chunk; `cancel_query` with the task id stops it.
+    let progress: Option<tpm_core::engine::ApplyProgress> = task_id.clone().map(|id| {
+        let p: tpm_core::engine::ApplyProgress = std::sync::Arc::new(move |done, total| {
+            let _ = app.emit("restore-progress", RestoreProgress { task_id: id.clone(), done, total });
+        });
+        p
+    });
+    let r = state.engine.apply_restore_with(&session_id, &point_id, rows, confirmed, task_id, progress).await;
     tracing::info!(session = %session_id, ok = r.is_ok(), "applied a restore point");
     r
 }

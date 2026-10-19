@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
+import { emit } from "@tauri-apps/api/event";
 import { RestorePanel } from "./RestorePanel";
 import { Overlays } from "../../components/Overlays";
 import { session } from "../../test/fixtures";
@@ -115,6 +116,51 @@ describe("RestorePanel", () => {
     expect(calls.find(([c]) => c === "apply_restore")![1]).toMatchObject({ rows: null });
     // The message counts the rows that changed (rows already back are skipped).
     expect(await screen.findByText(/Restored 1 row in orders/)).toBeInTheDocument();
+  });
+
+  it("shows a long restore's progress and stops it on request", async () => {
+    let finish: (e: unknown) => void = () => undefined;
+    const cancelled: string[] = [];
+    let taskId = "";
+    mockIPC(
+      (cmd, args) => {
+        calls.push([cmd, args as Record<string, unknown>]);
+        if (cmd === "list_restore_points") return points;
+        if (cmd === "get_restore_point") return point;
+        if (cmd === "preview_restore") return { sql: "INSERT …", statementCount: 1200, atomic: true };
+        if (cmd === "apply_restore") {
+          taskId = (args as { taskId: string }).taskId;
+          return new Promise((_, reject) => (finish = reject));
+        }
+        if (cmd === "cancel_query") {
+          cancelled.push((args as { taskId: string }).taskId);
+          finish({ kind: "cancelled", message: "Cancelled; no rows were restored." });
+          return true;
+        }
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+    render(
+      <>
+        <RestorePanel session={session} onClose={() => {}} />
+        <Overlays />
+      </>,
+    );
+    await openPoint();
+    fireEvent.click(screen.getByRole("button", { name: "Restore all" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Restore" }));
+    await waitFor(() => expect(taskId).not.toBe(""));
+    await emit("restore-progress", { taskId: "someone-else", done: 9, total: 9 });
+    await emit("restore-progress", { taskId, done: 500, total: 1200 });
+    const bar = await screen.findByRole("progressbar", { name: "Restoring" });
+    expect(bar).toHaveAttribute("value", "500");
+    expect(bar).toHaveAttribute("max", "1200");
+    expect(screen.getByText("500 of 1,200 statements")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Stop restore" }));
+    await waitFor(() => expect(cancelled).toEqual([taskId]));
+    expect(await screen.findByText("Cancelled; no rows were restored.")).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
 
   it("deletes a restore point after asking", async () => {

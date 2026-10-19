@@ -46,6 +46,8 @@ tokio::task_local! {
 }
 /// How long the PostgreSQL describe for result origins may take before it is interrupted.
 const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Statements a restore's review shows before summing up the rest.
+const RESTORE_PREVIEW_STATEMENTS: usize = 200;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1475,17 +1477,17 @@ impl Engine {
         }
     }
 
+    /// Marks a task cancelled without interrupting what it runs: it stops at its next check
+    /// (between statements or chunks). Returns its session, or `None` for an unknown task.
+    pub fn mark_cancelled(&self, task_id: &str) -> Option<String> {
+        let tasks = lock(&self.tasks);
+        let t = tasks.get(task_id)?;
+        t.cancelled.store(true, Ordering::SeqCst);
+        Some(t.session_id.clone())
+    }
+
     pub async fn cancel_task(&self, task_id: &str) -> Result<bool> {
-        let session_id = {
-            let tasks = lock(&self.tasks);
-            match tasks.get(task_id) {
-                Some(t) => {
-                    t.cancelled.store(true, Ordering::SeqCst);
-                    t.session_id.clone()
-                }
-                None => return Ok(false),
-            }
-        };
+        let Some(session_id) = self.mark_cancelled(task_id) else { return Ok(false) };
         // Only the run that holds the session is interrupted; one still waiting for it, or between
         // statements, stops at its next check of the flag.
         let handle = self.handle(&session_id)?;
@@ -1772,7 +1774,8 @@ impl Engine {
         sets: &[ChangeSet],
         confirmed: bool,
     ) -> Result<ApplyResult> {
-        self.apply_change_sets_as(session_id, sets, confirmed, crate::restore::RestoreKind::GridEdit, None, false).await
+        self.apply_change_sets_as(session_id, sets, confirmed, crate::restore::RestoreKind::GridEdit, None, false, None)
+            .await
     }
 
     /// `apply_change_sets`, keeping a restore point of `kind` per table for the updated and
@@ -1786,6 +1789,7 @@ impl Engine {
         kind: crate::restore::RestoreKind,
         statement: Option<String>,
         override_identity: bool,
+        run: Option<ApplyRun>,
     ) -> Result<ApplyResult> {
         let handle = self.handle(session_id)?;
         if handle.profile.read_only() {
@@ -1842,9 +1846,9 @@ impl Engine {
                         return Err(open_txn());
                     }
                     if grid_captures.is_empty() {
-                        return Ok((s.apply(&statements, atomic).await?, vec![]));
+                        return Ok((apply_all(s, &statements, atomic, run.as_ref()).await?, vec![]));
                     }
-                    apply_captured(s, &statements, grid_captures).await
+                    apply_captured(s, &statements, grid_captures, run.as_ref()).await
                 })
             })
             .await?;
@@ -2021,6 +2025,8 @@ impl Engine {
         let (point, actions) = self.restore_actions(session_id, point_id, rows).await?;
         let mut sql: Vec<String> = actions.ddl.iter().map(|d| format!("{d};")).collect();
         let mut count = actions.ddl.len();
+        // A large restore is reviewed by a sample and its count, not a line per row.
+        let mut shown = RESTORE_PREVIEW_STATEMENTS;
         for set in &actions.sets {
             // Before the DDL has run, the table (or column) exists only in the restore point.
             let structure = if actions.ddl.is_empty() {
@@ -2031,7 +2037,8 @@ impl Engine {
             let override_identity = keeps_identity_values(handle.profile.driver);
             let statements = crate::changes::build_statements_with(dialect, &structure, set, override_identity)?;
             count += statements.len();
-            sql.push(preview(dialect, &statements));
+            sql.push(crate::changes::preview_first(dialect, &statements, shown));
+            shown = shown.saturating_sub(statements.len());
         }
         sql.extend(actions.after.iter().map(|d| format!("{d};")));
         count += actions.after.len();
@@ -2052,6 +2059,21 @@ impl Engine {
         rows: Option<Vec<usize>>,
         confirmed: bool,
     ) -> Result<Vec<u64>> {
+        self.apply_restore_with(session_id, point_id, rows, confirmed, None, None).await
+    }
+
+    /// [`Self::apply_restore`], reporting progress and cancellable through `task_id`
+    /// ([`Self::cancel_task`]): a cancel interrupts the running statement or stops before the
+    /// next chunk, and the rows are rolled back.
+    pub async fn apply_restore_with(
+        &self,
+        session_id: &str,
+        point_id: &str,
+        rows: Option<Vec<usize>>,
+        confirmed: bool,
+        task_id: Option<String>,
+        progress: Option<ApplyProgress>,
+    ) -> Result<Vec<u64>> {
         let handle = self.handle(session_id)?;
         if handle.profile.read_only() {
             return Err(AppError::new(ErrorKind::PolicyViolation, "This connection is read-only"));
@@ -2069,27 +2091,44 @@ impl Engine {
         if !actions.ddl.is_empty() {
             self.apply_ddl(session_id, &actions.ddl, true, None).await?;
         }
-        let counts = if actions.sets.is_empty() {
-            vec![]
+        let cancelled = Arc::new(AtomicBool::new(false));
+        if let Some(id) = &task_id {
+            lock(&self.tasks)
+                .insert(id.clone(), RunningTask { session_id: session_id.to_string(), cancelled: cancelled.clone() });
+        }
+        let run = ApplyRun { progress, cancelled: cancelled.clone() };
+        let applied = if actions.sets.is_empty() {
+            Ok(vec![])
         } else {
-            self.apply_change_sets_as(
-                session_id,
-                &actions.sets,
-                true,
-                crate::restore::RestoreKind::Restore,
-                Some(format!("Restore of: {}", point.statement)),
-                keeps_identity_values(handle.profile.driver),
+            RUN.scope(
+                cancelled,
+                self.apply_change_sets_as(
+                    session_id,
+                    &actions.sets,
+                    true,
+                    crate::restore::RestoreKind::Restore,
+                    Some(format!("Restore of: {}", point.statement)),
+                    keeps_identity_values(handle.profile.driver),
+                    Some(run),
+                ),
             )
             .await
-            .map_err(|e| {
-                if e.kind == ErrorKind::Conflict {
-                    e.add_context("Nothing was restored: this row changed after the restore point was made.")
-                } else {
-                    e
-                }
-            })?
-            .counts
+            .map(|r| r.counts)
         };
+        if let Some(id) = &task_id {
+            lock(&self.tasks).remove(id);
+        }
+        let counts = applied.map_err(|e| match e.kind {
+            ErrorKind::Conflict => {
+                e.add_context("Nothing was restored: this row changed after the restore point was made.")
+            }
+            ErrorKind::Cancelled if !actions.ddl.is_empty() => AppError::new(
+                ErrorKind::Cancelled,
+                "Cancelled. The table was created again without its rows; restore again to put them back.",
+            ),
+            ErrorKind::Cancelled => AppError::new(ErrorKind::Cancelled, "Cancelled; no rows were restored."),
+            _ => e,
+        })?;
         if !actions.after.is_empty() {
             self.apply_ddl(session_id, &actions.after, true, None).await?;
         }
@@ -3220,10 +3259,96 @@ fn key_values(st: &TableStructure, key: &[crate::changes::ColumnValue]) -> Vec<P
 /// A grid commit with its restore points: in one transaction, read the rows about to change,
 /// apply, read the updated rows again, commit. If the rows can't be read, the commit goes ahead
 /// without restore points.
+/// Reports `(statements done, total)` as a long apply goes.
+pub type ApplyProgress = Arc<dyn Fn(usize, usize) + Send + Sync>;
+
+/// A long apply that reports progress and can be cancelled between chunks.
+struct ApplyRun {
+    progress: Option<ApplyProgress>,
+    cancelled: Arc<AtomicBool>,
+}
+
+/// Applies `statements`, in one transaction when `atomic`; with a `run`, a chunk at a time.
+async fn apply_all(
+    s: &mut Box<dyn Session>,
+    statements: &[ParamStatement],
+    atomic: bool,
+    run: Option<&ApplyRun>,
+) -> Result<Vec<u64>> {
+    let Some(r) = run else { return s.apply(statements, atomic).await };
+    if !atomic {
+        return apply_chunked(s, statements, r.progress.as_ref(), Some(&r.cancelled)).await;
+    }
+    s.begin().await?;
+    match apply_chunked(s, statements, r.progress.as_ref(), Some(&r.cancelled)).await {
+        Ok(counts) => {
+            if let Err(e) = s.commit().await {
+                let _ = s.rollback().await;
+                return Err(e);
+            }
+            Ok(counts)
+        }
+        Err(e) => {
+            let _ = s.rollback().await;
+            Err(e)
+        }
+    }
+}
+
+/// Statements applied per call when progress is reported.
+const APPLY_CHUNK: usize = 500;
+
+/// Applies `statements` inside the caller's transaction, a chunk at a time: progress after each
+/// chunk, and a cancel takes effect between chunks (the caller rolls back). A failing statement is
+/// numbered within the whole list, not its chunk.
+async fn apply_chunked(
+    s: &mut Box<dyn Session>,
+    statements: &[ParamStatement],
+    progress: Option<&ApplyProgress>,
+    cancelled: Option<&Arc<AtomicBool>>,
+) -> Result<Vec<u64>> {
+    let total = statements.len();
+    let mut counts = Vec::with_capacity(total);
+    for chunk in statements.chunks(APPLY_CHUNK) {
+        if cancelled.is_some_and(|c| c.load(Ordering::SeqCst)) {
+            return Err(AppError::new(ErrorKind::Cancelled, "Cancelled; nothing was changed"));
+        }
+        let offset = counts.len();
+        let done = s.apply(chunk, false).await.map_err(|e| renumber(e, offset, chunk.len(), total))?;
+        counts.extend(done);
+        if let Some(p) = progress {
+            p(counts.len(), total);
+        }
+    }
+    Ok(counts)
+}
+
+/// Rewrites a driver's "Statement k of n:" context for a chunk into the position in the whole list.
+fn renumber(mut e: AppError, offset: usize, chunk: usize, total: usize) -> AppError {
+    let Some(detail) = e.detail.take() else { return e };
+    let lines: Vec<String> = detail
+        .lines()
+        .map(|line| {
+            let parsed = line.strip_prefix("Statement ").and_then(|rest| {
+                let (k, rest) = rest.split_once(" of ")?;
+                let (n, tail) = rest.split_once(':')?;
+                (n.parse::<usize>().ok()? == chunk).then_some((k.parse::<usize>().ok()?, tail))
+            });
+            match parsed {
+                Some((k, tail)) => format!("Statement {} of {total}:{tail}", offset + k),
+                None => line.to_string(),
+            }
+        })
+        .collect();
+    e.detail = Some(lines.join("\n"));
+    e
+}
+
 async fn apply_captured(
     s: &mut Box<dyn Session>,
     statements: &[ParamStatement],
     mut caps: Vec<GridCapture>,
+    run: Option<&ApplyRun>,
 ) -> Result<(Vec<u64>, Vec<GridCapture>)> {
     s.begin().await?;
     let mut before = Vec::with_capacity(caps.len());
@@ -3237,7 +3362,7 @@ async fn apply_captured(
             }
             Err(e) => {
                 s.rollback().await?;
-                let counts = s.apply(statements, true).await?;
+                let counts = apply_all(s, statements, true, run).await?;
                 for c in caps.iter_mut() {
                     c.captured.dropped = Some(format!("could not read the rows: {}", e.message));
                 }
@@ -3245,7 +3370,11 @@ async fn apply_captured(
             }
         }
     }
-    let counts = match s.apply(statements, false).await {
+    let applied = match run {
+        Some(r) => apply_chunked(s, statements, r.progress.as_ref(), Some(&r.cancelled)).await,
+        None => s.apply(statements, false).await,
+    };
+    let counts = match applied {
         Ok(c) => c,
         Err(e) => {
             let _ = s.rollback().await;
@@ -3489,5 +3618,83 @@ mod dashboard_tests {
         assert!(substitute_dashboard_params("select 1", &q).is_err());
         assert!(substitute_dashboard_params("select {{from}}", &HashMap::new()).is_err());
         assert_eq!(substitute_dashboard_params("select 1", &HashMap::new()).unwrap(), "select 1");
+    }
+}
+
+#[cfg(test)]
+mod chunk_tests {
+    use super::*;
+    use crate::adapters::{ConnectOptions, ParamStatement};
+    use crate::config::{ConnectionProfile, Driver};
+
+    async fn sqlite(dir: &tempfile::TempDir) -> Box<dyn Session> {
+        let path = dir.path().join("chunks.sqlite");
+        crate::adapters::sqlite::create_database_file(path.to_str().unwrap()).unwrap();
+        let mut profile = ConnectionProfile::new("chunks", Driver::Sqlite);
+        profile.file_path = Some(path.to_string_lossy().into_owned());
+        let mut s = crate::adapters::connect(&profile, None, &ConnectOptions::default()).await.unwrap();
+        s.execute("CREATE TABLE t (id integer PRIMARY KEY)", 10).await.unwrap();
+        s
+    }
+
+    fn inserts(ids: impl IntoIterator<Item = usize>) -> Vec<ParamStatement> {
+        ids.into_iter()
+            .map(|i| ParamStatement {
+                sql: "INSERT INTO t (id) VALUES (?1)".into(),
+                params: vec![Some(i.to_string())],
+                expect_rows: Some(1),
+            })
+            .collect()
+    }
+
+    async fn count(s: &mut Box<dyn Session>) -> String {
+        let rs = s.query("SELECT count(*) FROM t", &[], 1).await.unwrap();
+        rs.rows[0][0].as_text().unwrap_or_default().to_string()
+    }
+
+    #[tokio::test]
+    async fn reports_progress_per_chunk() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = sqlite(&dir).await;
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let progress: ApplyProgress = Arc::new(move |done, total| log.lock().unwrap().push((done, total)));
+        s.begin().await.unwrap();
+        let counts = apply_chunked(&mut s, &inserts(1..=1200), Some(&progress), None).await.unwrap();
+        s.commit().await.unwrap();
+        assert_eq!(counts.len(), 1200);
+        assert_eq!(*seen.lock().unwrap(), vec![(500, 1200), (1000, 1200), (1200, 1200)]);
+        assert_eq!(count(&mut s).await, "1200");
+    }
+
+    #[tokio::test]
+    async fn stops_between_chunks_when_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = sqlite(&dir).await;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flag = cancelled.clone();
+        // Cancel arrives while the first chunk is reported, before the second starts.
+        let progress: ApplyProgress = Arc::new(move |_, _| flag.store(true, Ordering::SeqCst));
+        s.begin().await.unwrap();
+        let e = apply_chunked(&mut s, &inserts(1..=1200), Some(&progress), Some(&cancelled)).await.unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Cancelled);
+        s.rollback().await.unwrap();
+        assert_eq!(count(&mut s).await, "0");
+    }
+
+    #[tokio::test]
+    async fn numbers_a_failing_statement_across_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = sqlite(&dir).await;
+        // Statement 701 repeats id 1.
+        let mut statements = inserts(1..=700);
+        statements.extend(inserts([1]));
+        statements.extend(inserts(702..=900));
+        s.begin().await.unwrap();
+        let e = apply_chunked(&mut s, &statements, None, None).await.unwrap_err();
+        s.rollback().await.unwrap();
+        let detail = e.detail.unwrap_or_default();
+        assert!(detail.contains("Statement 701 of 900:"), "{detail}");
+        assert!(!detail.contains("of 500:"), "{detail}");
     }
 }
