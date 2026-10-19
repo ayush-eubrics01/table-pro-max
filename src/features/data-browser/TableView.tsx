@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { canCopyRows, copyRowsAs } from "../import-export/copyRows";
 import { Icon } from "../../components/Icon";
-import type { BrowseResult, Cell, ColumnFetch, FetchMode, SessionInfo, SortSpec, TableStructure } from "../../types/backend";
+import type { BrowseResult, Cell, ColumnFetch, FetchMode, ReferencingKey, SessionInfo, SortSpec, TableStructure } from "../../types/backend";
 import { api, toError, type BackendError } from "../../lib/ipc";
 import { committedMessage, useRestore } from "../../stores/restore";
 import { cellCopy, cellParam, isBinary, isJsonType, isLargeText, isNotLoaded, toTsv } from "../../lib/cells";
@@ -10,7 +10,7 @@ import { confirmAction, notify, notifyError } from "../../stores/ui";
 import { useSettings } from "../../stores/settings";
 import { DataGrid, type CellPos, type GridHandle, type GridSelection } from "../data-grid/DataGrid";
 import { ValueEditor } from "../value-editor/ValueEditor";
-import { firstLink, linkFilter, tableLinks } from "./fkLinks";
+import { firstLink, linkFilter, referencingItems, tableLinks } from "./fkLinks";
 import type { MenuEntry } from "../../components/Menu";
 import { FilterBuilder } from "../filters/FilterBuilder";
 import { FilterChips } from "../filters/FilterChips";
@@ -63,6 +63,8 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
   const inflight = useRef(new Map<string, Promise<Cell | undefined>>());
   const [view, setView] = useState<View>("data");
   const [structure, setStructure] = useState<TableStructure | null>(null);
+  /** Keys in other tables that point at this one, for "Rows in … that point here". */
+  const [incoming, setIncoming] = useState<ReferencingKey[]>([]);
   const [page, setPage] = useState<BrowseResult | null>(null);
   const [offset, setOffset] = useState(0);
   const [pageSize, setPageSize] = useState(pageSizeSetting);
@@ -98,12 +100,19 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
 
   useEffect(() => onDirtyChange?.(hasPending(pending)), [pending, onDirtyChange]);
 
+  const followsLinks = !!onOpenTable;
   useEffect(() => {
     let alive = true;
     api
       .tableStructure(session.sessionId, schema, table)
       .then((s) => alive && setStructure(s))
       .catch((e) => alive && setError(toError(e)));
+    // Optional: without it (no rights on the catalog, say) the menu just doesn't offer the lookup.
+    if (followsLinks)
+      api
+        .referencingKeys(session.sessionId, schema, table)
+        .then((k) => alive && setIncoming(k ?? []))
+        .catch(() => alive && setIncoming([]));
     api
       .listColumnFetch(session.connectionId, schema, table)
       .then((o) => alive && setOverrides(o ?? []))
@@ -111,7 +120,7 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
     return () => {
       alive = false;
     };
-  }, [session.sessionId, session.connectionId, schema, table]);
+  }, [session.sessionId, session.connectionId, schema, table, followsLinks]);
 
   const load = useCallback(
     async (opts: { offset?: number; sort?: SortSpec[]; filter?: GroupNode; pageSize?: number } = {}) => {
@@ -486,9 +495,14 @@ export function TableView({ session, schema, table, onReconnect, onDirtyChange, 
         },
       ];
     });
+    const backItems =
+      structure && active && active.row < rows.length && activeCells && onOpenTable
+        ? referencingItems(incoming, structure, activeCells).map((r) => ({ label: r.label, onSelect: () => onOpenTable(r.schema, r.table, r.filter) }))
+        : [];
     return [
       ...refItems,
-      ...(refItems.length ? (["separator"] as const) : []),
+      ...backItems,
+      ...(refItems.length || backItems.length ? (["separator"] as const) : []),
       {
         label: "Copy as SQL IN list",
         onSelect: () =>

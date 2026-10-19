@@ -693,6 +693,17 @@ impl Engine {
         Ok(s)
     }
 
+    /// Foreign keys in other tables that point at `schema.table`.
+    pub async fn referencing_keys(
+        &self,
+        session_id: &str,
+        schema: &str,
+        table: &str,
+    ) -> Result<Vec<crate::model::ReferencingKey>> {
+        let (schema, table) = (schema.to_string(), table.to_string());
+        self.with_session(session_id, move |s| Box::pin(async move { s.referencing_keys(&schema, &table).await })).await
+    }
+
     pub fn invalidate_structures(&self, session_id: &str) {
         lock(&self.structures).retain(|k, _| k.0 != session_id);
     }

@@ -15,7 +15,8 @@ use crate::config::{ConnectionProfile, Driver};
 use crate::dialect::Dialect;
 use crate::error::Result;
 use crate::model::{
-    Capabilities, ColumnOrigin, DbObject, ObjectKind, Param, RowSet, ServerInfo, StatementOutcome, TableStructure,
+    Capabilities, ColumnOrigin, DbObject, ObjectKind, Param, ReferencingKey, RowSet, ServerInfo, StatementOutcome,
+    TableStructure,
 };
 
 #[cfg(feature = "duckdb")]
@@ -73,6 +74,34 @@ pub trait Session: Send {
     async fn list_objects(&mut self, schema: &str) -> Result<Vec<DbObject>>;
     async fn table_structure(&mut self, schema: &str, name: &str) -> Result<TableStructure>;
     async fn object_definition(&mut self, schema: &str, name: &str, kind: ObjectKind) -> Result<String>;
+
+    /// Foreign keys in other tables that point at this one. The default reads the structure of
+    /// every table in the same schema (SQLite, DuckDB); drivers with a catalog for it answer
+    /// across schemas in one query.
+    async fn referencing_keys(&mut self, schema: &str, name: &str) -> Result<Vec<ReferencingKey>> {
+        let mut out = Vec::new();
+        for o in self.list_objects(schema).await? {
+            if o.kind != ObjectKind::Table {
+                continue;
+            }
+            // A table that can't be read (dropped meanwhile, no rights) has nothing to offer.
+            let Ok(st) = self.table_structure(schema, &o.name).await else { continue };
+            for fk in st.foreign_keys {
+                let here = fk.ref_table.eq_ignore_ascii_case(name)
+                    && (fk.ref_schema.is_empty() || fk.ref_schema.eq_ignore_ascii_case(schema));
+                if here {
+                    out.push(ReferencingKey {
+                        schema: schema.to_string(),
+                        table: o.name.clone(),
+                        name: fk.name,
+                        columns: fk.columns,
+                        ref_columns: fk.ref_columns,
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
 
     /// Executes one user-authored statement (no bind parameters). Result rows beyond
     /// `max_rows` are not fetched and the row set is marked truncated.
@@ -161,6 +190,22 @@ pub async fn connect(
 }
 
 /// Splits `\x1f`-joined lists produced by the catalog queries.
+/// Folds catalog rows of (schema, table, key name, column, referenced column), ordered by key
+/// and column position, into one entry per key.
+pub(crate) fn group_referencing_keys(rows: impl IntoIterator<Item = [String; 5]>) -> Vec<ReferencingKey> {
+    let mut out: Vec<ReferencingKey> = Vec::new();
+    for [schema, table, name, column, ref_column] in rows {
+        match out.last_mut() {
+            Some(k) if k.schema == schema && k.table == table && k.name == name => {
+                k.columns.push(column);
+                k.ref_columns.push(ref_column);
+            }
+            _ => out.push(ReferencingKey { schema, table, name, columns: vec![column], ref_columns: vec![ref_column] }),
+        }
+    }
+    out
+}
+
 pub(crate) fn split_list(s: &str) -> Vec<String> {
     if s.is_empty() { Vec::new() } else { s.split('\u{1f}').map(str::to_string).collect() }
 }

@@ -244,6 +244,35 @@ impl Session for PgSession {
         Ok(out)
     }
 
+    async fn referencing_keys(&mut self, schema: &str, name: &str) -> Result<Vec<ReferencingKey>> {
+        let oid = self.relation_oid(schema, name).await?;
+        Ok(self
+            .rows(
+                "SELECT n.nspname::text, c.relname::text, con.conname::text, \
+                   array_to_string(ARRAY(SELECT a.attname FROM unnest(con.conkey) WITH ORDINALITY k(n, o) \
+                     JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.n ORDER BY k.o), E'\\x1f'), \
+                   array_to_string(ARRAY(SELECT a.attname FROM unnest(con.confkey) WITH ORDINALITY k(n, o) \
+                     JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.n ORDER BY k.o), E'\\x1f') \
+                 FROM pg_constraint con JOIN pg_class c ON c.oid = con.conrelid \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE con.confrelid = $1::oid AND con.contype = 'f' ORDER BY 1, 2, 3",
+                &[Some(oid)],
+            )
+            .await?
+            .iter()
+            .map(|r| {
+                let r = TextRow(r);
+                ReferencingKey {
+                    schema: r.str(0),
+                    table: r.str(1),
+                    name: r.str(2),
+                    columns: split_list(&r.str(3)),
+                    ref_columns: split_list(&r.str(4)),
+                }
+            })
+            .collect())
+    }
+
     async fn table_structure(&mut self, schema: &str, name: &str) -> Result<TableStructure> {
         let oid = self.relation_oid(schema, name).await?;
         let oid_param = || vec![Some(oid.clone())];

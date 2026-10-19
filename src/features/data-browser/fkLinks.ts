@@ -1,7 +1,7 @@
 // Following a foreign key: which grid cells link to a referenced row, and the filter that finds
 // it. A foreign key references a primary or unique key, so the filter matches at most one row.
 
-import type { Cell, ColumnMeta, ForeignKeyInfo, TableStructure } from "../../types/backend";
+import type { Cell, ColumnMeta, ForeignKeyInfo, ReferencingKey, TableStructure } from "../../types/backend";
 import { cellParam, isNotLoaded, isPartial } from "../../lib/cells";
 import { filterToText, type GroupNode } from "../filters/filterModel";
 
@@ -46,7 +46,7 @@ export function resultLinks(columns: ColumnMeta[], structures: TableStructure[])
   return byCol;
 }
 
-function linkValues(link: FkLink, row: Cell[]): string[] | null {
+function linkValues(link: Pick<FkLink, "columns">, row: Cell[]): string[] | null {
   const out: string[] = [];
   for (const i of link.columns) {
     const c = row[i];
@@ -90,4 +90,40 @@ export function linkLabel(link: FkLink, row: Cell[]): string | null {
   if (!filter) return null;
   // Worded like the filter chips the opened tab shows (the same formatter).
   return `Open ${link.fk.refTable} where ${filter.children.map(filterToText).join(" and ")}`;
+}
+
+export interface ReferencingItem {
+  label: string;
+  schema: string;
+  table: string;
+  /** Finds the rows of `schema.table` whose key holds this row's values. */
+  filter: GroupNode;
+}
+
+/**
+ * "Rows that point here": for each foreign key in another table that references this one, the
+ * filter that finds the rows holding this row's values. A key needs every referenced value; a
+ * NULL, unloaded or preview value can't be pointed at.
+ */
+export function referencingItems(keys: ReferencingKey[], s: TableStructure, row: Cell[]): ReferencingItem[] {
+  const repeated = (k: ReferencingKey) => keys.filter((o) => o.schema === k.schema && o.table === k.table).length > 1;
+  return keys.flatMap((k) => {
+    const columns = k.refColumns.map((n) => s.columns.findIndex((c) => c.name === n));
+    if (columns.length !== k.columns.length || columns.some((i) => i < 0)) return [];
+    const values = linkValues({ columns }, row);
+    if (!values) return [];
+    const name = k.schema === s.schema ? k.table : `${k.schema}.${k.table}`;
+    return [
+      {
+        label: `Rows in ${name} that point here${repeated(k) ? ` (${k.columns.join(", ")})` : ""}`,
+        schema: k.schema,
+        table: k.table,
+        filter: {
+          type: "group",
+          logic: "and",
+          children: k.columns.map((column, i) => ({ type: "condition", column, op: "eq", value: values[i]!, enabled: true })),
+        },
+      },
+    ];
+  });
 }

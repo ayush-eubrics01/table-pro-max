@@ -16,7 +16,7 @@ use mysql_async::consts::ColumnType;
 use mysql_async::prelude::Queryable;
 use mysql_async::{Column, Conn, DriverError, Opts, OptsBuilder, SslOpts, Value};
 
-use super::{Canceller, ConnectOptions, ParamStatement, Session, TextRow};
+use super::{Canceller, ConnectOptions, ParamStatement, Session, TextRow, group_referencing_keys};
 use crate::config::{ConnectionProfile, Driver, TlsMode};
 use crate::dialect::Dialect;
 use crate::error::{AppError, ErrorKind, Result};
@@ -349,6 +349,22 @@ impl Session for MySession {
             }
         }));
         Ok(out)
+    }
+
+    async fn referencing_keys(&mut self, schema: &str, name: &str) -> Result<Vec<ReferencingKey>> {
+        let rows = self
+            .rows(
+                "SELECT TABLE_SCHEMA, TABLE_NAME, CONSTRAINT_NAME, COLUMN_NAME, REFERENCED_COLUMN_NAME \
+                 FROM information_schema.KEY_COLUMN_USAGE \
+                 WHERE REFERENCED_TABLE_SCHEMA = ? AND REFERENCED_TABLE_NAME = ? \
+                 ORDER BY TABLE_SCHEMA, TABLE_NAME, CONSTRAINT_NAME, ORDINAL_POSITION",
+                &[Some(schema.to_string()), Some(name.to_string())],
+            )
+            .await?;
+        Ok(group_referencing_keys(rows.iter().map(|r| {
+            let r = TextRow(r);
+            [r.str(0), r.str(1), r.str(2), r.str(3), r.str(4)]
+        })))
     }
 
     async fn table_structure(&mut self, schema: &str, name: &str) -> Result<TableStructure> {

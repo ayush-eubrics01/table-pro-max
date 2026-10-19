@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef } from "react";
 import { createRoot } from "react-dom/client";
 import { DataGrid, type GridHandle } from "./DataGrid";
@@ -72,6 +72,30 @@ describe("DataGrid", () => {
     fireEvent.keyDown(list, { key: "Escape" });
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     expect(edits).toEqual([]);
+  });
+
+  it("builds the menu for the cell right-clicked, not the selection before it", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: write }, configurable: true });
+    const seen: unknown[] = [];
+    render(
+      <DataGrid
+        ariaLabel="Rows"
+        columns={columns}
+        rowCount={rows.length}
+        getRow={(i) => rows[i]}
+        sort={[]}
+        contextItems={(sel) => (seen.push(sel), [])}
+      />,
+    );
+    fireEvent.mouseDown(screen.getByText("DRAFT").closest(".grid-cell")!);
+    fireEvent.contextMenu(screen.getAllByRole("gridcell").find((c) => c.textContent === "2")!);
+    expect(seen.at(-1)).toMatchObject({ rows: [1], cols: [0], active: { row: 1, col: 0 } });
+    fireEvent.click((await screen.findAllByRole("menuitem", { name: /^Copy/ }))[0]!);
+    await waitFor(() => expect(write).toHaveBeenCalledWith("2"));
+    // The row number's menu covers the whole row.
+    fireEvent.contextMenu(screen.getAllByRole("rowheader")[0]!);
+    expect(seen.at(-1)).toMatchObject({ rows: [0], cols: [0, 1, 2, 3] });
   });
 
   it("adds scroll space under the last row when asked", () => {

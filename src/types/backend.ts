@@ -187,6 +187,17 @@ export interface ColumnInfo {
   enumValues?: string[];
 }
 
+/** A foreign key in another table that points at this one ("rows that point here"). */
+export interface ReferencingKey {
+  schema: string;
+  table: string;
+  name: string;
+  /** The referencing table's columns. */
+  columns: string[];
+  /** This table's columns they hold, in the same order. */
+  refColumns: string[];
+}
+
 export interface IndexInfo {
   name: string;
   columns: string[];

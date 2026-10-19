@@ -188,21 +188,25 @@ export function DataGrid(props: DataGridProps) {
     }
   }, [firstRow, lastRow, rowCount, getRow, onNeedRows]);
 
-  const selection = useMemo<GridSelection>(() => {
-    if (!anchor || !focus) return { rows: [], cols: [], active: focus };
-    const r0 = Math.min(anchor.row, focus.row);
-    const r1 = Math.max(anchor.row, focus.row);
-    const rows: number[] = [];
-    for (let r = r0; r <= r1 && r < rowCount; r++) rows.push(r);
-    let cols: number[];
-    if (anchor.col < 0 || focus.col < 0) cols = visible;
-    else {
-      const a = visible.indexOf(anchor.col);
-      const b = visible.indexOf(focus.col);
-      cols = visible.slice(Math.min(a, b), Math.max(a, b) + 1);
-    }
-    return { rows, cols, active: focus };
-  }, [anchor, focus, visible, rowCount]);
+  const selectionOf = useCallback(
+    (anchor: CellPos | null, focus: CellPos | null): GridSelection => {
+      if (!anchor || !focus) return { rows: [], cols: [], active: focus };
+      const r0 = Math.min(anchor.row, focus.row);
+      const r1 = Math.max(anchor.row, focus.row);
+      const rows: number[] = [];
+      for (let r = r0; r <= r1 && r < rowCount; r++) rows.push(r);
+      let cols: number[];
+      if (anchor.col < 0 || focus.col < 0) cols = visible;
+      else {
+        const a = visible.indexOf(anchor.col);
+        const b = visible.indexOf(focus.col);
+        cols = visible.slice(Math.min(a, b), Math.max(a, b) + 1);
+      }
+      return { rows, cols, active: focus };
+    },
+    [visible, rowCount],
+  );
+  const selection = useMemo(() => selectionOf(anchor, focus), [selectionOf, anchor, focus]);
 
   useEffect(() => {
     onSelectionChange?.(selection);
@@ -245,24 +249,24 @@ export function DataGrid(props: DataGridProps) {
   );
 
   const copySelection = useCallback(
-    async (withHeader = false) => {
-      if (selection.rows.length === 0) return;
-      const data = selection.rows.map((r) => {
+    async (withHeader = false, sel: GridSelection = selection) => {
+      if (sel.rows.length === 0) return;
+      const data = sel.rows.map((r) => {
         const row = getRow(r);
-        return selection.cols.map((c) => (row ? (row[c] ?? null) : null));
+        return sel.cols.map((c) => (row ? (row[c] ?? null) : null));
       });
       let fetched: number;
       try {
-        fetched = await fillPlaceholders(data, selection.rows, selection.cols);
+        fetched = await fillPlaceholders(data, sel.rows, sel.cols);
       } catch (e) {
         // Never leave a stale clipboard behind silently.
         notifyError(e, "Could not copy");
         return;
       }
-      const header = withHeader ? selection.cols.map((c) => columns[c]!.name) : undefined;
+      const header = withHeader ? sel.cols.map((c) => columns[c]!.name) : undefined;
       const text = toTsv(data, header);
       await navigator.clipboard.writeText(text);
-      if (fetched > 0) notify(`Copied ${pluralize(selection.rows.length, "row")} (${formatBytes(new TextEncoder().encode(text).length)})`, "success");
+      if (fetched > 0) notify(`Copied ${pluralize(sel.rows.length, "row")} (${formatBytes(new TextEncoder().encode(text).length)})`, "success");
     },
     [selection, getRow, columns, fillPlaceholders],
   );
@@ -466,11 +470,12 @@ export function DataGrid(props: DataGridProps) {
     ];
   };
 
-  const cellMenu = (): MenuEntry[] => [
-    { label: "Copy", shortcut: "Ctrl+C", onSelect: () => copySelection(false) },
-    { label: "Copy with column names", shortcut: "Ctrl+Shift+C", onSelect: () => copySelection(true) },
+  /** The menu for `sel`: on a right-click the new selection, which isn't rendered yet. */
+  const cellMenu = (sel: GridSelection = selection): MenuEntry[] => [
+    { label: "Copy", shortcut: "Ctrl+C", onSelect: () => copySelection(false, sel) },
+    { label: "Copy with column names", shortcut: "Ctrl+Shift+C", onSelect: () => copySelection(true, sel) },
     ...((): MenuEntry[] => {
-      const extra = contextItems?.(selection) ?? [];
+      const extra = contextItems?.(sel) ?? [];
       return extra.length ? ["separator", ...extra] : [];
     })(),
   ];
@@ -596,11 +601,11 @@ export function DataGrid(props: DataGridProps) {
                     if (!e.shiftKey) setAnchor({ row: ri.index, col: -1 });
                   }}
                   onContextMenu={(e) => {
-                    if (!inSelection(ri.index, visible[0] ?? 0)) {
-                      setAnchor({ row: ri.index, col: -1 });
-                      setFocus({ row: ri.index, col: -1 });
-                    }
-                    menu.open(e, cellMenu());
+                    if (inSelection(ri.index, visible[0] ?? 0)) return menu.open(e, cellMenu());
+                    const pos = { row: ri.index, col: -1 };
+                    setAnchor(pos);
+                    setFocus(pos);
+                    menu.open(e, cellMenu(selectionOf(pos, pos)));
                   }}
                 >
                   {state === "inserted" ? "+" : ri.index + 1 + rowNumberOffset}
@@ -659,8 +664,10 @@ export function DataGrid(props: DataGridProps) {
                         if (v !== undefined && isNotLoaded(v)) onOpenCell?.(ri.index, col, "click");
                       }}
                       onContextMenu={(e) => {
-                        if (!inSelection(ri.index, col)) select({ row: ri.index, col });
-                        menu.open(e, cellMenu());
+                        if (inSelection(ri.index, col)) return menu.open(e, cellMenu());
+                        const pos = { row: ri.index, col };
+                        select(pos);
+                        menu.open(e, cellMenu(selectionOf(pos, pos)));
                       }}
                     >
                       {isEditing && c.enumValues?.length ? (

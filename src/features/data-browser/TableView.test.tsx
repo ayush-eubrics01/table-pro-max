@@ -515,6 +515,45 @@ describe("following references", () => {
     expect(opened).toHaveLength(3);
   });
 
+  it("opens the rows that point at a row from the menu", async () => {
+    const opened: unknown[] = [];
+    const asked: unknown[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "table_structure") return ordersStructure;
+      if (cmd === "referencing_keys") {
+        asked.push(args);
+        return [{ schema: "public", table: "order_lines", name: "fk_l", columns: ["order_id"], refColumns: ["id"] }];
+      }
+      if (cmd === "browse_table") return { columns: [], rows: [["1", "42"], ["2", null]], sql: "SELECT …", durationMs: 1, hasMore: false };
+      if (cmd === "list_column_fetch" || cmd === "list_filter_presets") return [];
+      return null;
+    });
+    render(<TableView session={session} schema="public" table="orders" onReconnect={async () => {}} onOpenTable={(...a) => opened.push(a)} />);
+    const cell = (await screen.findByText("42")).closest(".grid-cell")!;
+    fireEvent.mouseDown(cell);
+    fireEvent.contextMenu(cell);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rows in order_lines that point here" }));
+    expect(asked[0]).toMatchObject({ sessionId: session.sessionId, schema: "public", table: "orders" });
+    const filter = { type: "group", logic: "and", children: [{ type: "condition", column: "order_id", op: "eq", value: "1", enabled: true }] };
+    expect(opened).toEqual([["public", "order_lines", filter]]);
+  });
+
+  it("offers no reverse lookup when nothing points at the table, or the lookup fails", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "table_structure") return ordersStructure;
+      if (cmd === "referencing_keys") throw { kind: "database", message: "permission denied" };
+      if (cmd === "browse_table") return { columns: [], rows: [["1", "42"]], sql: "SELECT …", durationMs: 1, hasMore: false };
+      if (cmd === "list_column_fetch" || cmd === "list_filter_presets") return [];
+      return null;
+    });
+    render(<TableView session={session} schema="public" table="orders" onReconnect={async () => {}} onOpenTable={() => {}} />);
+    const cell = (await screen.findByText("42")).closest(".grid-cell")!;
+    fireEvent.mouseDown(cell);
+    fireEvent.contextMenu(cell);
+    await screen.findByRole("menuitem", { name: "Copy as SQL IN list" });
+    expect(screen.queryByRole("menuitem", { name: /point here/ })).not.toBeInTheDocument();
+  });
+
   it("follows the value the grid shows, including a pending edit", async () => {
     const opened: unknown[][] = [];
     render(<TableView session={session} schema="public" table="orders" onReconnect={async () => {}} onOpenTable={(...a) => opened.push(a)} />);
