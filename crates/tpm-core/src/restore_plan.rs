@@ -23,7 +23,7 @@ pub const UNREADABLE: &str = "the statement could not be analysed";
 pub const TABLE_UNREADABLE: &str = "the table could not be read";
 pub const MULTI: &str = "names more than one table";
 pub const COMBINED: &str = "combines several changes";
-pub const BINARY: &str = "the table has binary columns";
+pub const BINARY: &str = "the table's primary key is binary";
 pub const MERGE: &str = "uses MERGE";
 pub const DROPS_KEY: &str = "drops a primary-key column";
 pub const DROPPED_UNCLEAR: &str = "the dropped column could not be identified";
@@ -352,15 +352,16 @@ pub fn structure_reason(plan: &CapturePlan, s: &TableStructure, driver: Driver) 
     {
         return Some(UPSERT_KEY.into());
     }
-    if has_binary_columns(s, driver) {
+    if has_binary_key(s, driver) {
         return Some(BINARY.into());
     }
     None
 }
 
-/// PostgreSQL reads bytea back as `\x` hex text, which round-trips; other engines would not.
-pub fn has_binary_columns(s: &TableStructure, driver: Driver) -> bool {
-    driver != Driver::Postgres && s.columns.iter().any(|c| is_binary_type(&c.data_type))
+/// Binary values are written back as bytes (`EditValue::Bytes`), but rows are found by their key
+/// as text, which only PostgreSQL turns back into bytes.
+pub fn has_binary_key(s: &TableStructure, driver: Driver) -> bool {
+    driver != Driver::Postgres && s.primary_key().iter().any(|c| is_binary_type(&c.data_type))
 }
 
 fn from_sql(plan: &CapturePlan) -> String {
@@ -405,7 +406,9 @@ pub fn capture_select(plan: &CapturePlan, s: &TableStructure, dialect: Dialect, 
     for c in cols {
         let q = dialect.quote_ident(&c.name)?;
         select.push(match dialect {
-            // Text everywhere (bytea too, as \x hex) so every value round-trips as a parameter.
+            // Text everywhere so every value round-trips as a parameter; binary values are read
+            // as bytes (kept as `\x` hex) and written back as bytes (DuckDB's BLOB text differs).
+            Dialect::Postgres if is_binary_type(&c.data_type) => format!("{qual}.{q}"),
             Dialect::Postgres => format!("{qual}.{q}::text AS {q}"),
             _ => dialect.read_column(&format!("{qual}.{q}"), &q, &c.data_type),
         });
@@ -744,8 +747,12 @@ mod tests {
             None,
             "a delete can be re-inserted"
         );
-        assert_eq!(structure_reason(&cap("DELETE FROM orders"), &s, Driver::Mysql), Some(BINARY.into()));
+        // Binary columns are kept (and written back as bytes); a binary key can't find its rows.
+        assert_eq!(structure_reason(&cap("DELETE FROM orders"), &s, Driver::Mysql), None);
         assert_eq!(structure_reason(&cap("DELETE FROM orders"), &s, Driver::Postgres), None);
+        let binkey =
+            TableStructure { columns: vec![col("id", "binary(16)", Some(1)), col("a", "text", None)], ..orders() };
+        assert_eq!(structure_reason(&cap("DELETE FROM orders"), &binkey, Driver::Mysql), Some(BINARY.into()));
     }
 
     #[test]
@@ -753,7 +760,7 @@ mod tests {
         let p = cap("UPDATE orders o SET status = 'x' WHERE o.id = 1");
         assert_eq!(
             capture_select(&p, &orders(), Dialect::Postgres, true).unwrap(),
-            "SELECT o.\"id\"::text AS \"id\", o.\"status\"::text AS \"status\", o.\"doc\"::text AS \"doc\" FROM orders AS o WHERE o.id = 1 FOR UPDATE"
+            "SELECT o.\"id\"::text AS \"id\", o.\"status\"::text AS \"status\", o.\"doc\" FROM orders AS o WHERE o.id = 1 FOR UPDATE"
         );
         let t = cap("TRUNCATE orders");
         assert_eq!(

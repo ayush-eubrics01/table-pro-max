@@ -69,7 +69,8 @@ describe("CreateTableDialog", () => {
     ["mysql", "MySQL", "bigint AUTO_INCREMENT", "varchar(255)"],
     ["mssql", "Microsoft SQL Server", "bigint IDENTITY", "nvarchar(255)"],
     ["sqlite", "SQLite", "INTEGER", "REAL"],
-    ["postgres", "DuckDB", "BIGINT", "text"],
+    // DuckDB speaks the PostgreSQL dialect but has its own types (no jsonb).
+    ["postgres", "DuckDB", "BIGINT", "VARCHAR"],
   ] as const)("starts %s (%s) with an id key column typed for it and suggests its types", (dialect, product, idType, nextType) => {
     renderDialog({ ...session, dialect, server: { ...session.server, product } });
     expect(names()).toHaveLength(1);
@@ -98,6 +99,14 @@ describe("CreateTableDialog", () => {
     fireEvent.change(names()[1]!, { target: { value: "total" } });
     expect(reviewButton()).toBeEnabled();
     fireEvent.change(names()[0]!, { target: { value: "" } });
+    expect(reviewButton()).toBeDisabled();
+  });
+
+  it("needs a type for every column before Review SQL", () => {
+    renderDialog();
+    fireEvent.change(screen.getByLabelText("Table name"), { target: { value: "orders" } });
+    expect(reviewButton()).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Type"), { target: { value: "  " } });
     expect(reviewButton()).toBeDisabled();
   });
 
@@ -152,13 +161,14 @@ describe("CreateTableDialog", () => {
       },
     ]);
     expect(review).toHaveTextContent('CREATE TABLE "public"."orders"');
+    expect(review).toHaveTextContent("Creates public.orders");
     expect(review).toHaveTextContent("one transaction");
     expect(ddl).toEqual([]);
 
     fireEvent.click(within(review).getByRole("button", { name: "Create table" }));
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith("orders"));
     expect(ddl).toEqual([{ sessionId: "sess-1", statements: STATEMENTS }]);
-    expect(screen.getByRole("status")).toHaveTextContent(/Created\s+orders/);
+    expect(screen.getByRole("status").textContent).toContain("Created orders");
     expect(onClose).not.toHaveBeenCalled();
   });
 
