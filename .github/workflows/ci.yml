@@ -105,7 +105,8 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
-      - run: npm test
+      # Every test, and the components' coverage kept at least where it is (vite.config.ts).
+      - run: npm run test:coverage
       - run: npm run build
 
   desktop:
