@@ -3267,12 +3267,12 @@ fn grid_capture(
     statements: &[ParamStatement],
 ) -> Result<GridPlan> {
     use crate::changes::RowChange;
-    use crate::restore_plan::{BINARY, CHANGES_KEY, NO_KEY, has_binary_columns};
+    use crate::restore_plan::{BINARY, CHANGES_KEY, NO_KEY, has_binary_key};
     let pk: Vec<String> = s.primary_key().iter().map(|c| c.name.clone()).collect();
     if pk.is_empty() {
         return Ok(GridPlan::Skip(NO_KEY.into()));
     }
-    if has_binary_columns(s, driver) {
+    if has_binary_key(s, driver) {
         return Ok(GridPlan::Skip(BINARY.into()));
     }
     let (mut updated, mut deleted) = (Vec::new(), Vec::new());

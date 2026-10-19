@@ -14,6 +14,7 @@ import { useWorkspaces, type QueryTab as QueryTabModel, type Workspace } from ".
 import { EnvBadge } from "../../components/EnvBadge";
 import { ParametersDialog, type ParameterValues } from "./ParametersDialog";
 import { useSnippets } from "../../stores/snippets";
+import { useSavedQueries } from "../../stores/savedQueries";
 import { ConfirmRunBody, needsName, withNameConfirm } from "../connections/nameConfirm";
 import { SqlEditor, type RunMode, type SqlEditorHandle } from "./SqlEditor";
 import { ResultsPanel } from "./ResultsPanel";
@@ -375,8 +376,18 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
     }
     const id = tab.savedQueryId ?? uid();
     try {
-      await api.saveQuery({ id, connectionId: ws.profile.id, name, folder: null, sql, favorite: false });
+      // Saving again keeps what was set in the sidebar: its folder, favourite and connection.
+      const existing = tab.savedQueryId ? (await api.listSavedQueries()).find((q) => q.id === tab.savedQueryId) : undefined;
+      await api.saveQuery({
+        id,
+        connectionId: existing ? existing.connectionId : ws.profile.id,
+        name,
+        folder: existing?.folder ?? null,
+        sql,
+        favorite: existing?.favorite ?? false,
+      });
       updateTab(ws.id, tab.id, { savedQueryId: id, title: name, dirty: false });
+      useSavedQueries.getState().bump();
       notify(`Saved "${name}"`, "success");
     } catch (e) {
       notifyError(e, "Query was not saved");
@@ -389,6 +400,7 @@ export function QueryTab({ ws, tab, active, onDirtyChange, onOpenTable }: Props)
     if (!name) return;
     try {
       await api.saveQuery({ id: uid(), connectionId: ws.profile.id, name, folder: null, sql: textOf(1), favorite: false });
+      useSavedQueries.getState().bump();
       notify(`Saved "${name}"`, "success");
     } catch (e) {
       notifyError(e, "Query was not saved");

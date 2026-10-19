@@ -3,13 +3,14 @@ import { fuzzyMatch, rank } from "../../lib/fuzzy";
 import { withNameConfirm } from "../connections/nameConfirm";
 import { Icon } from "../../components/Icon";
 import { createDashboard } from "../dashboards/DashboardView";
-import { uid } from "../../lib/text";
+import { pluralize, uid } from "../../lib/text";
 import type { DashboardRecord, DbObject, ObjectKind, Pin, SavedQuery } from "../../types/backend";
 import { api } from "../../lib/ipc";
 import { quoteName } from "../../lib/dialect";
 import { useWorkspaces, type Workspace } from "../../stores/workspaces";
-import { notify, notifyError } from "../../stores/ui";
-import { ContextMenu, useContextMenu } from "../../components/Menu";
+import { useSavedQueries } from "../../stores/savedQueries";
+import { confirmAction, notify, notifyError, promptText } from "../../stores/ui";
+import { ContextMenu, useContextMenu, type MenuEntry } from "../../components/Menu";
 import { CreateTableDialog } from "../schema-browser/CreateTableDialog";
 import { ReviewChangesDialog } from "../data-browser/ReviewChangesDialog";
 import { ImportDialog } from "../import-export/ImportDialog";
@@ -58,6 +59,7 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
   const [importInto, setImportInto] = useState<string | null | undefined>(undefined);
   const menu = useContextMenu();
   const activeTab = ws.tabs.find((t) => t.id === ws.activeTabId);
+  const savedVersion = useSavedQueries((s) => s.version);
 
   useEffect(() => {
     if (ws.session.capabilities.multipleDatabases) api.listDatabases(ws.session.sessionId).then(setDatabases).catch(() => undefined);
@@ -69,7 +71,7 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
       .listDashboards()
       .then((d) => setDashboards(d.filter((x) => x.definition.connectionId === ws.profile.id)))
       .catch(() => undefined);
-  }, [ws.session.sessionId, ws.session.capabilities.multipleDatabases, ws.profile.id, ws.tabs.length]);
+  }, [ws.session.sessionId, ws.session.capabilities.multipleDatabases, ws.profile.id, ws.tabs.length, savedVersion]);
 
   useEffect(() => {
     setUnreadable(new Set());
@@ -172,6 +174,108 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
         : []),
     ]);
   };
+
+  // ---- saved queries and their folders -------------------------------------------------
+
+  const visibleSaved = (saved ?? []).filter((q) => !needle || fuzzyMatch(needle, [q.name, q.folder ?? ""]) !== null);
+  const byFolder = new Map<string, SavedQuery[]>();
+  for (const q of visibleSaved) if (q.folder) byFolder.set(q.folder, [...(byFolder.get(q.folder) ?? []), q]);
+  const savedFolders = [...byFolder.entries()].sort(([a], [b]) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  const folderNames = [...new Set((saved ?? []).flatMap((q) => (q.folder ? [q.folder] : [])))].sort();
+
+  /** Saves the queries as given (a folder change) and shows them so. */
+  const resave = async (queries: SavedQuery[]) => {
+    try {
+      for (const q of queries) await api.saveQuery(q);
+    } catch (e) {
+      notifyError(e, "Could not change the folder");
+    }
+    api
+      .listSavedQueries()
+      .then((q) => setSaved(q.filter((x) => x.connectionId === null || x.connectionId === ws.profile.id)))
+      .catch(() => undefined);
+  };
+  const inFolder = (folder: string) => (saved ?? []).filter((q) => q.folder === folder);
+
+  const moveToFolder = async (q: SavedQuery) => {
+    const name = await promptText({
+      title: `Move "${q.name}" to a folder`,
+      label: "Folder",
+      initial: q.folder ?? "",
+      confirmLabel: "Move",
+      description: folderNames.length ? `Folders: ${folderNames.join(", ")}. A new name makes a new folder.` : "A new name makes a new folder.",
+    });
+    if (name === null || !name.trim() || name.trim() === q.folder) return;
+    await resave([{ ...q, folder: name.trim() }]);
+  };
+
+  const folderMenu = (folder: string): MenuEntry[] => {
+    const queries = inFolder(folder);
+    return [
+      {
+        label: "Rename folder…",
+        onSelect: async () => {
+          const name = await promptText({ title: `Rename the folder ${folder}`, label: "Name", initial: folder, confirmLabel: "Rename" });
+          if (name === null || !name.trim() || name.trim() === folder) return;
+          await resave(queries.map((q) => ({ ...q, folder: name.trim() })));
+        },
+      },
+      { label: "Delete folder (keep its queries)", onSelect: () => void resave(queries.map((q) => ({ ...q, folder: null }))) },
+      {
+        label: `Delete folder and its ${pluralize(queries.length, "query", "queries")}…`,
+        danger: true,
+        onSelect: async () => {
+          const ok = await confirmAction({
+            title: `Delete the folder ${folder} and its ${pluralize(queries.length, "saved query", "saved queries")}?`,
+            body: queries.map((q) => q.name).join(", "),
+            confirmLabel: `Delete ${pluralize(queries.length, "query", "queries")}`,
+            danger: true,
+          });
+          if (!ok) return;
+          for (const q of queries) {
+            try {
+              await api.deleteSavedQuery(q.id);
+            } catch (e) {
+              notifyError(e, `Could not delete "${q.name}"`);
+            }
+          }
+          const gone = new Set(queries.map((q) => q.id));
+          setSaved((x) => (x ?? []).filter((y) => !gone.has(y.id)));
+          setPins((x) => x.filter((p) => !(p.kind === "saved_query" && gone.has(p.name))));
+        },
+      },
+    ];
+  };
+
+  const savedItem = (s: SavedQuery, nested: boolean) => (
+    <button
+      key={s.id}
+      className={nested ? "tree-item in-folder" : "tree-item"}
+      role="treeitem"
+      onClick={() => openQuery(ws.id, { sql: s.sql, title: s.name, savedQueryId: s.id })}
+      onContextMenu={(e) =>
+        menu.open(e, [
+          { label: "Open", onSelect: () => openQuery(ws.id, { sql: s.sql, title: s.name, savedQueryId: s.id }) },
+          pinItem({ kind: "saved_query", schema: "", name: s.id }),
+          { label: "Move to folder…", onSelect: () => void moveToFolder(s) },
+          ...(s.folder ? [{ label: "Remove from folder", onSelect: () => void resave([{ ...s, folder: null }]) }] : []),
+          {
+            label: "Delete saved query",
+            danger: true,
+            onSelect: async () => {
+              await api.deleteSavedQuery(s.id);
+              setSaved((x) => (x ?? []).filter((y) => y.id !== s.id));
+              // Deleting a saved query also unpins it.
+              setPins((x) => x.filter((p) => !(p.kind === "saved_query" && p.name === s.id)));
+            },
+          },
+        ])
+      }
+    >
+      <Icon name="code_blocks" size={13} />
+      <span className="name">{s.name}</span>
+    </button>
+  );
 
   return (
     <aside className="sidebar" aria-label="Database objects">
@@ -304,41 +408,39 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
               </button>
             ))}
         </div>
-        {saved && saved.length > 0 && (
+        {saved && visibleSaved.length > 0 && (
           <div role="group">
-            <button className="tree-group" aria-expanded={!collapsed.saved} aria-label={`Saved queries (${saved.length})`} onClick={() => setCollapsed({ ...collapsed, saved: !collapsed.saved })}>
+            <button className="tree-group" aria-expanded={!collapsed.saved} aria-label={`Saved queries (${visibleSaved.length})`} onClick={() => setCollapsed({ ...collapsed, saved: !collapsed.saved })}>
               <Icon name={collapsed.saved ? "chevron_right" : "keyboard_arrow_down"} size={14} />
               <span className="label">Saved queries</span>
-              <span className="count">{saved.length}</span>
+              <span className="count">{visibleSaved.length}</span>
             </button>
-            {!collapsed.saved &&
-              saved.map((s) => (
-                <button
-                  key={s.id}
-                  className="tree-item"
-                  role="treeitem"
-                  onClick={() => openQuery(ws.id, { sql: s.sql, title: s.name, savedQueryId: s.id })}
-                  onContextMenu={(e) =>
-                    menu.open(e, [
-                      { label: "Open", onSelect: () => openQuery(ws.id, { sql: s.sql, title: s.name, savedQueryId: s.id }) },
-                      pinItem({ kind: "saved_query", schema: "", name: s.id }),
-                      {
-                        label: "Delete saved query",
-                        danger: true,
-                        onSelect: async () => {
-                          await api.deleteSavedQuery(s.id);
-                          setSaved((x) => (x ?? []).filter((y) => y.id !== s.id));
-                          // Deleting a saved query also unpins it.
-                          setPins((x) => x.filter((p) => !(p.kind === "saved_query" && p.name === s.id)));
-                        },
-                      },
-                    ])
-                  }
-                >
-                  <Icon name="code_blocks" size={13} />
-                  <span className="name">{s.name}</span>
-                </button>
-              ))}
+            {!collapsed.saved && (
+              <>
+                {savedFolders.map(([folder, queries]) => {
+                  // A filter shows what matches inside every folder.
+                  const open = !!needle || !collapsed[`folder:${folder}`];
+                  return (
+                    <div key={folder} role="group" aria-label={folder}>
+                      <button
+                        className="tree-group tree-folder"
+                        aria-expanded={open}
+                        aria-label={`${folder} (${queries.length})`}
+                        onClick={() => setCollapsed({ ...collapsed, [`folder:${folder}`]: open })}
+                        onContextMenu={(e) => menu.open(e, folderMenu(folder))}
+                      >
+                        <Icon name={open ? "keyboard_arrow_down" : "chevron_right"} size={14} />
+                        <Icon name="folder_open" size={13} />
+                        <span className="label">{folder}</span>
+                        <span className="count">{queries.length}</span>
+                      </button>
+                      {open && queries.map((s) => savedItem(s, true))}
+                    </div>
+                  );
+                })}
+                {visibleSaved.filter((s) => !s.folder).map((s) => savedItem(s, false))}
+              </>
+            )}
           </div>
         )}
       </div>

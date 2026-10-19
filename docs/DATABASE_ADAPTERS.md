@@ -182,7 +182,8 @@ checks `@@autocommit`, and the engine also tracks the `BEGIN`/`COMMIT`/`ROLLBACK
   results from one table can be edited.
 * Restore points: rows are read under `UPDLOCK, HOLDLOCK` (TRUNCATE/DROP lock the table with
   `TABLOCKX`); restores re-insert identity values under `SET IDENTITY_INSERT`, and a dropped table
-  comes back with its identity seed and step. Tables with binary columns get none, as on MySQL.
+  comes back with its identity seed and step. Binary values come back as bytes; tables whose
+  primary key is binary get none.
   The engine asks `@@TRANCOUNT` (and `DB_NAME()`) after each batch to follow the user's
   transactions; one that ended counts as committed unless the batch failed or only rolled back.
   An error in a statement never ends the user's transaction on the app's side.
