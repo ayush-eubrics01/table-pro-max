@@ -639,8 +639,8 @@ impl Session for MsSession {
             cancel: CancelSupport::Attention,
             transactions: true,
             transactional_ddl: true,
-            explain: false,
-            explain_analyze: false,
+            explain: true,
+            explain_analyze: true,
             materialized_views: false,
             routines: true,
             sequences: true,
@@ -1046,6 +1046,25 @@ impl Session for MsSession {
 
     async fn execute_params(&mut self, sql: &str, params: &[Param], max_rows: usize) -> Result<Vec<StatementOutcome>> {
         self.run(sql, Some(params), max_rows).await
+    }
+
+    /// SHOWPLAN_XML has to be the only statement in its batch, so it can't go through `run`
+    /// (whose read-only wrapper adds statements); nothing runs while it is on, so this is safe on
+    /// a read-only connection too.
+    async fn estimated_plan(&mut self, sql: &str) -> Result<String> {
+        self.control("SET SHOWPLAN_XML ON").await?;
+        let plan = self.fetch(sql, &[], false).await;
+        // Always switched off: a session left in SHOWPLAN mode would stop running statements.
+        let off = self.control("SET SHOWPLAN_XML OFF").await;
+        if off.is_err() {
+            self.control("SET SHOWPLAN_XML OFF").await?;
+        }
+        let rs = plan?;
+        let xml: Vec<&str> = rs.rows.iter().filter_map(|r| r.first().and_then(|c| c.as_text())).collect();
+        if xml.is_empty() {
+            return Err(AppError::new(ErrorKind::Database, "SQL Server returned no plan for this statement"));
+        }
+        Ok(xml.join("\n"))
     }
 
     async fn describe(&mut self, sql: &str) -> Result<Vec<DescribedColumn>> {
