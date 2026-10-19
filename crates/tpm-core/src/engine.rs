@@ -2260,8 +2260,50 @@ impl Engine {
             }
             (Dialect::Sqlite, false) => (format!("EXPLAIN QUERY PLAN {}", stmt.sql), "sqlite_plan"),
             (Dialect::Sqlite, true) => return Err(AppError::unsupported("SQLite does not support EXPLAIN ANALYZE")),
-            // SQL Server returns plans as XML through SET SHOWPLAN_XML, which needs its own viewer.
-            (Dialect::Mssql, _) => return Err(AppError::unsupported("SQL Server query plans are not supported yet")),
+            // SQL Server: the estimated plan through SET SHOWPLAN_XML (its own batch, in the
+            // adapter); the actual plan through SET STATISTICS XML around the statement.
+            (Dialect::Mssql, false) => {
+                let t0 = Instant::now();
+                let sql = stmt.sql.clone();
+                let raw = self
+                    .with_session(session_id, move |s| Box::pin(async move { s.estimated_plan(&sql).await }))
+                    .await?;
+                return Ok(ExplainResult {
+                    format: "mssql_xml".into(),
+                    raw,
+                    rows: None,
+                    duration_ms: t0.elapsed().as_millis() as u64,
+                });
+            }
+            (Dialect::Mssql, true) => {
+                let t0 = Instant::now();
+                let batch = format!("SET STATISTICS XML ON;\n{}\n;SET STATISTICS XML OFF;", stmt.sql);
+                let outcomes = self
+                    .with_session(session_id, move |s| Box::pin(async move { s.execute(&batch, 100_000).await }))
+                    .await?;
+                // The plan comes back as an extra result set of one XML column.
+                let raw = outcomes
+                    .iter()
+                    .filter_map(|o| match o {
+                        StatementOutcome::Rows { rows } => Some(rows),
+                        _ => None,
+                    })
+                    .filter(|rs| rs.columns.first().is_some_and(|c| c.name.to_ascii_lowercase().contains("showplan")))
+                    .flat_map(|rs| {
+                        rs.rows.iter().filter_map(|r| r.first().and_then(|c| c.as_text()).map(str::to_string))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if raw.is_empty() {
+                    return Err(AppError::new(ErrorKind::Database, "SQL Server returned no plan for this statement"));
+                }
+                return Ok(ExplainResult {
+                    format: "mssql_xml".into(),
+                    raw,
+                    rows: None,
+                    duration_ms: t0.elapsed().as_millis() as u64,
+                });
+            }
         };
         let t0 = Instant::now();
         let outcomes = self

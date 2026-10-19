@@ -71,6 +71,74 @@ function SqlitePlan({ result }: { result: ExplainResult }) {
   return <>{roots.map(render)}</>;
 }
 
+/** Elements under `op` that belong to it, not to an operator nested inside it. */
+function own(op: Element, selector: string): Element[] {
+  return Array.from(op.querySelectorAll(selector)).filter((e) => e.parentElement?.closest("RelOp") === op);
+}
+
+const unbracket = (s: string | null) => (s ?? "").replace(/^\[|\]$/g, "");
+
+/** One SQL Server plan operator (`RelOp`) and the operators it reads from. */
+function MssqlPlanNode({ op, rootCost }: { op: Element; rootCost: number }) {
+  const cost = Number(op.getAttribute("EstimatedTotalSubtreeCost") ?? 0);
+  const physical = op.getAttribute("PhysicalOp") ?? "?";
+  const logical = op.getAttribute("LogicalOp");
+  const obj = own(op, "Object")[0];
+  const target = obj
+    ? ` on ${[obj.getAttribute("Schema"), obj.getAttribute("Table")].filter(Boolean).map(unbracket).join(".")}${obj.getAttribute("Index") ? ` using ${unbracket(obj.getAttribute("Index"))}` : ""}`
+    : "";
+  const predicate = own(op, "Predicate ScalarOperator, SeekPredicates ScalarOperator, SeekPredicateNew ScalarOperator")[0]?.getAttribute("ScalarString");
+  const counters = own(op, "RunTimeInformation > RunTimeCountersPerThread");
+  const actual = counters.length
+    ? {
+        rows: counters.reduce((n, c) => n + Number(c.getAttribute("ActualRows") ?? 0), 0),
+        executions: counters.reduce((n, c) => n + Number(c.getAttribute("ActualExecutions") ?? 0), 0),
+      }
+    : null;
+  return (
+    <div className="plan-node">
+      <div className="head">
+        <strong>{physical}</strong>
+        <span>
+          {logical && logical !== physical ? ` (${logical})` : ""}
+          {target}
+        </span>
+      </div>
+      <div className="stats">
+        cost {cost.toFixed(4)} · est. rows {op.getAttribute("EstimateRows") ?? "?"}
+        {actual && ` · actual rows ${actual.rows} × ${actual.executions}`}
+      </div>
+      {predicate && <div className="stats">{predicate}</div>}
+      {rootCost > 0 && <div className="bar" style={{ width: `${Math.min(100, Math.max(2, (cost / rootCost) * 100))}%` }} aria-hidden />}
+      {own(op, "RelOp").map((child, i) => (
+        <MssqlPlanNode key={i} op={child} rootCost={rootCost} />
+      ))}
+    </div>
+  );
+}
+
+/** SQL Server's showplan XML: each statement's operator tree. */
+function MssqlPlan({ raw }: { raw: string }) {
+  // The declaration says utf-16, which a JavaScript string no longer is.
+  const doc = new DOMParser().parseFromString(raw.replace(/^\s*<\?xml[^>]*\?>/, ""), "application/xml");
+  const plans = doc.querySelector("parsererror") ? [] : Array.from(doc.querySelectorAll("QueryPlan"));
+  if (plans.length === 0) return <pre className="code-block">{raw}</pre>;
+  return (
+    <>
+      {plans.map((plan, i) => {
+        const root = Array.from(plan.querySelectorAll("RelOp")).find((r) => r.parentElement?.closest("RelOp") === null);
+        const text = plan.closest("StmtSimple")?.getAttribute("StatementText");
+        return (
+          <div key={i}>
+            {plans.length > 1 && text && <div className="hint mono">{text}</div>}
+            {root && <MssqlPlanNode op={root} rootCost={Number(root.getAttribute("EstimatedTotalSubtreeCost") ?? 0)} />}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 /** Plans are engine specific; each format is rendered on its own terms. */
 export function ExplainView({ result }: { result: ExplainResult }) {
   let body: React.ReactNode;
@@ -91,6 +159,8 @@ export function ExplainView({ result }: { result: ExplainResult }) {
     } catch {
       body = <pre className="code-block">{result.raw}</pre>;
     }
+  } else if (result.format === "mssql_xml") {
+    body = <MssqlPlan raw={result.raw} />;
   } else if (result.format === "sqlite_plan") {
     body = <SqlitePlan result={result} />;
   } else if (result.format === "mysql_json") {
