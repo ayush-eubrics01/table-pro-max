@@ -534,9 +534,11 @@ async fn exercise(t: Target) {
         .await
         .unwrap_err();
     assert_eq!(err.kind, ErrorKind::PolicyViolation);
-    // The estimated plan works read-only too: nothing runs.
-    let ro_plan = engine.explain(&ro_info.session_id, "SELECT 1", false, false, None).await.unwrap();
-    assert!(ro_plan.raw.contains("<ShowPlanXML"));
+    if driver == Driver::Mssql {
+        // The estimated plan works read-only too: nothing runs.
+        let ro_plan = engine.explain(&ro_info.session_id, "SELECT 1", false, false, None).await.unwrap();
+        assert!(ro_plan.raw.contains("<ShowPlanXML"));
+    }
     run(&engine, &ro_info.session_id, "SELECT count(*) FROM tpm_it_items").await;
     if let Some(sql) = t.sequence_write {
         // Classified as a read, but the server's read-only transaction refuses it.
