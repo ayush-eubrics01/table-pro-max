@@ -11,6 +11,8 @@ const TYPE_SUGGESTIONS: Record<string, string[]> = {
   mysql: ["bigint", "int", "varchar(255)", "text", "tinyint(1)", "decimal(12,2)", "datetime", "date", "json", "blob"],
   sqlite: ["INTEGER", "TEXT", "REAL", "NUMERIC", "BLOB"],
   mssql: ["bigint", "int", "nvarchar(255)", "nvarchar(max)", "bit", "decimal(12,2)", "datetime2", "date", "uniqueidentifier", "varbinary(max)"],
+  // DuckDB uses the PostgreSQL dialect for SQL, but its own types.
+  duckdb: ["BIGINT", "INTEGER", "VARCHAR", "BOOLEAN", "DECIMAL(12,2)", "TIMESTAMP", "DATE", "UUID", "JSON", "BLOB"],
 };
 
 export function CreateTableDialog({
@@ -38,14 +40,15 @@ export function CreateTableDialog({
   const [columns, setColumns] = useState<ColumnDef[]>([{ name: "id", dataType: idType, nullable: false, default: null, primaryKey: true }]);
   const [review, setReview] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const types = TYPE_SUGGESTIONS[session.dialect] ?? [];
+  const types = TYPE_SUGGESTIONS[duck ? "duckdb" : session.dialect] ?? [];
+  const tableName = name.trim();
 
   const set = (i: number, patch: Partial<ColumnDef>) => setColumns((c) => c.map((x, k) => (k === i ? { ...x, ...patch } : x)));
 
   const preview = async () => {
     setError(null);
     try {
-      setReview(await api.previewCreateTable(session.sessionId, { schema, name: name.trim(), columns }));
+      setReview(await api.previewCreateTable(session.sessionId, { schema, name: tableName, columns }));
     } catch (e) {
       setError(toError(e).message);
     }
@@ -62,7 +65,7 @@ export function CreateTableDialog({
             <button className="btn" onClick={onClose}>
               Cancel
             </button>
-            <button className="btn btn-primary" onClick={preview} disabled={!name.trim() || columns.some((c) => !c.name.trim())}>
+            <button className="btn btn-primary" onClick={preview} disabled={!tableName || columns.some((c) => !c.name.trim() || !c.dataType.trim())}>
               Review SQL
             </button>
           </>
@@ -128,13 +131,13 @@ export function CreateTableDialog({
           title="Create table"
           sql={review.map((s) => `${s};`).join("\n\n")}
           atomic={session.capabilities.transactionalDdl}
-          summary={`Creates ${schema}.${name}`}
+          summary={`Creates ${schema}.${tableName}`}
           commitLabel="Create table"
           onClose={() => setReview(null)}
           onCommit={async () => {
             await api.applyDdl(session.sessionId, review);
-            notify(`Created ${name}`, "success");
-            onCreated(name.trim());
+            notify(`Created ${tableName}`, "success");
+            onCreated(tableName);
           }}
         />
       )}
