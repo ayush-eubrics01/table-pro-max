@@ -348,7 +348,10 @@ function PointDetail({
             try {
               counts = await api.applyRestore(session.sessionId, point.id, review.rows, review.taskId);
             } finally {
-              off();
+              // Stopping the listener can fail (the event plugin unavailable): nothing to do then.
+              void Promise.resolve()
+                .then(off)
+                .catch(() => undefined);
               setProgress(null);
             }
             const changed = counts.reduce((a, b) => a + b, 0);
