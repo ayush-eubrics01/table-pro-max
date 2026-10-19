@@ -1,5 +1,5 @@
 import type { Cell, ChangeSet, ColumnEdit, StatementResult } from "../../types/backend";
-import { cellParam, isBinary, isPartial } from "../../lib/cells";
+import { cellParam, isBinary, isBinaryType, isPartial } from "../../lib/cells";
 
 type Param = string | null;
 type ColumnValue = { column: string; value: Param };
@@ -37,6 +37,8 @@ export function readOnlyReason(st: StatementResult, row: Cell[] | undefined, col
     return ed.readOnly.find((r) => r.column === col)?.reason ?? ed.readOnly.find((r) => r.column === undefined)?.reason ?? "This column cannot be edited";
   }
   if (!row) return "Row not loaded";
+  // Typed text would be stored as text: binary values change through the opened table's editor.
+  if (isBinaryType(st.columns?.[col]?.typeName ?? "")) return "Binary values can be changed in the opened table";
   // A previewed long value is edited in the value editor, which loads it in full first.
   if (isBinary(row[col] ?? null)) return "Binary values cannot be edited here";
   if (ed.tables[table]!.keyColumns.some((k) => isBinary(row[k] ?? null))) return "Rows keyed by a binary value can't be edited here";

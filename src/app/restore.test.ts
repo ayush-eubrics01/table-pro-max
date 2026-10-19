@@ -23,6 +23,24 @@ describe("session snapshot", () => {
     expect(snapshot([ws], "w").workspaces[0]!.tabs[0]).toMatchObject({ kind: "table", name: "customers", filter });
   });
 
+  it("keeps a query tab's second editor", () => {
+    const ws = {
+      id: "w",
+      kind: "sql",
+      profile,
+      session,
+      schema: "public",
+      schemas: ["public"],
+      objects: {},
+      columns: {},
+      tabs: [{ kind: "query", id: "q", title: "Query 1", sql: "select 1", savedQueryId: null, dirty: true, split: true, sql2: "select 2" }],
+      activeTabId: "q",
+      closed: [],
+      health: "ok",
+    } as unknown as Workspace;
+    expect(snapshot([ws], "w").workspaces[0]!.tabs[0]).toMatchObject({ kind: "query", sql: "select 1", split: true, sql2: "select 2" });
+  });
+
   it("only restores a filter that has the shape of a filter group", () => {
     const ok = { type: "group", logic: "and", children: [] };
     expect(restoredFilter(ok)).toEqual(ok);

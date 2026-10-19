@@ -28,6 +28,22 @@ describe("RowDetail", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("binary fields open their editor instead of taking typed text", () => {
+    const onOpenEditor = vi.fn();
+    const columns = [
+      { name: "id", dataType: "integer", nullable: false, default: null, primaryKey: 1, autoIncrement: false, comment: null },
+      { name: "photo", dataType: "bytea", nullable: true, default: null, primaryKey: null, autoIncrement: false, comment: null },
+      { name: "thumb", dataType: "bytea", nullable: true, default: null, primaryKey: null, autoIncrement: false, comment: null },
+    ];
+    render(<RowDetail {...base} columns={columns} row={["1", null, { $bytes: "00ff", size: 2 }]} onOpenEditor={onOpenEditor} />);
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.getByText(/Binary, 2 B/)).toBeInTheDocument();
+    const edits = screen.getAllByRole("button", { name: "Edit…" });
+    expect(edits).toHaveLength(2);
+    fireEvent.click(edits[0]!);
+    expect(onOpenEditor).toHaveBeenCalledWith(1);
+  });
+
   it("edits an enum field with a list of its values", () => {
     const onEdit = vi.fn();
     const columns = [

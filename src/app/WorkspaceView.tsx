@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../components/Icon";
-import { mongoSessionInfo, useWorkspaces, type Tab, type Workspace } from "../stores/workspaces";
+import { hasUnsavedText, mongoSessionInfo, useWorkspaces, type Tab, type Workspace } from "../stores/workspaces";
 import { useRestore } from "../stores/restore";
 import { useConnections } from "../stores/connections";
 import { RestorePanel } from "../features/restore/RestorePanel";
@@ -37,7 +37,7 @@ export function WorkspaceView({ ws, visible }: { ws: Workspace; visible: boolean
   useEffect(() => () => usePendingEdits.getState().set(ws.id, 0), [ws.id]);
 
   const requestClose = async (tab: Tab) => {
-    const dirty = (tab.kind === "query" && tab.dirty && tab.sql.trim().length > 0 && !tab.savedQueryId) || dirtyTables[tab.id];
+    const dirty = hasUnsavedText(tab) || dirtyTables[tab.id];
     if (dirty) {
       const ok = await confirmAction({
         title: `Close ${tab.title}?`,
