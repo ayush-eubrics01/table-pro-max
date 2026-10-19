@@ -54,7 +54,10 @@ export function RestorePanel({ session, onClose }: { session: SessionInfo; onClo
   useEffect(load, [load, version]);
   useEffect(() => {
     if (openId !== null || !returnTo.current || !listRef.current) return;
-    listRef.current.querySelector<HTMLButtonElement>(`[data-id="${CSS.escape(returnTo.current)}"]`)?.focus();
+    const item = listRef.current.querySelector<HTMLButtonElement>(`[data-id="${CSS.escape(returnTo.current)}"]`);
+    // Not there yet (the list is still loading): a later render tries again.
+    if (!item) return;
+    item.focus();
     returnTo.current = null;
   }, [openId, points]);
 

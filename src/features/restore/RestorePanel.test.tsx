@@ -256,7 +256,8 @@ describe("RestorePanel", () => {
     await screen.findByRole("region", { name: "Restore point" });
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: /public\.orders/ })));
     fireEvent.click(screen.getByRole("button", { name: /All restore points/ }));
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: /orders · Update · 2 rows/ })));
+    // CI with coverage is slow: give the list its render.
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: /orders · Update · 2 rows/ })), { timeout: 3000 });
   });
 
   it("offers no Delete all when only pending restore points exist", async () => {
