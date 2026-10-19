@@ -79,7 +79,7 @@ function renderView(opts: { structure?: TableStructure; session?: SessionInfo; o
 
 const section = (heading: RegExp) => screen.getByRole("heading", { name: heading }).closest("section")!;
 /** A row of the Columns table. */
-const row = (name: string) => within(section(/^Columns/)).getByRole("cell", { name }).closest("tr")!;
+const row = (name: string | RegExp) => within(section(/^Columns/)).getByRole("cell", { name }).closest("tr")!;
 
 async function reviewSql() {
   fireEvent.click(screen.getByRole("button", { name: "Review SQL" }));
@@ -230,7 +230,7 @@ describe("StructureView", () => {
     fireEvent.click(dialog.getByLabelText("Allow NULL"));
     fireEvent.click(dialog.getByRole("button", { name: "Stage changes" }));
 
-    expect(row("status")).toHaveClass("pending");
+    expect(row(/^state/)).toHaveClass("pending");
     expect(screen.getByText("4 pending structure changes")).toBeInTheDocument();
     await reviewSql();
     expect(previews[0]!.ops).toEqual([
@@ -239,6 +239,50 @@ describe("StructureView", () => {
       { type: "setDefault", name: "status", default: null },
       { type: "renameColumn", from: "status", to: "state" },
     ]);
+  });
+
+  it("shows a staged column as it will be, and a second edit replaces the first", async () => {
+    renderView();
+    fireEvent.click(screen.getByRole("button", { name: "Edit status" }));
+    let dialog = within(screen.getByRole("dialog", { name: "Edit column status" }));
+    fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "state" } });
+    fireEvent.change(dialog.getByLabelText("Data type"), { target: { value: "varchar(20)" } });
+    fireEvent.click(dialog.getByRole("button", { name: "Stage changes" }));
+    // The row shows the new name and type, and says what it was.
+    expect(row(/^state/)).toHaveTextContent("was status");
+    expect(row(/^state/)).toHaveTextContent("varchar(20)");
+
+    // Editing again starts from the staged column and replaces its staged changes.
+    fireEvent.click(screen.getByRole("button", { name: "Edit state" }));
+    dialog = within(screen.getByRole("dialog", { name: "Edit column state" }));
+    expect(dialog.getByLabelText("Name")).toHaveValue("state");
+    expect(dialog.getByLabelText("Data type")).toHaveValue("varchar(20)");
+    fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "s" } });
+    fireEvent.change(dialog.getByLabelText("Data type"), { target: { value: "text" } });
+    fireEvent.click(dialog.getByRole("button", { name: "Stage changes" }));
+    expect(screen.getByText("1 pending structure change")).toBeInTheDocument();
+    await reviewSql();
+    expect(previews[0]!.ops).toEqual([{ type: "renameColumn", from: "status", to: "s" }]);
+  });
+
+  it("dropping a column drops its staged edits, and a dropped column can't be edited", async () => {
+    renderView();
+    fireEvent.click(screen.getByRole("button", { name: "Edit note" }));
+    fireEvent.change(screen.getByLabelText("Data type"), { target: { value: "varchar(10)" } });
+    fireEvent.click(screen.getByRole("button", { name: "Stage changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Drop note" }));
+    expect(screen.getByRole("button", { name: "Edit note" })).toBeDisabled();
+    await reviewSql();
+    expect(previews[0]!.ops).toEqual([{ type: "dropColumn", name: "note" }]);
+  });
+
+  it("an index named like a column doesn't mark that column as changed", () => {
+    renderView();
+    fireEvent.click(screen.getByRole("button", { name: /Add index/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "note" }));
+    fireEvent.change(screen.getByLabelText("Index name"), { target: { value: "status" } });
+    fireEvent.click(screen.getByRole("button", { name: "Stage index" }));
+    expect(row("status")).not.toHaveClass("pending");
   });
 
   it("stages nothing when a column is saved unchanged", () => {
