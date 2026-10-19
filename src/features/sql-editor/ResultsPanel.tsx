@@ -19,6 +19,8 @@ import { notify, notifyError } from "../../stores/ui";
 import { buildResultChangeSets, cellId, displayCell, readOnlyReason, setEdit, type ResultEdits } from "./resultEdits";
 
 const PAGE = 1000;
+/** Cells read in full per call when copying rows: few calls, but no single call carries every value. */
+const FULL_VALUES_PER_CALL = 200;
 
 /** Result rows for one statement, loading further pages from the backend on demand. */
 function ResultGrid({
@@ -124,15 +126,23 @@ function ResultGrid({
       if (!st.resultId) break;
       (await api.fetchRows(st.resultId, p, PAGE)).forEach((row, k) => have.set(p + k, row));
     }
-    // Row by row, so long previews are read a row's worth at a time.
-    const out: Cell[][] = [];
-    for (const r of indexes) {
+    const full: Cell[][] = indexes.map((r) => {
       const row = have.get(r);
       if (!row) throw new Error("A selected row could not be read; run the query again");
-      const full = await Promise.all(row.map((c, col) => (c !== null && isPartial(c) && st.resultId ? api.resultValue(st.resultId, r, col) : c)));
-      out.push(full.map((_, c) => displayCell(edits, applied, st, full, c)));
+      return [...row];
+    });
+    // Previews are read in full a batch of cells per call, not one call per cell.
+    const partial: { i: number; col: number }[] = [];
+    full.forEach((row, i) => row.forEach((c, col) => c !== null && isPartial(c) && partial.push({ i, col })));
+    for (let k = 0; k < partial.length && st.resultId; k += FULL_VALUES_PER_CALL) {
+      const batch = partial.slice(k, k + FULL_VALUES_PER_CALL);
+      const values = await api.resultValues(
+        st.resultId,
+        batch.map(({ i, col }) => [indexes[i]!, col]),
+      );
+      batch.forEach(({ i, col }, j) => (full[i]![col] = values[j]!));
     }
-    return out;
+    return full.map((row) => row.map((_, c) => displayCell(edits, applied, st, row, c)));
   };
 
   const resultColumns = (st.columns ?? []).map((c) => ({ name: c.name, typeName: c.typeName }));

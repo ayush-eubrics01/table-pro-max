@@ -1650,12 +1650,21 @@ async fn lazy_values(engine: &Arc<Engine>, sid: &str, schema: &str, driver: Driv
     assert_eq!(st.rows.as_ref().unwrap()[0][2], Cell::Text("one".into()), "short values untouched");
     let rid = st.result_id.clone().unwrap();
     assert_eq!(engine.result_value(&rid, 0, 1).unwrap().as_text().map(str::len), Some(100_000));
+    // Several cells in one call (copying rows), in the order asked.
+    let cells = engine.result_values(&rid, &[(0, 2), (0, 1)]).unwrap();
+    assert_eq!(cells[0], Cell::Text("one".into()));
+    assert_eq!(cells[1].as_text().map(str::len), Some(100_000));
+    assert_eq!(engine.result_values(&rid, &[(0, 1), (5, 0)]).unwrap_err().message, "That cell is outside this result");
     assert!(matches!(engine.fetch_rows(&rid, 0, 10).unwrap()[0][1], Cell::Partial { .. }), "later pages too");
     let (_, full) = engine.result_snapshot(&rid).unwrap();
     assert_eq!(full[0][1].as_text().map(str::len), Some(100_000), "export reads full rows");
     engine.release_results(std::slice::from_ref(&rid));
     assert_eq!(
         engine.result_value(&rid, 0, 1).unwrap_err().message,
+        "This result is no longer in memory; run the query again"
+    );
+    assert_eq!(
+        engine.result_values(&rid, &[(0, 1)]).unwrap_err().message,
         "This result is no longer in memory; run the query again"
     );
     if driver == Driver::Postgres {
