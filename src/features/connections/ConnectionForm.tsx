@@ -380,7 +380,21 @@ export function ConnectionForm({ initial, initialUrl, appInfo, onClose, onSaved 
             </label>
           )}
           {p.driver === "mssql" && (
-            <p className="hint">Sign in with a SQL Server login. Windows and Microsoft Entra sign-in aren't supported yet. For a named instance, use its TCP port.</p>
+            <>
+              <label className="field">
+                <span>Instance · optional</span>
+                <input
+                  className="input mono"
+                  value={p.instance ?? ""}
+                  placeholder="SQLEXPRESS"
+                  onChange={(e) => set({ instance: e.target.value.trim() ? e.target.value : null })}
+                  spellCheck={false}
+                />
+              </label>
+              <p className="hint">
+                Sign in with a SQL Server login. Windows and Microsoft Entra sign-in aren't supported yet. For a named instance, leave the port empty to look it up through SQL Browser (UDP 1434), or enter the instance's port.
+              </p>
+            </>
           )}
           <div className="field-row">
             <label className="field">

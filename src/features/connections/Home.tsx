@@ -29,7 +29,9 @@ const SORTS: { key: SortKey; label: string }[] = [
 
 
 function target(p: ConnectionProfile): string {
-  return isFileDriver(p.driver) ? (p.filePath ?? "") : `${p.user ? `${p.user}@` : ""}${p.host}:${p.port ?? ""}/${p.database}`;
+  if (isFileDriver(p.driver)) return p.filePath ?? "";
+  const server = p.instance ? `${p.host}\\${p.instance}${p.port ? `:${p.port}` : ""}` : `${p.host}:${p.port ?? ""}`;
+  return `${p.user ? `${p.user}@` : ""}${server}/${p.database}`;
 }
 
 export function Home({ appInfo, onConnect, connecting }: Props) {

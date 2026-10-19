@@ -81,6 +81,60 @@ impl ToSql for Text<'_> {
 const READ_ONLY_REFUSED: [&str; 7] =
     ["COMMIT", "ROLLBACK", "IMPLICIT_TRANSACTIONS", "ANSI_DEFAULTS", "OPENQUERY", "OPENROWSET", "OPENDATASOURCE"];
 
+/// The UDP port SQL Browser listens on.
+const SQL_BROWSER_PORT: u16 = 1434;
+
+/// The TCP port of a named instance, asked of SQL Browser on `host` (the `CLNT_UCAST_INST`
+/// request of [MC-SQLR]): one UDP datagram there and one back, within `wait`.
+pub(crate) async fn instance_port(host: &str, browser_port: u16, instance: &str, wait: Duration) -> Result<u16> {
+    let ask = async {
+        let socket = tokio::net::UdpSocket::bind(if host.contains(':') { "[::]:0" } else { "0.0.0.0:0" })
+            .await
+            .map_err(|e| AppError::new(ErrorKind::Network, e.to_string()))?;
+        socket.connect((host, browser_port)).await.map_err(|e| AppError::new(ErrorKind::Network, e.to_string()))?;
+        let mut request = vec![0x04];
+        request.extend_from_slice(instance.as_bytes());
+        request.push(0);
+        socket.send(&request).await.map_err(|e| AppError::new(ErrorKind::Network, e.to_string()))?;
+        let mut buf = vec![0u8; 4096];
+        let n = socket.recv(&mut buf).await.map_err(|e| AppError::new(ErrorKind::Network, e.to_string()))?;
+        browser_reply_port(&buf[..n])
+    };
+    let unreachable = || {
+        AppError::new(
+            ErrorKind::Network,
+            format!(
+                "SQL Browser on {host} didn't answer for instance {instance}. Start the SQL Server Browser service, or enter the instance's port."
+            ),
+        )
+    };
+    match tokio::time::timeout(wait, ask).await {
+        Ok(Ok(port)) => Ok(port),
+        Ok(Err(e)) if e.kind == ErrorKind::Network => Err(unreachable()),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(unreachable()),
+    }
+}
+
+/// The TCP port in a SQL Browser reply: `0x05`, a two-byte length, then `key;value;…` pairs.
+fn browser_reply_port(reply: &[u8]) -> Result<u16> {
+    let bad = || AppError::new(ErrorKind::Database, "SQL Browser sent a reply that couldn't be read");
+    if reply.len() < 3 || reply[0] != 0x05 {
+        return Err(bad());
+    }
+    let len = u16::from_le_bytes([reply[1], reply[2]]) as usize;
+    let text = String::from_utf8_lossy(reply.get(3..3 + len).unwrap_or(&reply[3..]));
+    let parts: Vec<&str> = text.split(';').collect();
+    let tcp = parts.iter().position(|p| p.eq_ignore_ascii_case("tcp")).and_then(|i| parts.get(i + 1));
+    match tcp {
+        Some(port) => port.trim().parse::<u16>().map_err(|_| bad()),
+        None => Err(AppError::new(
+            ErrorKind::InvalidConfig,
+            "The instance doesn't accept TCP connections. Enable TCP/IP for it in SQL Server Configuration Manager.",
+        )),
+    }
+}
+
 impl MsSession {
     pub async fn connect(
         profile: &ConnectionProfile,
@@ -96,7 +150,14 @@ impl MsSession {
                 config.hostname_in_certificate(&profile.host);
                 ("127.0.0.1".to_string(), p)
             }
-            None => (profile.host.clone(), profile.port_or_default()),
+            // A named instance without a port: SQL Browser knows it.
+            None => match (&profile.instance, profile.port) {
+                (Some(instance), None) => {
+                    let wait = Duration::from_secs(profile.connect_timeout_secs.min(10));
+                    (profile.host.clone(), instance_port(&profile.host, SQL_BROWSER_PORT, instance, wait).await?)
+                }
+                _ => (profile.host.clone(), profile.port_or_default()),
+            },
         };
         config.host(&addr.0);
         config.port(addr.1);
@@ -1139,6 +1200,45 @@ pub(crate) fn map_error(e: tiberius::error::Error) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_port_from_a_sql_browser_reply() {
+        let reply = |text: &str| {
+            let mut r = vec![0x05];
+            r.extend_from_slice(&(text.len() as u16).to_le_bytes());
+            r.extend_from_slice(text.as_bytes());
+            r
+        };
+        let ok = reply("ServerName;H;InstanceName;SQLEXPRESS;IsClustered;No;Version;16.0.1000.6;tcp;49172;;");
+        assert_eq!(browser_reply_port(&ok).unwrap(), 49172);
+        let no_tcp = reply("ServerName;H;InstanceName;SQLEXPRESS;IsClustered;No;Version;16.0;np;\\\\H\\pipe;;");
+        assert!(browser_reply_port(&no_tcp).unwrap_err().message.contains("TCP"));
+        assert!(browser_reply_port(&[0x01, 0x00]).is_err());
+    }
+
+    #[tokio::test]
+    async fn looks_up_a_named_instance_through_sql_browser() {
+        let browser = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = browser.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 64];
+            let (n, from) = browser.recv_from(&mut buf).await.unwrap();
+            assert_eq!(&buf[..n], b"\x04SQLEXPRESS\x00");
+            let text = "ServerName;H;InstanceName;SQLEXPRESS;IsClustered;No;Version;16.0;tcp;50123;;";
+            let mut r = vec![0x05];
+            r.extend_from_slice(&(text.len() as u16).to_le_bytes());
+            r.extend_from_slice(text.as_bytes());
+            browser.send_to(&r, from).await.unwrap();
+        });
+        let found = instance_port("127.0.0.1", port, "SQLEXPRESS", Duration::from_secs(2)).await.unwrap();
+        assert_eq!(found, 50123);
+        // Nobody answering: a clear message, within the time limit.
+        let silent = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let quiet_port = silent.local_addr().unwrap().port();
+        let e = instance_port("127.0.0.1", quiet_port, "SQLEXPRESS", Duration::from_millis(300)).await.unwrap_err();
+        assert!(e.message.contains("SQL Browser"), "{}", e.message);
+        drop(silent);
+    }
 
     #[test]
     fn declared_types_read_like_sql_server() {
