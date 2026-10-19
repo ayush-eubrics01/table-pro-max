@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { withNameConfirm } from "../connections/nameConfirm";
 import { Icon } from "../../components/Icon";
-import type { AlterOp, ColumnDef, SessionInfo, TableStructure } from "../../types/backend";
+import type { AlterOp, ColumnDef, ColumnInfo, SessionInfo, TableStructure } from "../../types/backend";
 import { api } from "../../lib/ipc";
 import { notify, notifyError } from "../../stores/ui";
 import { pluralize } from "../../lib/text";
@@ -25,8 +25,16 @@ export function StructureView({ session, structure, onChanged }: Props) {
 
   const dropped = (name: string) => ops.some((o) => o.type === "dropColumn" && o.name === name);
   const droppedIndex = (name: string) => ops.some((o) => o.type === "dropIndex" && o.name === name);
-  const touched = (name: string) =>
-    ops.some((o) => ("name" in o && o.name === name && o.type !== "dropColumn" && o.type !== "dropIndex") || (o.type === "renameColumn" && o.from === name));
+  const touched = (name: string) => ops.some(changesColumn(name));
+  /** An existing column as it will be once its staged changes run. */
+  const staged = (c: ColumnInfo): ColumnInfo =>
+    ops.filter(changesColumn(c.name)).reduce<ColumnInfo>((x, o) => {
+      if (o.type === "setType") return { ...x, dataType: o.dataType };
+      if (o.type === "setNullable") return { ...x, nullable: o.nullable };
+      if (o.type === "setDefault") return { ...x, default: o.default };
+      if (o.type === "renameColumn") return { ...x, name: o.to };
+      return x;
+    }, c);
 
   const preview = async () => {
     try {
@@ -92,35 +100,51 @@ export function StructureView({ session, structure, onChanged }: Props) {
               </tr>
             </thead>
             <tbody>
-              {s.columns.map((c) => (
-                <tr key={c.name} className={dropped(c.name) ? "removed" : touched(c.name) ? "pending" : undefined}>
-                  <td>
-                    {c.primaryKey !== null && <Icon name="key" size={12} label={`Primary key position ${c.primaryKey}`} />}
-                    {s.foreignKeys.some((f) => f.columns.includes(c.name)) && <Icon name="link" size={12} label="Foreign key" />}
-                  </td>
-                  <td>{c.name}</td>
-                  <td className="mono">{c.dataType}</td>
-                  <td className={c.nullable ? "nullable" : "required"}>{c.nullable ? "nullable" : "required"}</td>
-                  <td className="mono">{c.autoIncrement && !c.default ? "auto" : (c.default ?? "")}</td>
-                  <td>{c.comment ?? ""}</td>
-                  {editable && (
-                    <td className="row-actions">
-                      <button className="btn btn-ghost btn-icon" aria-label={`Edit ${c.name}`} onClick={() => setColumnDialog({ mode: "edit", name: c.name })}>
-                        <Icon name="edit" size={13} />
-                      </button>
-                      <button
-                        className="btn btn-ghost btn-icon"
-                        aria-label={`Drop ${c.name}`}
-                        onClick={() =>
-                          setOps((o) => (dropped(c.name) ? o.filter((x) => !(x.type === "dropColumn" && x.name === c.name)) : [...o, { type: "dropColumn", name: c.name }]))
-                        }
-                      >
-                        {dropped(c.name) ? <Icon name="undo" size={13} /> : <Icon name="delete" size={13} />}
-                      </button>
+              {s.columns.map((original) => {
+                const c = staged(original);
+                return (
+                  <tr key={original.name} className={dropped(original.name) ? "removed" : touched(original.name) ? "pending" : undefined}>
+                    <td>
+                      {c.primaryKey !== null && <Icon name="key" size={12} label={`Primary key position ${c.primaryKey}`} />}
+                      {s.foreignKeys.some((f) => f.columns.includes(original.name)) && <Icon name="link" size={12} label="Foreign key" />}
                     </td>
-                  )}
-                </tr>
-              ))}
+                    <td>
+                      {c.name}
+                      {c.name !== original.name && <span className="hint"> was {original.name}</span>}
+                    </td>
+                    <td className="mono">{c.dataType}</td>
+                    <td className={c.nullable ? "nullable" : "required"}>{c.nullable ? "nullable" : "required"}</td>
+                    <td className="mono">{c.autoIncrement && !c.default ? "auto" : (c.default ?? "")}</td>
+                    <td>{c.comment ?? ""}</td>
+                    {editable && (
+                      <td className="row-actions">
+                        <button
+                          className="btn btn-ghost btn-icon"
+                          aria-label={`Edit ${c.name}`}
+                          disabled={dropped(original.name)}
+                          onClick={() => setColumnDialog({ mode: "edit", name: original.name })}
+                        >
+                          <Icon name="edit" size={13} />
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-icon"
+                          aria-label={`Drop ${c.name}`}
+                          onClick={() =>
+                            // A dropped column's staged edits go: they would run against a column that's gone.
+                            setOps((o) =>
+                              dropped(original.name)
+                                ? o.filter((x) => !(x.type === "dropColumn" && x.name === original.name))
+                                : [...o.filter((x) => !changesColumn(original.name)(x)), { type: "dropColumn", name: original.name }],
+                            )
+                          }
+                        >
+                          {dropped(original.name) ? <Icon name="undo" size={13} /> : <Icon name="delete" size={13} />}
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
               {addedColumns.map((o, i) => (
                 <tr key={`new-${i}`} className="pending">
                   <td />
@@ -300,9 +324,12 @@ export function StructureView({ session, structure, onChanged }: Props) {
       {columnDialog && (
         <ColumnDialog
           existing={columnDialog.mode === "edit" ? s.columns.find((c) => c.name === columnDialog.name) : undefined}
+          staged={columnDialog.mode === "edit" ? s.columns.filter((c) => c.name === columnDialog.name).map(staged)[0] : undefined}
           onClose={() => setColumnDialog(null)}
           onSubmit={(newOps) => {
-            setOps((o) => [...o, ...newOps]);
+            // Editing a column again replaces what was staged for it (changes are from the table's column).
+            const name = columnDialog.mode === "edit" ? columnDialog.name : null;
+            setOps((o) => [...(name === null ? o : o.filter((x) => !changesColumn(name)(x))), ...newOps]);
             setColumnDialog(null);
           }}
         />
@@ -334,20 +361,33 @@ export function StructureView({ session, structure, onChanged }: Props) {
   );
 }
 
+/** Staged changes to an existing column (named as it is in the table now), not an index or a new column. */
+function changesColumn(name: string) {
+  return (o: AlterOp) =>
+    ((o.type === "setType" || o.type === "setNullable" || o.type === "setDefault") && o.name === name) || (o.type === "renameColumn" && o.from === name);
+}
+
+type ColumnShape = { name: string; dataType: string; nullable: boolean; default: string | null };
+
 function ColumnDialog({
   existing,
+  staged,
   onClose,
   onSubmit,
 }: {
-  existing?: { name: string; dataType: string; nullable: boolean; default: string | null };
+  /** The column as it is in the table: changes are worked out from it. */
+  existing?: ColumnShape;
+  /** The column with what is already staged for it: the form starts from it. */
+  staged?: ColumnShape;
   onClose: () => void;
   onSubmit: (ops: AlterOp[]) => void;
 }) {
+  const start = staged ?? existing;
   const [def, setDef] = useState<ColumnDef>({
-    name: existing?.name ?? "",
-    dataType: existing?.dataType ?? "text",
-    nullable: existing?.nullable ?? true,
-    default: existing?.default ?? null,
+    name: start?.name ?? "",
+    dataType: start?.dataType ?? "text",
+    nullable: start?.nullable ?? true,
+    default: start?.default ?? null,
     primaryKey: false,
   });
 
@@ -363,7 +403,7 @@ function ColumnDialog({
 
   return (
     <Dialog
-      title={existing ? `Edit column ${existing.name}` : "Add column"}
+      title={start ? `Edit column ${start.name}` : "Add column"}
       onClose={onClose}
       footer={
         <>
