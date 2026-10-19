@@ -270,6 +270,33 @@ pub fn preview(dialect: Dialect, statements: &[ParamStatement]) -> String {
     statements.iter().map(|st| format!("{};", inline_params(dialect, st))).collect::<Vec<_>>().join("\n")
 }
 
+/// Like [`preview`], but only the first `shown` statements: a restore of 100,000 rows reviews a
+/// sample and the count, not 100,000 lines.
+pub fn preview_first(dialect: Dialect, statements: &[ParamStatement], shown: usize) -> String {
+    if statements.len() <= shown {
+        return preview(dialect, statements);
+    }
+    let rest = statements.len() - shown;
+    let more = format!(
+        "-- … and {} more statement{} like these (not shown)",
+        group_digits(rest),
+        if rest == 1 { "" } else { "s" }
+    );
+    if shown == 0 { more } else { format!("{}\n{more}", preview(dialect, &statements[..shown])) }
+}
+
+fn group_digits(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 fn inline_params(dialect: Dialect, st: &ParamStatement) -> String {
     let literal = |p: &Param| p.as_deref().map_or_else(|| "NULL".to_string(), |v| dialect.quote_literal(v));
     match dialect {
@@ -501,6 +528,31 @@ mod tests {
             }],
         };
         assert!(build_statements(Dialect::Postgres, &users(), &set).is_err());
+    }
+
+    #[test]
+    fn long_previews_show_the_first_statements_and_count_the_rest() {
+        let st = |i: usize| ParamStatement {
+            sql: "DELETE FROM t WHERE id = $1".into(),
+            params: vec![Some(i.to_string())],
+            expect_rows: Some(1),
+        };
+        let few: Vec<_> = (1..=3).map(st).collect();
+        assert_eq!(preview_first(Dialect::Postgres, &few, 5), preview(Dialect::Postgres, &few));
+        let many: Vec<_> = (1..=100_000).map(st).collect();
+        let text = preview_first(Dialect::Postgres, &many, 2);
+        assert_eq!(
+            text,
+            "DELETE FROM t WHERE id = '1';\nDELETE FROM t WHERE id = '2';\n-- … and 99,998 more statements like these (not shown)"
+        );
+        assert_eq!(
+            preview_first(Dialect::Postgres, &many[..3], 2).lines().last(),
+            Some("-- … and 1 more statement like these (not shown)")
+        );
+        assert_eq!(
+            preview_first(Dialect::Postgres, &many[..3], 0),
+            "-- … and 3 more statements like these (not shown)"
+        );
     }
 
     #[test]

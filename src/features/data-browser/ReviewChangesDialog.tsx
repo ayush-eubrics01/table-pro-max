@@ -3,7 +3,7 @@ import { Dialog } from "../../components/Dialog";
 import { EnvBadge } from "../../components/EnvBadge";
 import { Icon } from "../../components/Icon";
 import { SqlBlock } from "../../components/SqlBlock";
-import { pluralize } from "../../lib/text";
+import { formatCount, pluralize } from "../../lib/text";
 import type { SessionInfo } from "../../types/backend";
 import { toError, type BackendError } from "../../lib/ipc";
 
@@ -22,10 +22,31 @@ interface Props {
   cancelLabel?: string;
   onCommit: () => Promise<void>;
   onClose: () => void;
+  /** While committing: statements done of the total, when the caller reports them. */
+  progress?: { done: number; total: number } | null;
+  /** While committing: stops the commit (its changes are rolled back). */
+  onStop?: () => void;
+  /** Label of the stop button. */
+  stopLabel?: string;
 }
 
 /** Shows generated SQL and the exact target before anything is written. */
-export function ReviewChangesDialog({ session, title, sql, summary, atomic, statements, commitLabel, cancelLabel = "Cancel", splitHint, onCommit, onClose }: Props) {
+export function ReviewChangesDialog({
+  session,
+  title,
+  sql,
+  summary,
+  atomic,
+  statements,
+  commitLabel,
+  cancelLabel = "Cancel",
+  splitHint,
+  onCommit,
+  onClose,
+  progress,
+  onStop,
+  stopLabel = "Stop",
+}: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<BackendError | null>(null);
 
@@ -55,9 +76,15 @@ export function ReviewChangesDialog({ session, title, sql, summary, atomic, stat
           </button>
           <span className="spacer" />
           <span className="hint">{atomic ? "All changes apply or none do." : (splitHint ?? "This database cannot run these statements in one transaction.")}</span>
-          <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
-            {cancelLabel}
-          </button>
+          {busy && onStop ? (
+            <button className="btn btn-ghost" onClick={onStop}>
+              {stopLabel}
+            </button>
+          ) : (
+            <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
+              {cancelLabel}
+            </button>
+          )}
           <button
             className={`btn ${session.environment === "production" ? "btn-danger" : "btn-primary"}`}
             onClick={commit}
@@ -76,6 +103,14 @@ export function ReviewChangesDialog({ session, title, sql, summary, atomic, stat
       </div>
       <div>{summary}</div>
       <SqlBlock sql={sql} dialect={session.dialect} maxHeight="45vh" />
+      {busy && progress && (
+        <div className="field-row" style={{ alignItems: "center" }}>
+          <progress aria-label="Restoring" value={progress.done} max={progress.total} style={{ flex: 1 }} />
+          <span className="hint">
+            {formatCount(progress.done)} of {formatCount(progress.total)} statements
+          </span>
+        </div>
+      )}
       {error && (
         <div className="notice notice-error" role="alert">
           {error.message}

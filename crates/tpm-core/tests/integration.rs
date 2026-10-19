@@ -1051,6 +1051,38 @@ async fn restore_point_restores(engine: &Arc<Engine>, sid: &str, schema: &str, d
     }
     run(engine, sid, "DROP TABLE tpm_it_rpd").await;
 
+    // A large restore: reviewed by a sample and its count, applied a chunk at a time with
+    // progress, and a cancel after the first chunk puts nothing back.
+    run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rpbig").await;
+    run(engine, sid, "CREATE TABLE tpm_it_rpbig (id integer PRIMARY KEY, note varchar(10))").await;
+    let values = (1..=1200).map(|i| format!("({i}, 'n')")).collect::<Vec<_>>().join(", ");
+    run(engine, sid, &format!("INSERT INTO tpm_it_rpbig VALUES {values}")).await;
+    let r = engine.run_script(sid, "DELETE FROM tpm_it_rpbig", opts.clone(), None).await.unwrap();
+    let big = point(&r);
+    let preview = engine.preview_restore(sid, &big, None).await.unwrap();
+    assert_eq!(preview.statement_count, 1200, "{driver:?}");
+    assert!(preview.sql.lines().count() <= 201, "{driver:?}: a sample, not every row");
+    assert!(preview.sql.ends_with("-- … and 1,000 more statements like these (not shown)"), "{driver:?}");
+    let canceller = engine.clone();
+    let cancel_after_first: tpm_core::engine::ApplyProgress = Arc::new(move |_, _| {
+        canceller.mark_cancelled("tpm-it-restore");
+    });
+    let e = engine
+        .apply_restore_with(sid, &big, None, true, Some("tpm-it-restore".into()), Some(cancel_after_first))
+        .await
+        .unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Cancelled, "{driver:?}: {e:?}");
+    assert_eq!(text(&rows("SELECT count(*) FROM tpm_it_rpbig").await[0][0]), "0", "{driver:?}: rolled back");
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let progress: tpm_core::engine::ApplyProgress =
+        Arc::new(move |done, total| log.lock().unwrap().push((done, total)));
+    engine.apply_restore_with(sid, &big, None, true, Some("tpm-it-restore".into()), Some(progress)).await.unwrap();
+    assert_eq!(*seen.lock().unwrap(), vec![(500, 1200), (1000, 1200), (1200, 1200)], "{driver:?}");
+    assert_eq!(text(&rows("SELECT count(*) FROM tpm_it_rpbig").await[0][0]), "1200", "{driver:?}");
+    assert!(!engine.cancel_task("tpm-it-restore").await.unwrap(), "the task is gone once the restore ends");
+    run(engine, sid, "DROP TABLE tpm_it_rpbig").await;
+
     // A grid commit says, per table, whether it kept a restore point and why not.
     run(engine, sid, "DROP TABLE IF EXISTS tpm_it_rpk").await;
     run(engine, sid, "CREATE TABLE tpm_it_rpk (id integer PRIMARY KEY, qty integer)").await;

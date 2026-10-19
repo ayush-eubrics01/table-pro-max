@@ -205,8 +205,9 @@ export const api = {
   restorePointsUsage: () => call<RestoreUsage>("restore_points_usage"),
   previewRestore: (sessionId: string, pointId: string, rows: number[] | null) =>
     call<ChangePreview>("preview_restore", { sessionId, pointId, rows }),
-  applyRestore: (sessionId: string, pointId: string, rows: number[] | null) =>
-    call<number[]>("apply_restore", { sessionId, pointId, rows, confirmed: true }),
+  /** `taskId`: for "restore-progress" events and `cancelQuery`. */
+  applyRestore: (sessionId: string, pointId: string, rows: number[] | null, taskId?: string) =>
+    call<number[]>("apply_restore", { sessionId, pointId, rows, confirmed: true, taskId: taskId ?? null }),
   previewCreateTable: (sessionId: string, request: { schema: string; name: string; columns: ColumnDef[] }) =>
     call<string[]>("preview_create_table", { sessionId, request }),
   previewAlterTable: (sessionId: string, schema: string, table: string, ops: AlterOp[]) =>
