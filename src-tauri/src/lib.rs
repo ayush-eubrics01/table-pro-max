@@ -126,6 +126,7 @@ pub fn run() {
             commands::query::list_schemas,
             commands::query::list_objects,
             commands::query::table_structure,
+            commands::query::referencing_keys,
             commands::query::object_definition,
             commands::query::split_sql,
             commands::query::statement_at_cursor,

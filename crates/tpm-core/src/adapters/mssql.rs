@@ -23,7 +23,7 @@ use tokio::net::TcpStream;
 use tokio::sync::Notify;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
-use super::{Canceller, ConnectOptions, DescribedColumn, ParamStatement, Session, TextRow};
+use super::{Canceller, ConnectOptions, DescribedColumn, ParamStatement, Session, TextRow, group_referencing_keys};
 use crate::config::{ConnectionProfile, TlsMode};
 use crate::dialect::Dialect;
 use crate::error::{AppError, ErrorKind, Result};
@@ -676,6 +676,31 @@ impl Session for MsSession {
                 }
             })
             .collect())
+    }
+
+    async fn referencing_keys(&mut self, schema: &str, name: &str) -> Result<Vec<ReferencingKey>> {
+        let Some((id, _)) = self.object_id(schema, name).await? else {
+            return Err(AppError::not_found(format!("Table {schema}.{name} was not found")));
+        };
+        let rows = self
+            .rows(
+                "SELECT ps.name, pt.name, fk.name, pc.name, rc.name \
+                 FROM sys.foreign_keys fk \
+                 JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id \
+                 JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id \
+                 JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id \
+                 JOIN sys.tables pt ON pt.object_id = fkc.parent_object_id \
+                 JOIN sys.schemas ps ON ps.schema_id = pt.schema_id \
+                 WHERE fk.referenced_object_id = @P1 \
+                 ORDER BY ps.name, pt.name, fk.name, fkc.constraint_column_id",
+                &[Some(id)],
+            )
+            .await?
+            .rows;
+        Ok(group_referencing_keys(rows.iter().map(|r| {
+            let r = TextRow(r);
+            [r.str(0), r.str(1), r.str(2), r.str(3), r.str(4)]
+        })))
     }
 
     async fn table_structure(&mut self, schema: &str, name: &str) -> Result<TableStructure> {

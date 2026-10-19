@@ -1549,6 +1549,16 @@ async fn fk_round_trip(engine: &Arc<Engine>, sid: &str, schema: &str, driver: Dr
     let page = engine.browse(sid, &req).await.unwrap();
     assert_eq!(page.rows.len(), 1, "{driver:?}");
     assert_eq!(page.rows[0][0], Cell::Text("42".into()), "{driver:?}");
+    // The other way: which keys point at the parent (a customer's orders).
+    let incoming = engine.referencing_keys(sid, schema, "tpm_it_fkp").await.unwrap();
+    let back = incoming.iter().find(|k| k.table == "tpm_it_fkc").unwrap_or_else(|| panic!("{driver:?}: {incoming:?}"));
+    assert_eq!(back.schema, schema, "{driver:?}");
+    assert_eq!(back.columns, vec!["parent_id".to_string()], "{driver:?}");
+    assert_eq!(back.ref_columns, vec!["id".to_string()], "{driver:?}");
+    assert!(
+        engine.referencing_keys(sid, schema, "tpm_it_fkc").await.unwrap().is_empty(),
+        "{driver:?}: nothing points at the child"
+    );
     run(engine, sid, "DROP TABLE tpm_it_fkc").await;
     run(engine, sid, "DROP TABLE tpm_it_fkp").await;
 }
@@ -2518,6 +2528,13 @@ async fn sql_server_flow(t: Target) {
     assert_eq!(st.foreign_keys.len(), 1);
     assert_eq!(st.foreign_keys[0].ref_table, "tpm_it_owners");
     assert!(st.constraints.iter().any(|c| c.kind == "unique"), "{:?}", st.constraints);
+    let incoming = engine.referencing_keys(&sid, "dbo", "tpm_it_owners").await.unwrap();
+    assert_eq!(incoming.len(), 1, "{incoming:?}");
+    assert_eq!((incoming[0].schema.as_str(), incoming[0].table.as_str()), ("dbo", "tpm_it_items"));
+    assert_eq!(
+        (incoming[0].columns.clone(), incoming[0].ref_columns.clone()),
+        (vec!["owner_id".to_string()], vec!["id".to_string()])
+    );
     let def = engine.object_definition(&sid, "dbo", "tpm_it_items", ObjectKind::Table).await.unwrap();
     assert!(
         def.contains("CREATE TABLE [dbo].[tpm_it_items]") && def.contains("[id] int IDENTITY(1, 1) NOT NULL"),

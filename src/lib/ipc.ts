@@ -30,6 +30,7 @@ import type {
   ChangePreview,
   ApplyResult,
   RestorePoint,
+  ReferencingKey,
   RestorePointSummary,
   RestoreUsage,
   ChangeSet,
@@ -160,6 +161,7 @@ export const api = {
   listObjects: (sessionId: string, schema: string) => call<DbObject[]>("list_objects", { sessionId, schema }),
   tableStructure: (sessionId: string, schema: string, table: string, refresh = false) =>
     call<TableStructure>("table_structure", { sessionId, schema, table, refresh }),
+  referencingKeys: (sessionId: string, schema: string, table: string) => call<ReferencingKey[]>("referencing_keys", { sessionId, schema, table }),
   objectDefinition: (sessionId: string, schema: string, name: string, kind: ObjectKind) =>
     call<string>("object_definition", { sessionId, schema, name, kind }),
 

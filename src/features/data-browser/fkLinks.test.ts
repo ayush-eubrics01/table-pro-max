@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ColumnInfo, ColumnMeta, TableStructure } from "../../types/backend";
-import { firstLink, linkFilter, linkLabel, resultLinks, tableLinks } from "./fkLinks";
+import { firstLink, linkFilter, linkLabel, referencingItems, resultLinks, tableLinks } from "./fkLinks";
 
 const col = (name: string, primaryKey: number | null = null): ColumnInfo => ({
   name,
@@ -91,5 +91,28 @@ describe("fkLinks", () => {
   it("skips foreign keys whose referenced columns are unknown", () => {
     const broken = { ...orders, foreignKeys: [{ ...orders.foreignKeys[0]!, refColumns: [""] }] };
     expect(tableLinks(broken)[1]).toEqual([]);
+  });
+
+  it("finds the rows that point at a row, by the columns each key holds", () => {
+    const shops: TableStructure = { ...orders, name: "shops", columns: [col("region", 1), col("code", 2), col("name")], foreignKeys: [] };
+    const keys = [
+      { schema: "public", table: "orders", name: "fk_s", columns: ["region", "shop"], refColumns: ["region", "code"] },
+      { schema: "sales", table: "visits", name: "fk_v", columns: ["shop_code"], refColumns: ["code"] },
+      { schema: "public", table: "orders", name: "fk_s2", columns: ["ship_region", "ship_shop"], refColumns: ["region", "code"] },
+    ];
+    const items = referencingItems(keys, shops, ["eu", "S1", "Main"]);
+    expect(items.map((i) => i.label)).toEqual([
+      "Rows in orders that point here (region, shop)",
+      "Rows in sales.visits that point here",
+      "Rows in orders that point here (ship_region, ship_shop)",
+    ]);
+    expect(items[0]!.filter.children).toEqual([
+      { type: "condition", column: "region", op: "eq", value: "eu", enabled: true },
+      { type: "condition", column: "shop", op: "eq", value: "S1", enabled: true },
+    ]);
+    expect(items[1]!).toMatchObject({ schema: "sales", table: "visits" });
+    // A NULL or unloaded value can't be pointed at; an unknown column is skipped.
+    expect(referencingItems(keys, shops, [null, "S1", "Main"]).map((i) => i.table)).toEqual(["visits"]);
+    expect(referencingItems([{ ...keys[1]!, refColumns: ["gone"] }], shops, ["eu", "S1", "Main"])).toEqual([]);
   });
 });

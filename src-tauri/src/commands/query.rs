@@ -13,7 +13,7 @@ use tpm_core::engine::{
 };
 use tpm_core::error::Result;
 use tpm_core::filter::FilterNode;
-use tpm_core::model::{Cell, DbObject, ObjectKind, Row, TableStructure};
+use tpm_core::model::{Cell, DbObject, ObjectKind, ReferencingKey, Row, TableStructure};
 use tpm_core::safety::ScriptAnalysis;
 use tpm_core::split::{StatementSpan, split_statements, statement_at};
 use tpm_core::storage::NewHistoryEntry;
@@ -50,6 +50,17 @@ pub async fn table_structure(
     refresh: Option<bool>,
 ) -> Result<TableStructure> {
     state.engine.table_structure(&session_id, &schema, &table, refresh.unwrap_or(false)).await
+}
+
+/// Foreign keys in other tables that point at this one (for "rows that point here").
+#[tauri::command]
+pub async fn referencing_keys(
+    state: State<'_, AppState>,
+    session_id: String,
+    schema: String,
+    table: String,
+) -> Result<Vec<ReferencingKey>> {
+    state.engine.referencing_keys(&session_id, &schema, &table).await
 }
 
 #[tauri::command]

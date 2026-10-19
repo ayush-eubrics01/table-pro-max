@@ -205,6 +205,19 @@ pub struct ForeignKeyInfo {
     pub on_delete: String,
 }
 
+/// A foreign key in another table that points at this one ("rows that point here").
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferencingKey {
+    pub schema: String,
+    pub table: String,
+    pub name: String,
+    /// The referencing table's columns.
+    pub columns: Vec<String>,
+    /// This table's columns they hold, in the same order.
+    pub ref_columns: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConstraintInfo {
