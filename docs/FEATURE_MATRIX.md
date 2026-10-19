@@ -110,6 +110,7 @@ No feature has a paid tier, license check, quota or artificial limit.
 |---|---|---|
 | Multiple open connections (connection strip) | VERIFIED | manual (Xvfb) |
 | Tab drag reordering, reopen closed (Ctrl+Shift+T), unsaved warnings | VERIFIED (store) / IMPLEMENTED (drag UI) | `workspaces.test.ts` |
+| Tab strip keyboard: one Tab stop; ←/→ (wrapping), Home and End select a tab; Delete closes the focused tab (unsaved warnings apply) and focus moves to the tab now selected | VERIFIED | `ObjectTabs.test.tsx` |
 | Workspace restore including unsaved query text | VERIFIED | manual (Xvfb): connection, schema and tabs restored after restart; snapshot unit test. Fixed a bug where restore-in-progress overwrote the saved session |
 | Multiple OS windows | VERIFIED | manual (Xvfb): Ctrl+Shift+N / toolbar opens an independent window; only the main window saves and restores the workspace |
 | Light and dark themes | VERIFIED | manual (Xvfb) screenshots in both |
