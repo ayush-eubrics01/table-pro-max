@@ -32,6 +32,8 @@ function Live() {
 }
 
 let ran: string[] = [];
+let savedList: unknown[] = [];
+let savedQueries: Record<string, unknown>[] = [];
 
 function renderTab(tab: QueryTabModel) {
   useWorkspaces.setState({ workspaces: [ws(tab)], activeId: "ws-1" });
@@ -48,8 +50,12 @@ beforeEach(() => {
   Range.prototype.getClientRects = () => ({ length: 0, item: () => null, [Symbol.iterator]: [][Symbol.iterator] }) as unknown as DOMRectList;
   Range.prototype.getBoundingClientRect = () => new DOMRect();
   ran = [];
+  savedList = [];
+  savedQueries = [];
   mockIPC((cmd, args) => {
     const a = args as Record<string, unknown>;
+    if (cmd === "list_saved_queries") return savedList;
+    if (cmd === "save_query") savedQueries.push(a.query as Record<string, unknown>);
     if (cmd === "connect") return { ...session, sessionId: "tab-sess" };
     if (cmd === "statement_at_cursor") {
       const sql = a.sql as string;
@@ -107,5 +113,15 @@ describe("QueryTab: split editor", () => {
     const { container } = renderTab(base);
     fireEvent.keyDown(editors(container)[0]!.contentDOM, { key: "\\", ctrlKey: true });
     expect(editors(container)).toHaveLength(2);
+  });
+});
+
+describe("QueryTab: saving", () => {
+  it("keeps a saved query's folder, favourite and connection when saving it again", async () => {
+    savedList = [{ id: "q1", connectionId: null, name: "monthly revenue", folder: "Reports", sql: "select 0", favorite: true }];
+    renderTab({ ...base, title: "monthly revenue", savedQueryId: "q1" });
+    fireEvent.click(screen.getByRole("button", { name: "Save query" }));
+    await waitFor(() => expect(savedQueries).toHaveLength(1));
+    expect(savedQueries[0]).toEqual({ id: "q1", connectionId: null, name: "monthly revenue", folder: "Reports", sql: "select 1", favorite: true });
   });
 });

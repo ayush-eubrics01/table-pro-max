@@ -108,7 +108,8 @@ session has a transaction the user opened, since its own BEGIN/COMMIT would end 
 Before a script runs, `run_script` plans each write (`restore_plan.rs`): UPDATE, DELETE, TRUNCATE,
 DROP TABLE and ALTER … DROP COLUMN get a capture plan (the table, its alias and the statement's
 own WHERE, re-emitted by sqlparser); joins, WITH, ORDER BY/LIMIT, key changes, tables without a
-key (UPDATE, DROP COLUMN) and binary columns off PostgreSQL get a reason instead. The server
+key (UPDATE, DROP COLUMN) and a binary primary key off PostgreSQL get a reason instead (other
+binary values are kept as hex and written back as `EditValue::Bytes`). The server
 names the table (PostgreSQL `to_regclass`, SQLite and DuckDB case-insensitively, otherwise the
 current schema or database), and a bounded count (`LIMIT max + 1`) checks the row limit and
 estimates the size. Planning runs under the script's task, so Cancel stops it; a USE/SET or DDL

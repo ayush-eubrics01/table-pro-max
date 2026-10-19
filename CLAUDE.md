@@ -20,6 +20,8 @@ Rust core. Read `docs/ARCHITECTURE.md` and `docs/FEATURE_MATRIX.md` before chang
 - DB integration: `scripts/test-db.sh up && eval "$(scripts/test-db.sh env)" && cargo test -p tpm-core --test integration`;
   `scripts/test-db.sh down` afterwards. Only ever use these disposable containers.
 - Frontend: `npm run typecheck && npm run lint && npm test && npm run build`.
+- End to end: `npx tauri build --debug --no-bundle`, then `npm run e2e` under a display (needs
+  `tauri-driver` and `WebKitWebDriver`; env vars in `e2e/harness.mjs`). CI runs it on Linux.
 - App: `npm run tauri dev` (needs WebKitGTK dev packages on Linux; see README).
 - Lint Rust: `cargo clippy --workspace --all-targets` and `cargo fmt --all`.
 
