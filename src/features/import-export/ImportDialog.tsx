@@ -6,7 +6,7 @@ import { formatBytes } from "../../lib/cells";
 import { formatCount, uid } from "../../lib/text";
 import { Dialog } from "../../components/Dialog";
 import { EnvBadge } from "../../components/EnvBadge";
-import { notify } from "../../stores/ui";
+import { notify, notifyError } from "../../stores/ui";
 import { useJobProgress } from "./useJobProgress";
 
 const KIND_TYPES: Record<string, Record<string, string>> = {
@@ -39,13 +39,18 @@ export function ImportDialog({ session, schema, tables, initialTable, onClose, o
     trim: false,
   });
   const [preview, setPreview] = useState<ImportPreview | null>(null);
-  const [target, setTarget] = useState<Target>({ mode: initialTable ? "existing" : "new", table: initialTable ?? "" });
+  // A read-only session can't create tables, so it starts on an existing one.
+  const [target, setTarget] = useState<Target>({ mode: initialTable || session.readOnly ? "existing" : "new", table: initialTable ?? "" });
   const [structure, setStructure] = useState<TableStructure | null>(null);
   const [mapping, setMapping] = useState<Record<string, number | null>>({});
   const [newTypes, setNewTypes] = useState<string[]>([]);
   const [review, setReview] = useState<string[] | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Why the target table's columns couldn't be read; kept apart so re-reading the file can't clear it. */
+  const [structureError, setStructureError] = useState<string | null>(null);
+  // The NULL list as typed; it is parsed and applied when the field is left.
+  const [nullText, setNullText] = useState(() => options.nullValues.map((v) => (v === "" ? "(empty)" : v)).join(", "));
   const progress = useJobProgress(jobId);
   const typeMap = KIND_TYPES[session.dialect]!;
 
@@ -53,7 +58,9 @@ export function ImportDialog({ session, schema, tables, initialTable, onClose, o
     const p = await openDialog({ multiple: false, filters: [{ name: "Data files", extensions: ["csv", "tsv", "txt", "json", "jsonl", "ndjson"] }] });
     if (typeof p !== "string") return;
     const isJson = /\.(json|jsonl|ndjson)$/i.test(p);
-    setOptions((o) => ({ ...o, format: isJson ? "json" : "csv", delimiter: /\.tsv$/i.test(p) ? "\t" : o.delimiter }));
+    const tsv = /\.tsv$/i.test(p);
+    // A .tsv's tab doesn't carry over to the next file; a delimiter chosen by hand does.
+    setOptions((o) => ({ ...o, format: isJson ? "json" : "csv", delimiter: tsv ? "\t" : o.delimiter === "\t" ? "," : o.delimiter }));
     setPath(p);
   };
 
@@ -76,11 +83,20 @@ export function ImportDialog({ session, schema, tables, initialTable, onClose, o
   }, [path, options, typeMap]);
 
   useEffect(() => {
+    setStructureError(null);
     if (target.mode !== "existing" || !target.table) {
       setStructure(null);
       return;
     }
-    api.tableStructure(session.sessionId, schema, target.table, true).then(setStructure).catch((e) => setError(toError(e).message));
+    // Only the table still chosen: an earlier choice's answer may arrive last.
+    let alive = true;
+    api
+      .tableStructure(session.sessionId, schema, target.table, true)
+      .then((st) => alive && setStructure(st))
+      .catch((e) => alive && setStructureError(toError(e).message));
+    return () => {
+      alive = false;
+    };
   }, [target, session.sessionId, schema]);
 
   // Default mapping: match column names case-insensitively.
@@ -136,7 +152,7 @@ export function ImportDialog({ session, schema, tables, initialTable, onClose, o
         review ?? [],
         id,
       );
-      notify(`Imported ${formatCount(n)} rows into ${target.table}`, "success");
+      notify(`Imported ${formatCount(n)} rows into ${target.table.trim()}`, "success");
       onDone(target.table.trim());
     } catch (e) {
       const err = toError(e);
@@ -159,7 +175,7 @@ export function ImportDialog({ session, schema, tables, initialTable, onClose, o
             {busy && <span className="hint">{formatCount(progress)} rows imported…</span>}
             <span className="spacer" />
             {busy ? (
-              <button className="btn" onClick={() => jobId && api.cancelJob(jobId)}>
+              <button className="btn" onClick={() => jobId && void api.cancelJob(jobId).catch((e) => notifyError(e, "Could not cancel the import"))}>
                 Cancel import
               </button>
             ) : (
@@ -257,16 +273,12 @@ export function ImportDialog({ session, schema, tables, initialTable, onClose, o
             <span>Treat as NULL</span>
             <input
               className="input"
-              value={options.nullValues.map((v) => (v === "" ? "(empty)" : v)).join(", ")}
-              onChange={(e) =>
-                setOptions({
-                  ...options,
-                  nullValues: e.target.value
-                    .split(",")
-                    .map((v) => v.trim())
-                    .map((v) => (v === "(empty)" ? "" : v)),
-                })
-              }
+              value={nullText}
+              onChange={(e) => setNullText(e.target.value)}
+              onBlur={() => {
+                const nullValues = [...new Set(nullText.split(",").map((v) => (v.trim() === "(empty)" ? "" : v.trim())))];
+                if (nullValues.join("\u0000") !== options.nullValues.join("\u0000")) setOptions({ ...options, nullValues });
+              }}
             />
           </label>
         </div>
@@ -375,6 +387,7 @@ export function ImportDialog({ session, schema, tables, initialTable, onClose, o
           </p>
         </>
       )}
+      {structureError && <pre className="notice notice-error">{structureError}</pre>}
       {error && <pre className="notice notice-error">{error}</pre>}
     </Dialog>
   );
