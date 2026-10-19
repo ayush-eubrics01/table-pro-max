@@ -80,6 +80,18 @@ describe("Home", () => {
     expect(screen.getByRole("button", { name: "Name" })).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("searches forgivingly: typos and word order", () => {
+    render(<Home appInfo={null} connecting={null} onConnect={() => undefined} />);
+    const search = screen.getByLabelText("Search connections");
+    for (const q of ["core prod", "prdo core", "Prod_Core"]) {
+      fireEvent.change(search, { target: { value: q } });
+      expect(screen.getByText("Prod Core"), q).toBeInTheDocument();
+      expect(screen.queryByText("Stage"), q).not.toBeInTheDocument();
+    }
+    fireEvent.change(search, { target: { value: "zzzz" } });
+    expect(screen.queryByText("Prod Core")).not.toBeInTheDocument();
+  });
+
   it("offers to create a connection from a pasted URL and clears the search box", () => {
     render(<Home appInfo={null} connecting={null} onConnect={() => undefined} />);
     const search = screen.getByLabelText("Search connections") as HTMLInputElement;

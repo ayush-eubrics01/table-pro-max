@@ -29,9 +29,34 @@ describe("OpenAnything", () => {
     fireEvent.change(input, { target: { value: "set" } });
     await waitFor(() => expect(screen.getAllByRole("option")[0]).toHaveTextContent(/^set/));
     expect(input).toHaveAttribute("aria-activedescendant", screen.getAllByRole("option")[0]!.id);
-    fireEvent.keyDown(input, { key: "Enter" });
+    // Enter is consumed: its default action must not press whatever takes focus next (the
+    // connecting dialog's Cancel button would cancel the connection it just started).
+    expect(fireEvent.keyDown(input, { key: "Enter" })).toBe(false);
     expect(onConnect).toHaveBeenCalledWith(expect.objectContaining({ id: "c-set" }));
     expect(useUi.getState().settingsOpen).toBe(false);
+  });
+
+  it("forgives how a name is typed, matches the schema too, and marks the matched letters", async () => {
+    const objects = ["order_items", "orders", "customer_orders", "payments"].map((name) => ({ schema: "sales", name, kind: "table" as const }));
+    useWorkspaces.setState({
+      workspaces: [{ id: "w", kind: "sql", profile, session, schema: "sales", schemas: ["sales"], objects: { sales: objects }, columns: {}, tabs: [], activeTabId: null, closed: [], health: "ok" }],
+      activeId: "w",
+    });
+    render(<OpenAnything onConnect={() => undefined} />);
+    const input = screen.getByRole("combobox");
+    const first = async (q: string) => {
+      fireEvent.change(input, { target: { value: q } });
+      await waitFor(() => expect(screen.getAllByRole("option")[0]).toHaveAttribute("aria-selected", "true"));
+      return screen.getAllByRole("option")[0]!;
+    };
+    for (const q of ["order items", "odrer_items", "sales items"]) {
+      await waitFor(async () => expect(await first(q)).toHaveTextContent(/^order_items/), { timeout: 2000 });
+    }
+    await waitFor(async () => expect(await first("cust ord")).toHaveTextContent(/^customer_orders/));
+    fireEvent.change(input, { target: { value: "order items" } });
+    await waitFor(() => expect([...screen.getAllByRole("option")[0]!.querySelectorAll("mark")].map((m) => m.textContent)).toEqual(["order", "items"]));
+    fireEvent.change(input, { target: { value: "zzz" } });
+    expect(await screen.findByText(/Nothing matches/)).toBeInTheDocument();
   });
 
   it("walks the displayed order with the arrow keys", async () => {

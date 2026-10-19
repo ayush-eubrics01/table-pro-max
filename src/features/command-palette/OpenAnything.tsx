@@ -6,7 +6,8 @@ import { useConnections } from "../../stores/connections";
 import { useRestore } from "../../stores/restore";
 import { useWorkspaces } from "../../stores/workspaces";
 import { useUi } from "../../stores/ui";
-import { rank } from "./fuzzy";
+import { fuzzyMatch, rank } from "../../lib/fuzzy";
+import { Highlight } from "../../components/Highlight";
 import { groupResults } from "./groups";
 import { driverLabel, envLabel } from "../../lib/env";
 
@@ -63,7 +64,8 @@ export function OpenAnything({ onConnect }: { onConnect: (p: ConnectionProfile) 
 
   // Without a query, actions and connections come first so the 60-item cap never hides them.
   const results = useMemo(() => {
-    if (debounced.trim()) return rank(items, debounced, (i) => i.label);
+    // The name counts most; the connection and schema ("where") help narrow it down.
+    if (debounced.trim()) return rank(items, debounced, (i) => [i.label, i.where]);
     const first: Item[] = items.filter((i) => i.kind === "action" || i.kind === "connection");
     return rank([...first, ...items.filter((i) => !first.includes(i))], "", (i) => i.label);
   }, [items, debounced]);
@@ -131,7 +133,12 @@ export function OpenAnything({ onConnect }: { onConnect: (p: ConnectionProfile) 
               } else if (e.key === "ArrowUp") {
                 e.preventDefault();
                 setIndex((i) => Math.max(0, i - 1));
-              } else if (e.key === "Enter") choose(flat[index]);
+              } else if (e.key === "Enter") {
+                // Consume Enter: its default action would otherwise press whatever takes focus
+                // next, such as Cancel in the connecting dialog, cancelling the connection.
+                e.preventDefault();
+                choose(flat[index]);
+              }
             }}
           />
           <span className="kbd">Esc</span>
@@ -148,7 +155,9 @@ export function OpenAnything({ onConnect }: { onConnect: (p: ConnectionProfile) 
                   return (
                     <li key={i} id={`palette-${i}`} role="option" aria-selected={i === index} onMouseEnter={() => setIndex(i)} onClick={() => choose(r)}>
                       {icon(r)}
-                      <span className="label">{r.label}</span>
+                      <span className="label">
+                        <Highlight text={r.label} positions={debounced.trim() ? fuzzyMatch(debounced, [r.label, r.where])?.positions[0] : undefined} />
+                      </span>
                       {r.where && <span className="where">{r.where}</span>}
                     </li>
                   );

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { fuzzyMatch, rank } from "../../lib/fuzzy";
 import { withNameConfirm } from "../connections/nameConfirm";
 import { Icon } from "../../components/Icon";
 import { createDashboard } from "../dashboards/DashboardView";
@@ -101,18 +102,20 @@ export function Sidebar({ ws, onSwitchDatabase }: { ws: Workspace; onSwitchDatab
     o.kind === "table" || o.kind === "view" || o.kind === "materialized_view" ? { kind: o.kind, schema: o.schema, name: o.name } : null;
 
   const objects = ws.objects[ws.schema];
-  const needle = filter.trim().toLowerCase();
-  const visible = useMemo(() => (objects ?? []).filter((o) => !needle || o.name.toLowerCase().includes(needle)), [objects, needle]);
+  const needle = filter.trim();
+  // Forgiving match (typos, spaces for underscores), best first; the whole list without a filter.
+  const visible = useMemo(() => (needle ? rank(objects ?? [], needle, (o) => o.name, Infinity) : (objects ?? [])), [objects, needle]);
+  const matches = (text: string) => !needle || fuzzyMatch(needle, [text]) !== null;
 
   // Pinned rows in pin order. Whether one still exists is known once its list has loaded.
   const pinnedRows = pins.flatMap((pin) => {
     if (pin.kind === "saved_query") {
       const q = saved?.find((x) => x.id === pin.name);
       const label = q?.name ?? pin.name;
-      if (needle && !label.toLowerCase().includes(needle)) return [];
+      if (!matches(label)) return [];
       return [{ pin, label, missing: saved !== null && !q, open: () => q && openQuery(ws.id, { sql: q.sql, title: q.name, savedQueryId: q.id }) }];
     }
-    if (needle && !pin.name.toLowerCase().includes(needle)) return [];
+    if (!matches(pin.name)) return [];
     const list = ws.objects[pin.schema];
     const missing = list ? !list.some((o) => o.name === pin.name && o.kind === pin.kind) : unreadable.has(pin.schema);
     const kind: ObjectKind = pin.kind;

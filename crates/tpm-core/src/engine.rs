@@ -48,6 +48,8 @@ tokio::task_local! {
 const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Statements a restore's review shows before summing up the rest.
 const RESTORE_PREVIEW_STATEMENTS: usize = 200;
+/// …and at most this much text of them (a merged INSERT can hold 1,000 rows).
+const RESTORE_PREVIEW_CHARS: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1867,7 +1869,12 @@ impl Engine {
                     GridPlan::Nothing => {}
                 }
             }
-            statements.extend(set_statements);
+            // A restore puts rows back as multi-row INSERTs (fewer round trips), as reviewed.
+            if kind == crate::restore::RestoreKind::Restore {
+                statements.extend(crate::changes::merge_inserts(dialect, set_statements));
+            } else {
+                statements.extend(set_statements);
+            }
         }
         let atomic = handle.info.capabilities.transactions;
         let (counts, captured) = self
@@ -2057,7 +2064,8 @@ impl Engine {
         let mut sql: Vec<String> = actions.ddl.iter().map(|d| format!("{d};")).collect();
         let mut count = actions.ddl.len();
         // A large restore is reviewed by a sample and its count, not a line per row.
-        let mut shown = RESTORE_PREVIEW_STATEMENTS;
+        let mut budget =
+            crate::changes::PreviewBudget { statements: RESTORE_PREVIEW_STATEMENTS, chars: RESTORE_PREVIEW_CHARS };
         for set in &actions.sets {
             // Before the DDL has run, the table (or column) exists only in the restore point.
             let structure = if actions.ddl.is_empty() {
@@ -2066,10 +2074,13 @@ impl Engine {
                 restored_structure(&point, self.table_structure(session_id, &set.schema, &set.table, false).await.ok())
             };
             let override_identity = keeps_identity_values(handle.profile.driver);
-            let statements = crate::changes::build_statements_with(dialect, &structure, set, override_identity)?;
+            // Restored rows go back as multi-row INSERTs: what runs is what is reviewed.
+            let statements = crate::changes::merge_inserts(
+                dialect,
+                crate::changes::build_statements_with(dialect, &structure, set, override_identity)?,
+            );
             count += statements.len();
-            sql.push(crate::changes::preview_first(dialect, &statements, shown));
-            shown = shown.saturating_sub(statements.len());
+            sql.push(crate::changes::preview_within(dialect, &statements, &mut budget));
         }
         sql.extend(actions.after.iter().map(|d| format!("{d};")));
         count += actions.after.len();
