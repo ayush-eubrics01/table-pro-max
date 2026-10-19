@@ -2,10 +2,31 @@
 // user reviews and commits them, which sends a ChangeSet to the backend.
 
 import type { Cell, ChangeSet, ColumnEdit, ColumnInfo, RowChange } from "../../types/backend";
-import { cellParam, isNotLoaded, isPartial } from "../../lib/cells";
+import { cellParam, isBinaryType, isNotLoaded, isPartial } from "../../lib/cells";
 
 export const DEFAULT = Symbol("default");
-export type PendingValue = string | null | typeof DEFAULT;
+/** A new binary value, as hex digits (see `parseHex`). */
+export interface PendingBytes {
+  $hex: string;
+}
+/** A new value for a cell: text, NULL or bytes. */
+export type EditedValue = string | null | PendingBytes;
+export type PendingValue = EditedValue | typeof DEFAULT;
+
+export function isPendingBytes(v: unknown): v is PendingBytes {
+  return typeof v === "object" && v !== null && "$hex" in v;
+}
+
+/** Hex shown for a pending binary value, as for a loaded one (a preview of the first 4 KB). */
+const PREVIEW_HEX = 8192;
+
+function shown(v: EditedValue): Cell {
+  return isPendingBytes(v) ? { $bytes: v.$hex.slice(0, PREVIEW_HEX), size: v.$hex.length / 2 } : v;
+}
+
+function editValue(v: EditedValue): ColumnEdit["value"] {
+  return isPendingBytes(v) ? { kind: "bytes", hex: v.$hex } : { kind: "value", value: v };
+}
 
 export interface InsertedRow {
   id: string;
@@ -14,7 +35,7 @@ export interface InsertedRow {
 
 export interface Pending {
   /** row index (within the loaded page) -> column index -> new value */
-  edits: Record<number, Record<number, string | null>>;
+  edits: Record<number, Record<number, EditedValue>>;
   deleted: number[];
   inserted: InsertedRow[];
 }
@@ -36,7 +57,7 @@ export function editCell(
   rows: Cell[][],
   row: number,
   col: number,
-  value: string | null,
+  value: EditedValue,
 ): Pending {
   if (row >= rows.length) {
     const i = row - rows.length;
@@ -85,10 +106,10 @@ export function displayRow(p: Pending, rows: Cell[][], row: number): Cell[] | un
     const base = rows[row];
     const e = p.edits[row];
     if (!base || !e) return base;
-    return base.map((c, i) => (i in e ? (e[i] ?? null) : c));
+    return base.map((c, i) => (i in e ? shown(e[i] ?? null) : c));
   }
   const ins = p.inserted[row - rows.length];
-  return ins?.values.map((v) => (v === DEFAULT ? "(default)" : v));
+  return ins?.values.map((v) => (v === DEFAULT ? "(default)" : shown(v)));
 }
 
 export class ChangeBuildError extends Error {}
@@ -124,10 +145,11 @@ export function buildChangeSet(
       const cell = rows[r]?.[col] ?? null;
       const original = cellParam(cell);
       // A placeholder is not the value: committing against it would skip the conflict check.
-      if (checkConflicts && (isNotLoaded(cell) || isPartial(cell))) {
+      // Binary values have no check (they are compared nowhere), so they needn't be loaded.
+      if (checkConflicts && (isNotLoaded(cell) || isPartial(cell)) && !isBinaryType(columns[col]!.dataType)) {
         throw new ChangeBuildError(`The value of ${columns[col]!.name} was not loaded before it was edited, so the change can't be checked. Reload and edit it again.`);
       }
-      const edit: ColumnEdit = { column: columns[col]!.name, value: { kind: "value", value } };
+      const edit: ColumnEdit = { column: columns[col]!.name, value: editValue(value) };
       if (original !== undefined) edit.original = original;
       return edit;
     });
@@ -139,7 +161,7 @@ export function buildChangeSet(
       values: ins.values.map((v, i) =>
         v === DEFAULT
           ? { column: columns[i]!.name, value: { kind: "default" } }
-          : { column: columns[i]!.name, value: { kind: "value", value: v } },
+          : { column: columns[i]!.name, value: editValue(v) },
       ),
     });
   }

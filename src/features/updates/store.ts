@@ -6,7 +6,7 @@ import { uid } from "../../lib/text";
 import { confirmAction } from "../../stores/ui";
 import { pendingTableCount } from "../../stores/pendingEdits";
 import { useSettings } from "../../stores/settings";
-import { useWorkspaces } from "../../stores/workspaces";
+import { hasUnsavedText, useWorkspaces } from "../../stores/workspaces";
 import { saveNow } from "../../app/restore";
 
 export type UpdatePhase = "idle" | "checking" | "upToDate" | "available" | "downloading" | "installing" | "error";
@@ -43,7 +43,7 @@ function unsavedWork(openWindows: number): string[] {
     const queries = useWorkspaces
       .getState()
       .workspaces.flatMap((w) => w.tabs)
-      .filter((t) => t.kind === "query" && t.dirty && !t.savedQueryId && t.sql.trim()).length;
+      .filter(hasUnsavedText).length;
     if (queries > 0) out.push(`${queries} unsaved query ${queries === 1 ? "tab" : "tabs"} will not be reopened.`);
   }
   const others = openWindows - 1;

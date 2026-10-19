@@ -39,6 +39,8 @@ interface Props {
   onFormat: () => void;
   onSave: () => void;
   onExplain: () => void;
+  /** Opens or closes the second editor (Mod+\). */
+  onSplit?: () => void;
   ref?: Ref<SqlEditorHandle>;
 }
 
@@ -121,6 +123,7 @@ export function SqlEditor(props: Props) {
         { key: "Shift-Mod-f", run: () => (cb.current.onFormat(), true) },
         { key: "Mod-s", run: () => (cb.current.onSave(), true), preventDefault: true },
         { key: "Mod-e", run: () => (cb.current.onExplain(), true) },
+        { key: "Mod-\\", run: () => (cb.current.onSplit?.(), !!cb.current.onSplit), preventDefault: true },
       ]),
     );
     const v = new EditorView({

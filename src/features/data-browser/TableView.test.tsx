@@ -124,6 +124,26 @@ describe("TableView", () => {
     expect(calls.find((c) => c.cmd === "apply_changes")!.args.confirmed).toBe(true);
   });
 
+  it("binary cells change through their editor and commit as hex", async () => {
+    structure = { ...usersStructure, columns: usersStructure.columns.map((c) => (c.name === "age" ? { ...c, name: "photo", dataType: "bytea" } : c)) };
+    rows = [["1", "ada@example.com", null] as never];
+    renderView();
+    const cell = (await screen.findAllByText("NULL"))[0]!.closest(".grid-cell")!;
+    await waitFor(() => {
+      fireEvent.doubleClick(cell);
+      return screen.getByLabelText("Hex");
+    });
+    fireEvent.change(screen.getByLabelText("Hex"), { target: { value: "0xCAFE" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(await screen.findByText("1 pending change")).toBeInTheDocument();
+    expect(screen.getByText("<binary 2 B>")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Review and commit" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Commit changes" }));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "apply_changes")).toBe(true));
+    const set = calls.find((c) => c.cmd === "apply_changes")!.args.changes as ChangeSet;
+    expect(set.changes).toEqual([{ type: "update", key: [{ column: "id", value: "1" }], edits: [{ column: "photo", value: { kind: "bytes", hex: "cafe" }, original: null }] }]);
+  });
+
   it("discard drops pending edits without touching the database", async () => {
     renderView();
     const editor = await openEditor("grace@example.com");

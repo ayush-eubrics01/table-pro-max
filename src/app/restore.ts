@@ -12,6 +12,9 @@ export interface SavedTab {
   dashboardId?: string;
   title: string;
   sql?: string;
+  /** The second editor, when the tab was split (or had been). */
+  split?: boolean;
+  sql2?: string;
   savedQueryId?: string | null;
   dirty?: boolean;
   schema?: string;
@@ -43,7 +46,8 @@ export function snapshot(workspaces: Workspace[], activeId: string | null): Save
       schema: w.schema,
       activeIndex: Math.max(0, w.tabs.findIndex((t) => t.id === w.activeTabId)),
       tabs: w.tabs.map((t): SavedTab => {
-        if (t.kind === "query") return { kind: "query", title: t.title, sql: t.sql, savedQueryId: t.savedQueryId, dirty: t.dirty };
+        if (t.kind === "query")
+          return { kind: "query", title: t.title, sql: t.sql, savedQueryId: t.savedQueryId, dirty: t.dirty, ...(t.sql2 !== undefined ? { split: !!t.split, sql2: t.sql2 } : {}) };
         if (t.kind === "dashboard") return { kind: "dashboard", title: t.title, dashboardId: t.dashboardId };
         return {
           kind: t.kind,

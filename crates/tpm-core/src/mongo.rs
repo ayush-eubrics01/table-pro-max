@@ -1,9 +1,10 @@
-//! MongoDB support: a document browser with filters, aggregation pipelines, vector search and
-//! deletes; not a relational adapter. See docs/superpowers/specs/2026-10-19-mongodb-design.md.
+//! MongoDB support: a document browser with filters, aggregation pipelines, vector search,
+//! deletes, and inserting and editing one document; not a relational adapter. See
+//! docs/superpowers/specs/2026-10-19-mongodb-design.md.
 //!
 //! MongoDB has no read-only session, so the surface itself is the boundary: reads (find,
-//! aggregate without `$out`/`$merge`, vector search) and deletes, which read-only connections
-//! refuse here. Filters and pipelines are parsed into BSON and sent as documents, never pasted
+//! aggregate without `$out`/`$merge`, vector search), deletes, inserts and edits, the writes
+//! refused here on read-only connections. Filters and pipelines are parsed into BSON and sent as documents, never pasted
 //! into anything.
 
 use std::time::{Duration, Instant};
@@ -129,6 +130,22 @@ pub struct VectorRequest {
     pub limit: u32,
     #[serde(default)]
     pub filter: String,
+}
+
+/// An edit of one document from a page of find results.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplaceRequest {
+    pub database: String,
+    pub collection: String,
+    /// The `_id` as the page returned it (compact Extended JSON).
+    pub id: String,
+    /// The document as the page showed it: if it reads differently now, nothing is saved.
+    pub original: String,
+    /// The new document (Extended JSON).
+    pub document: String,
+    #[serde(default)]
+    pub confirmed: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -258,24 +275,23 @@ pub fn delete_filter(target: &DeleteTarget) -> Result<Document> {
             if ids.is_empty() {
                 return Err(AppError::invalid_config("Select the documents to delete"));
             }
-            let mut values = Vec::with_capacity(ids.len());
-            for id in ids {
-                let json: serde_json::Value = serde_json::from_str(id)
-                    .map_err(|_| AppError::invalid_config("A document id isn't valid Extended JSON"))?;
-                let value = Bson::try_from(json)
-                    .map_err(|_| AppError::invalid_config("A document id isn't valid Extended JSON"))?;
-                // Inside $in a regular expression is a pattern and could match any number of
-                // documents; an `_id` is never an array, and `$` names are operators, not values.
-                if !is_exact_id(&value) {
-                    return Err(AppError::invalid_config(
-                        "A document id must be a single value, not a pattern or an operator",
-                    ));
-                }
-                values.push(value);
-            }
+            let values = ids.iter().map(|id| parse_id(id)).collect::<Result<Vec<_>>>()?;
             Ok(doc! { "_id": { "$in": values } })
         }
     }
+}
+
+/// One document id as a page returned it. In a filter a regular expression is a pattern and
+/// could match any number of documents; an `_id` is never an array, and `$` names are operators.
+fn parse_id(id: &str) -> Result<Bson> {
+    let json: serde_json::Value =
+        serde_json::from_str(id).map_err(|_| AppError::invalid_config("A document id isn't valid Extended JSON"))?;
+    let value =
+        Bson::try_from(json).map_err(|_| AppError::invalid_config("A document id isn't valid Extended JSON"))?;
+    if !is_exact_id(&value) {
+        return Err(AppError::invalid_config("A document id must be a single value, not a pattern or an operator"));
+    }
+    Ok(value)
 }
 
 fn is_exact_id(v: &Bson) -> bool {
@@ -323,6 +339,16 @@ pub fn check_delete(
     confirmed: bool,
     typed: Option<&str>,
 ) -> Result<()> {
+    check_writes_allowed(read_only, writes_locked)?;
+    let needs_name = environment == Environment::Production && matches!(target, DeleteTarget::Filter { .. });
+    if confirmed && (!needs_name || typed.map(str::trim) == Some(connection_name.trim())) {
+        return Ok(());
+    }
+    let e = AppError::new(ErrorKind::ConfirmationRequired, format!("Confirm the delete on {connection_name}"));
+    Err(if needs_name { e.with_code("confirm_typed") } else { e })
+}
+
+fn check_writes_allowed(read_only: bool, writes_locked: bool) -> Result<()> {
     if writes_locked {
         return Err(AppError::new(
             ErrorKind::PolicyViolation,
@@ -332,26 +358,98 @@ pub fn check_delete(
     if read_only {
         return Err(AppError::new(ErrorKind::PolicyViolation, "This connection is read-only"));
     }
-    let needs_name = environment == Environment::Production && matches!(target, DeleteTarget::Filter { .. });
-    if confirmed && (!needs_name || typed.map(str::trim) == Some(connection_name.trim())) {
-        return Ok(());
-    }
-    let e = AppError::new(ErrorKind::ConfirmationRequired, format!("Confirm the delete on {connection_name}"));
-    Err(if needs_name { e.with_code("confirm_typed") } else { e })
+    Ok(())
 }
 
-/// MongoDB keeps its own metadata in `system.*` collections; deleting from them is refused.
-pub fn check_deletable_collection(database: &str, collection: &str) -> Result<()> {
+/// The backend's rules for inserting or editing one document: never on a read-only connection;
+/// on production, confirmed (elsewhere, saving in the editor is the confirmation).
+pub fn check_write(
+    read_only: bool,
+    writes_locked: bool,
+    environment: Environment,
+    connection_name: &str,
+    confirmed: bool,
+) -> Result<()> {
+    check_writes_allowed(read_only, writes_locked)?;
+    if environment == Environment::Production && !confirmed {
+        return Err(AppError::new(ErrorKind::ConfirmationRequired, format!("Confirm the change on {connection_name}")));
+    }
+    Ok(())
+}
+
+/// MongoDB keeps its own metadata in its admin, config and local databases and in `system.*`
+/// collections; changing documents there is refused.
+fn check_own_collections(database: &str, collection: &str, done: &str) -> Result<()> {
     if matches!(database, "admin" | "config" | "local") {
         return Err(AppError::new(
             ErrorKind::PolicyViolation,
-            format!("Documents in MongoDB's own {database} database can't be deleted here"),
+            format!("Documents in MongoDB's own {database} database can't be {done} here"),
         ));
     }
     if collection.starts_with("system.") {
-        return Err(AppError::new(ErrorKind::PolicyViolation, "Documents in system collections can't be deleted here"));
+        return Err(AppError::new(
+            ErrorKind::PolicyViolation,
+            format!("Documents in system collections can't be {done} here"),
+        ));
     }
     Ok(())
+}
+
+pub fn check_deletable_collection(database: &str, collection: &str) -> Result<()> {
+    check_own_collections(database, collection, "deleted")
+}
+
+pub fn check_writable_collection(database: &str, collection: &str) -> Result<()> {
+    check_own_collections(database, collection, "changed")
+}
+
+/// The document an edit saves: the text parsed; numbers kept as the type the same field had
+/// (relaxed Extended JSON writes Int64 and whole doubles as plain numbers); and the document's
+/// own `_id`, which an edit can't change.
+pub fn replacement(text: &str, current: &Document) -> Result<Document> {
+    let mut new = Bson::Document(parse_document(text, "document")?);
+    keep_number_types(&mut new, &Bson::Document(current.clone()));
+    let Bson::Document(new) = new else { unreachable!("a document stays a document") };
+    let id = current.get("_id").cloned().unwrap_or(Bson::Null);
+    match new.get("_id") {
+        Some(v) if *v != id => {
+            Err(AppError::invalid_config("A document's _id can't be changed. Insert a copy with the new _id instead."))
+        }
+        Some(_) => Ok(new),
+        None => {
+            let mut d = doc! { "_id": id };
+            d.extend(new);
+            Ok(d)
+        }
+    }
+}
+
+fn keep_number_types(new: &mut Bson, old: &Bson) {
+    match (new, old) {
+        (Bson::Document(n), Bson::Document(o)) => {
+            for (k, v) in n.iter_mut() {
+                if let Some(ov) = o.get(k) {
+                    keep_number_types(v, ov);
+                }
+            }
+        }
+        (Bson::Array(n), Bson::Array(o)) => {
+            for (v, ov) in n.iter_mut().zip(o.iter()) {
+                keep_number_types(v, ov);
+            }
+        }
+        (n, o) => {
+            let kept = match (&*n, o) {
+                (Bson::Int32(v), Bson::Int64(_)) => Some(Bson::Int64(i64::from(*v))),
+                (Bson::Int32(v), Bson::Double(_)) => Some(Bson::Double(f64::from(*v))),
+                (Bson::Int64(v), Bson::Double(_)) if v.unsigned_abs() <= 1 << 53 => Some(Bson::Double(*v as f64)),
+                _ => None,
+            };
+            if let Some(k) = kept {
+                *n = k;
+            }
+        }
+    }
 }
 
 fn to_text(d: Document) -> String {
@@ -659,6 +757,50 @@ impl MongoSession {
         let _op = self.op.lock().await;
         let ids = self.ids_to_delete(database, collection, target, expected).await?;
         self.delete_ids(database, collection, target, &ids, confirmed, typed).await
+    }
+
+    /// Saves an edited document over the one read, if it still reads the same: the replace also
+    /// matches only that exact document, so a change in between is a conflict, not overwritten.
+    pub async fn replace(&self, req: &ReplaceRequest) -> Result<()> {
+        check_write(self.read_only, self.writes_locked, self.environment, &self.connection_name, req.confirmed)?;
+        check_writable_collection(&req.database, &req.collection)?;
+        let id = parse_id(&req.id)?;
+        let _op = self.op.lock().await;
+        let coll = self.client.database(&req.database).collection::<Document>(&req.collection);
+        let current = self
+            .timed(self.timeout, coll.find_one(doc! { "_id": id }).max_time(self.timeout))
+            .await?
+            .ok_or_else(|| AppError::not_found("The document was deleted since it was read. Nothing was saved."))?;
+        let changed = || {
+            AppError::new(
+                ErrorKind::Conflict,
+                "The document changed since it was read. Nothing was saved; run the find again to see it.",
+            )
+        };
+        if to_text(current.clone()) != req.original {
+            return Err(changed());
+        }
+        let new = replacement(&req.document, &current)?;
+        let same = doc! {
+            "_id": current.get("_id").cloned().unwrap_or(Bson::Null),
+            "$expr": { "$eq": ["$$ROOT", { "$literal": current }] },
+        };
+        let r = self.timed(self.timeout, coll.replace_one(same, new)).await?;
+        if r.matched_count == 0 {
+            return Err(changed());
+        }
+        Ok(())
+    }
+
+    /// Inserts one document; returns its `_id` (compact Extended JSON).
+    pub async fn insert(&self, database: &str, collection: &str, document: &str, confirmed: bool) -> Result<String> {
+        check_write(self.read_only, self.writes_locked, self.environment, &self.connection_name, confirmed)?;
+        check_writable_collection(database, collection)?;
+        let doc = parse_document(document, "document")?;
+        let _op = self.op.lock().await;
+        let coll = self.client.database(database).collection::<Document>(collection);
+        let r = self.timed(self.timeout, coll.insert_one(doc)).await?;
+        Ok(r.inserted_id.into_relaxed_extjson().to_string())
     }
 
     fn check(&self, target: &DeleteTarget, confirmed: bool, typed: Option<&str>) -> Result<()> {
@@ -984,5 +1126,52 @@ mod tests {
         assert_eq!((e.kind, e.code.as_deref()), (ErrorKind::ConfirmationRequired, Some("confirm_typed")));
         assert!(check(false, false, prod, &all, true, Some("wrong")).is_err());
         assert!(check(false, false, prod, &all, true, Some(" Shop prod ")).is_ok());
+    }
+
+    #[test]
+    fn writes_are_checked_in_the_backend() {
+        let check = |ro, locked, env, confirmed| check_write(ro, locked, env, "Shop prod", confirmed);
+        let (local, prod) = (Environment::Local, Environment::Production);
+        assert_eq!(check(true, false, local, true).unwrap_err().kind, ErrorKind::PolicyViolation);
+        assert_eq!(check(false, true, prod, true).unwrap_err().kind, ErrorKind::PolicyViolation);
+        assert!(check(false, false, local, false).is_ok(), "saving in the editor is the confirmation");
+        assert_eq!(check(false, false, prod, false).unwrap_err().kind, ErrorKind::ConfirmationRequired);
+        assert!(check(false, false, prod, true).is_ok());
+        assert!(check_writable_collection("admin", "users").is_err());
+        assert!(check_writable_collection("shop", "system.views").is_err());
+        assert!(check_writable_collection("shop", "orders").is_ok());
+    }
+
+    #[test]
+    fn an_edited_document_keeps_its_id_and_number_types() {
+        let current = doc! {
+            "_id": 7_i64,
+            "n": 5_i64,
+            "price": 2.0,
+            "qty": 3,
+            "nested": { "big": 1_i64, "list": [1_i64, 2_i64] },
+        };
+        // Relaxed Extended JSON writes them all as plain numbers.
+        let edited =
+            r#"{ "_id": 7, "n": 6, "price": 3, "qty": 4, "nested": { "big": 2, "list": [3, 4, 5] }, "added": 1 }"#;
+        let d = replacement(edited, &current).unwrap();
+        assert_eq!(d.get("_id"), Some(&Bson::Int64(7)));
+        assert_eq!(d.get("n"), Some(&Bson::Int64(6)));
+        assert_eq!(d.get("price"), Some(&Bson::Double(3.0)));
+        assert_eq!(d.get("qty"), Some(&Bson::Int32(4)));
+        let nested = d.get_document("nested").unwrap();
+        assert_eq!(nested.get("big"), Some(&Bson::Int64(2)));
+        assert_eq!(nested.get_array("list").unwrap(), &vec![Bson::Int64(3), Bson::Int64(4), Bson::Int32(5)]);
+        assert_eq!(d.get("added"), Some(&Bson::Int32(1)), "new fields are as written");
+        // A fraction stays a fraction.
+        let d = replacement(r#"{ "_id": 7, "n": 6.5 }"#, &current).unwrap();
+        assert_eq!(d.get("n"), Some(&Bson::Double(6.5)));
+        // Without an _id the document keeps its own, first.
+        let d = replacement(r#"{ "qty": 1 }"#, &current).unwrap();
+        assert_eq!(d.keys().next().map(String::as_str), Some("_id"));
+        assert_eq!(d.get("_id"), Some(&Bson::Int64(7)));
+        let e = replacement(r#"{ "_id": 8 }"#, &current).unwrap_err();
+        assert!(e.message.contains("_id"), "{}", e.message);
+        assert!(replacement("[1]", &current).is_err());
     }
 }
