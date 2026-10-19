@@ -56,6 +56,11 @@ beforeEach(() => {
       points = [];
       return null;
     }
+    if (cmd === "delete_restore_points") {
+      const n = points.filter((p) => p.status !== "pending").length;
+      points = points.filter((p) => p.status === "pending");
+      return n;
+    }
     return null;
   });
 });
@@ -125,6 +130,70 @@ describe("RestorePanel", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete restore point" }));
     await waitFor(() => expect(calls.some(([c]) => c === "delete_restore_point")).toBe(true));
     expect(await screen.findByText(/No restore points/)).toBeInTheDocument();
+  });
+
+  it("deletes all of the connection's restore points after asking, keeping pending ones", async () => {
+    points = [summary, { ...summary, id: "p2", bytes: 80 }, { ...summary, id: "p3", status: "pending" }];
+    render(
+      <>
+        <RestorePanel session={session} onClose={() => {}} />
+        <Overlays />
+      </>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Delete all restore points" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete all restore points?" });
+    expect(dialog).toHaveTextContent("2 restore points");
+    expect(dialog).toHaveTextContent("200 B");
+    expect(dialog).toHaveTextContent(/pending/i);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete 2 restore points" }));
+    await waitFor(() => expect(calls.some(([c, a]) => c === "delete_restore_points" && a.connectionId === session.connectionId)).toBe(true));
+    await waitFor(() => expect(screen.getAllByRole("listitem")).toHaveLength(1));
+  });
+
+  it("names each item with its status, so the Pending and Restored tags are heard too", async () => {
+    points = [{ ...summary, status: "pending" }, { ...summary, id: "p2", status: "restored" }, { ...summary, id: "p3" }];
+    render(<RestorePanel session={session} onClose={() => {}} />);
+    expect(await screen.findByRole("button", { name: /orders · Update · 2 rows, .*, pending$/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /orders · Update · 2 rows, .*, restored$/ })).toBeInTheDocument();
+    const names = screen.getAllByRole("button", { name: /orders · Update · 2 rows/ }).map((b) => b.getAttribute("aria-label") ?? "");
+    expect(names.filter((n) => !/, (pending|restored)$/.test(n))).toHaveLength(1);
+  });
+
+  it("says in words which rows were deleted and what changed, with no labels on plain text", async () => {
+    points = [{ ...summary, kind: "delete" }];
+    const deleted: RestorePoint = { ...point, kind: "delete", data: { ...point.data, after: [] } };
+    mockIPC((cmd) => (cmd === "list_restore_points" ? points : cmd === "get_restore_point" ? deleted : null));
+    const { container } = render(<RestorePanel session={session} onClose={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: /orders · Delete · 2 rows/ }));
+    await screen.findByRole("region", { name: "Restore point" });
+    expect(await screen.findAllByText("Deleted")).toHaveLength(2);
+    expect(screen.getByRole("checkbox", { name: "Row 1, deleted" })).toBeInTheDocument();
+    expect(container.querySelectorAll("span[aria-label]")).toHaveLength(0);
+  });
+
+  it("marks changed values in words without an aria-label", async () => {
+    const { container } = render(<RestorePanel session={session} onClose={() => {}} />);
+    await openPoint();
+    await screen.findAllByText("changed to");
+    expect(container.querySelectorAll("span[aria-label]")).toHaveLength(0);
+  });
+
+  it("moves focus into a restore point and back to its item", async () => {
+    render(<RestorePanel session={session} onClose={() => {}} />);
+    const item = await screen.findByRole("button", { name: /orders · Update · 2 rows/ });
+    item.focus();
+    fireEvent.click(item);
+    await screen.findByRole("region", { name: "Restore point" });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: /public\.orders/ })));
+    fireEvent.click(screen.getByRole("button", { name: /All restore points/ }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: /orders · Update · 2 rows/ })));
+  });
+
+  it("offers no Delete all when only pending restore points exist", async () => {
+    points = [{ ...summary, status: "pending" }];
+    render(<RestorePanel session={session} onClose={() => {}} />);
+    await screen.findByRole("button", { name: /orders · Update/ });
+    expect(screen.queryByRole("button", { name: "Delete all restore points" })).not.toBeInTheDocument();
   });
 
   it("can't restore on a read-only connection or before the transaction ends", async () => {

@@ -2984,6 +2984,11 @@ pre,
 .restore-panel {
   width: 440px;
 }
+.restore-list-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--space-2) var(--space-3) 0;
+}
 .restore-list {
   list-style: none;
   margin: 0;
@@ -3101,6 +3106,16 @@ pre,
 }
 .restore-diff td.changed {
   background: var(--edited-bg);
+}
+.restore-row-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.restore-row-tag {
+  font-size: var(--text-xs);
+  color: var(--danger);
+  white-space: nowrap;
 }
 .restore-diff tr.deleted td {
   background: var(--deleted-bg);

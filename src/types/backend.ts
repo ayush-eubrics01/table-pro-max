@@ -721,6 +721,12 @@ export interface UpdateProgress {
 export type RestoreKind = "update" | "delete" | "truncate" | "drop_table" | "drop_column" | "grid_edit" | "restore";
 export type RestoreStatus = "pending" | "kept" | "restored";
 
+/** Every restore point on this computer, counted and sized. */
+export interface RestoreUsage {
+  count: number;
+  bytes: number;
+}
+
 export interface RestorePointSummary {
   id: string;
   connectionId: string;

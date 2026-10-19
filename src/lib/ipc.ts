@@ -31,6 +31,7 @@ import type {
   ApplyResult,
   RestorePoint,
   RestorePointSummary,
+  RestoreUsage,
   ChangeSet,
   ConnectionProfile,
   DbObject,
@@ -197,6 +198,8 @@ export const api = {
   listRestorePoints: (connectionId: string) => call<RestorePointSummary[]>("list_restore_points", { connectionId }),
   getRestorePoint: (id: string) => call<RestorePoint>("get_restore_point", { id }),
   deleteRestorePoint: (id: string) => call<void>("delete_restore_point", { id }),
+  deleteRestorePoints: (connectionId: string) => call<number>("delete_restore_points", { connectionId }),
+  restorePointsUsage: () => call<RestoreUsage>("restore_points_usage"),
   previewRestore: (sessionId: string, pointId: string, rows: number[] | null) =>
     call<ChangePreview>("preview_restore", { sessionId, pointId, rows }),
   applyRestore: (sessionId: string, pointId: string, rows: number[] | null) =>

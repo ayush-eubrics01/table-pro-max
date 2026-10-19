@@ -35,6 +35,9 @@ export function RestorePanel({ session, onClose }: { session: SessionInfo; onClo
   const keepDays = useSettings((s) => s.settings["restore.keepDays"]);
   const [points, setPoints] = useState<RestorePointSummary[] | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  // Back in the list, focus returns to the item that was opened.
+  const listRef = useRef<HTMLUListElement>(null);
+  const returnTo = useRef<string | null>(null);
 
   const load = useCallback(() => {
     api
@@ -46,6 +49,37 @@ export function RestorePanel({ session, onClose }: { session: SessionInfo; onClo
       });
   }, [session.connectionId]);
   useEffect(load, [load, version]);
+  useEffect(() => {
+    if (openId !== null || !returnTo.current || !listRef.current) return;
+    listRef.current.querySelector<HTMLButtonElement>(`[data-id="${CSS.escape(returnTo.current)}"]`)?.focus();
+    returnTo.current = null;
+  }, [openId, points]);
+
+  // Pending points belong to a transaction still open; they stay until it ends.
+  const deletable = points?.filter((p) => p.status !== "pending") ?? [];
+  const removeAll = async () => {
+    const bytes = deletable.reduce((n, p) => n + p.bytes, 0);
+    const pending = (points?.length ?? 0) - deletable.length;
+    const ok = await confirmAction({
+      title: "Delete all restore points?",
+      body: (
+        <p style={{ margin: 0 }}>
+          The {pluralize(deletable.length, "restore point")} kept for {session.connectionName} ({formatBytes(bytes)}) are removed from this computer. The database is not changed.
+          {pending > 0 && ` ${pluralize(pending, "pending restore point")} for a transaction still open ${pending === 1 ? "stays" : "stay"} until it ends.`}
+        </p>
+      ),
+      confirmLabel: `Delete ${pluralize(deletable.length, "restore point")}`,
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      const n = await api.deleteRestorePoints(session.connectionId);
+      notify(`Deleted ${pluralize(n, "restore point")}`, "success");
+    } catch (e) {
+      notifyError(e, "Could not delete the restore points");
+    }
+    load();
+  };
 
   return (
     <aside className="detail-panel restore-panel" aria-label="Restore points">
@@ -80,26 +114,39 @@ export function RestorePanel({ session, onClose }: { session: SessionInfo; onClo
           those rows is kept here for {pluralize(keepDays, "day")} so you can put them back.
         </p>
       ) : (
-        <ul className="restore-list">
-          {points.map((p) => (
-            <li key={p.id}>
-              <button
-                className="restore-item"
-                aria-label={`${p.table} · ${KIND_LABEL[p.kind]} · ${pluralize(p.rowCount, "row")}, ${new Date(p.createdAt).toLocaleString()}`}
-                onClick={() => setOpenId(p.id)}
-              >
-                <span className="restore-item-title">
-                  <strong>{p.table}</strong> <span className="hint">{KIND_LABEL[p.kind]}</span>
-                  {p.status !== "kept" && <span className={`restore-tag ${p.status}`}>{p.status === "pending" ? "Pending" : "Restored"}</span>}
-                </span>
-                <span className="restore-item-meta hint">
-                  {new Date(p.createdAt).toLocaleString()} · {pluralize(p.rowCount, "row")} · {formatBytes(p.bytes)}
-                </span>
-                <code className="restore-item-sql">{p.statement}</code>
+        <>
+          {deletable.length > 0 && (
+            <div className="restore-list-actions">
+              <button className="btn btn-ghost" onClick={() => void removeAll()}>
+                <Icon name="delete" size={14} /> Delete all restore points
               </button>
-            </li>
-          ))}
-        </ul>
+            </div>
+          )}
+          <ul className="restore-list" ref={listRef}>
+            {points.map((p) => (
+              <li key={p.id}>
+                <button
+                  className="restore-item"
+                  data-id={p.id}
+                  aria-label={`${p.table} · ${KIND_LABEL[p.kind]} · ${pluralize(p.rowCount, "row")}, ${new Date(p.createdAt).toLocaleString()}${p.status === "kept" ? "" : `, ${p.status}`}`}
+                  onClick={() => {
+                    returnTo.current = p.id;
+                    setOpenId(p.id);
+                  }}
+                >
+                  <span className="restore-item-title">
+                    <strong>{p.table}</strong> <span className="hint">{KIND_LABEL[p.kind]}</span>
+                    {p.status !== "kept" && <span className={`restore-tag ${p.status}`}>{p.status === "pending" ? "Pending" : "Restored"}</span>}
+                  </span>
+                  <span className="restore-item-meta hint">
+                    {new Date(p.createdAt).toLocaleString()} · {pluralize(p.rowCount, "row")} · {formatBytes(p.bytes)}
+                  </span>
+                  <code className="restore-item-sql">{p.statement}</code>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </aside>
   );
@@ -135,6 +182,13 @@ function PointDetail({
       });
   }, [id]);
   useEffect(load, [load]);
+
+  // Opening a point moves focus to its heading, so it is read out and Tab continues from there.
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const loadedId = point?.id;
+  useEffect(() => {
+    if (loadedId) headingRef.current?.focus();
+  }, [loadedId]);
 
   if (!point) return <p className="detail-empty">Loading…</p>;
   const d = point.data;
@@ -189,7 +243,7 @@ function PointDetail({
         </button>
       </div>
       <div className="restore-detail-body">
-        <h3>
+        <h3 ref={headingRef} tabIndex={-1}>
           {point.schema}.{point.table} <span className="hint">{KIND_LABEL[point.kind]}</span>
           {point.status !== "kept" && <span className={`restore-tag ${point.status}`}>{point.status === "pending" ? "Pending" : "Restored"}</span>}
         </h3>
@@ -212,10 +266,15 @@ function PointDetail({
               <tbody>
                 {d.before.slice(0, SHOWN_ROWS).map((row, i) => {
                   const after = d.after[i];
+                  const deleted = !after && point.kind !== "drop_column";
                   return (
-                    <tr key={i} className={after || point.kind === "drop_column" ? undefined : "deleted"}>
+                    <tr key={i} className={deleted ? "deleted" : undefined}>
                       <td>
-                        {!noKey && <input type="checkbox" aria-label={`Row ${i + 1}`} checked={selected.has(i)} onChange={() => toggle(i)} />}
+                        <span className="restore-row-mark">
+                          {!noKey && <input type="checkbox" aria-label={`Row ${i + 1}${deleted ? ", deleted" : ""}`} checked={selected.has(i)} onChange={() => toggle(i)} />}
+                          {/* Not colour alone: the row says it was deleted. */}
+                          {deleted && <span className="restore-row-tag">Deleted</span>}
+                        </span>
                       </td>
                       {row.map((v, j) => {
                         const now = after?.[j];
@@ -225,9 +284,10 @@ function PointDetail({
                             <Value v={v} />
                             {changed && (
                               <>
-                                <span className="restore-arrow" aria-label="changed to">
+                                <span className="restore-arrow" aria-hidden="true">
                                   {" → "}
                                 </span>
+                                <span className="sr-only">changed to</span>
                                 <Value v={now ?? null} />
                               </>
                             )}

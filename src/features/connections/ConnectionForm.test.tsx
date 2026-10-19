@@ -4,6 +4,8 @@ import { mockIPC, clearMocks } from "@tauri-apps/api/mocks";
 import type { AppInfo, ConnectionProfile } from "../../types/backend";
 import { ConnectionForm } from "./ConnectionForm";
 import { profile } from "../../test/fixtures";
+import { Overlays } from "../../components/Overlays";
+import { useUi } from "../../stores/ui";
 
 const appInfo = (available: boolean): AppInfo => ({
   version: "0.1.0",
@@ -15,11 +17,22 @@ const appInfo = (available: boolean): AppInfo => ({
 });
 
 let saved: { profile: ConnectionProfile; password: string | null } | null = null;
+let deletedPointsFor: string | null = null;
+let keptPoints = 0;
 
 beforeEach(() => {
   saved = null;
+  deletedPointsFor = null;
+  keptPoints = 0;
+  useUi.setState({ confirmRequest: null });
   mockIPC((cmd, args) => {
     const a = args as Record<string, unknown>;
+    if (cmd === "list_restore_points")
+      return Array.from({ length: keptPoints }, (_, i) => ({ id: `p${i}`, status: "kept", bytes: 1000 }));
+    if (cmd === "delete_restore_points") {
+      deletedPointsFor = a.connectionId as string;
+      return keptPoints;
+    }
     if (cmd === "parse_url" && String((args as { url: string }).url).startsWith("mongodb:")) throw { kind: "invalid_config", message: "Unsupported URL scheme: mongodb" };
     if (cmd === "parse_url")
       return {
@@ -191,6 +204,52 @@ describe("ConnectionForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(saved!.profile.restorePoints).toBe(false);
+  });
+
+  it("offers to delete the restore points already kept when they are turned off", async () => {
+    keptPoints = 3;
+    const onSaved = vi.fn();
+    render(
+      <>
+        <ConnectionForm appInfo={appInfo(true)} initial={{ ...profile, environment: "local" }} onClose={() => undefined} onSaved={onSaved} />
+        <Overlays />
+      </>,
+    );
+    fireEvent.click(screen.getByText("Safety & timeouts"));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Keep restore points/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete the restore points already kept?" });
+    expect(dialog).toHaveTextContent("3 restore points");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete 3 restore points" }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(deletedPointsFor).toBe(profile.id);
+  });
+
+  it("keeps the restore points when the offer is declined, and doesn't ask when there are none", async () => {
+    keptPoints = 2;
+    const onSaved = vi.fn();
+    const { unmount } = render(
+      <>
+        <ConnectionForm appInfo={appInfo(true)} initial={{ ...profile, environment: "local" }} onClose={() => undefined} onSaved={onSaved} />
+        <Overlays />
+      </>,
+    );
+    fireEvent.click(screen.getByText("Safety & timeouts"));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Keep restore points/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(within(await screen.findByRole("dialog", { name: "Delete the restore points already kept?" })).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(deletedPointsFor).toBeNull();
+    unmount();
+
+    keptPoints = 0;
+    const onSaved2 = vi.fn();
+    render(<ConnectionForm appInfo={appInfo(true)} initial={{ ...profile, environment: "local" }} onClose={() => undefined} onSaved={onSaved2} />);
+    fireEvent.click(screen.getByText("Safety & timeouts"));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Keep restore points/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onSaved2).toHaveBeenCalled());
+    expect(useUi.getState().confirmRequest).toBeNull();
   });
 });
 

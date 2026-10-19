@@ -3,7 +3,7 @@
 
 use tauri::State;
 use tpm_core::error::Result;
-use tpm_core::restore::{RestorePoint, RestorePointSummary, RestoreStore};
+use tpm_core::restore::{RestorePoint, RestorePointSummary, RestoreStore, RestoreUsage};
 use tpm_core::storage::{ColumnFetch, Dashboard, FetchMode, FilterPreset, HistoryEntry, Pin, SavedQuery, Snippet};
 
 use crate::state::AppState;
@@ -180,4 +180,15 @@ pub fn get_restore_point(state: State<'_, AppState>, id: String) -> Result<Resto
 #[tauri::command]
 pub fn delete_restore_point(state: State<'_, AppState>, id: String) -> Result<()> {
     state.storage.delete(&[id])
+}
+
+/// Deletes all of a connection's restore points (pending ones stay until their transaction ends).
+#[tauri::command]
+pub fn delete_restore_points(state: State<'_, AppState>, connection_id: String) -> Result<usize> {
+    state.storage.delete_restore_points(&connection_id)
+}
+
+#[tauri::command]
+pub fn restore_points_usage(state: State<'_, AppState>) -> Result<RestoreUsage> {
+    state.storage.restore_points_usage()
 }
