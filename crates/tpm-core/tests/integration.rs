@@ -2646,6 +2646,15 @@ async fn sql_server_flow(t: Target) {
     // Variables live for the whole batch; GO starts the next one.
     let r = run(&engine, &sid, "DECLARE @x int = 41;\nSELECT @x + 1 AS v").await;
     assert_eq!(text(&rows(&r, 0)[0][0]), "42");
+    // GO n runs the batch n times, as in SQL Server Management Studio.
+    let r = run(
+        &engine,
+        &sid,
+        "CREATE TABLE #tpm_go (i int)\nGO\nINSERT INTO #tpm_go VALUES (1)\nGO 3\nSELECT count(*) FROM #tpm_go",
+    )
+    .await;
+    assert_eq!(r.statements.len(), 5, "{r:?}");
+    assert_eq!(r.statements[4].rows.as_ref().unwrap()[0][0], Cell::Text("3".into()));
     let r = run(&engine, &sid, "SELECT 1 AS a\nGO\nSELECT 2 AS b").await;
     assert_eq!((r.statements.len(), text(&rows(&r, 1)[0][0])), (2, "2"));
     let r = run(&engine, &sid, "UPDATE tpm_it_items SET tags = NULL WHERE price < 1").await;

@@ -163,6 +163,30 @@ describe("RestorePanel", () => {
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
 
+  it("stops listening for progress cleanly, even where events aren't available", async () => {
+    const rejected: unknown[] = [];
+    const record = (e: unknown) => rejected.push(e);
+    process.on("unhandledRejection", record);
+    // No event plugin here: stopping the listener fails, and that must not surface.
+    Object.assign(window, { __TAURI_EVENT_PLUGIN_INTERNALS__: {} });
+    try {
+      render(
+        <>
+          <RestorePanel session={session} onClose={() => {}} />
+          <Overlays />
+        </>,
+      );
+      await openPoint();
+      fireEvent.click(screen.getByRole("button", { name: "Restore all" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Restore" }));
+      expect(await screen.findByText(/Restored 1 row in orders/)).toBeInTheDocument();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(rejected).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", record);
+    }
+  });
+
   it("deletes a restore point after asking", async () => {
     render(
       <>
