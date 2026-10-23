@@ -65,24 +65,34 @@ export class Session {
     }, selector, pattern ? null : (name ?? null), pattern);
   }
 
+  /**
+   * Clicks the element. A click refused because something covers it (a dialog still animating in,
+   * a closing backdrop) is tried again for up to 3 s, as a person waits for it; an element that
+   * stays covered fails.
+   */
   async click(selector, name) {
-    const el = await this.find(selector, name);
-    try {
-      await this.cmd("POST", `/element/${el[ELEMENT]}/click`, {});
-    } catch (e) {
-      if (!/intercepted/.test(e.message)) throw e;
-      // WebKitWebDriver's own hit test misplaces points in the app's undecorated window. Click
-      // through the page only when the page agrees nothing covers the element.
-      const clicked = await this.run((node) => {
-        const r = node.getBoundingClientRect();
-        const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
-        if (!top || !(top === node || node.contains(top))) return false;
-        node.click();
-        return true;
-      }, el);
-      if (!clicked) throw e;
+    const deadline = Date.now() + 3000;
+    for (;;) {
+      const el = await this.find(selector, name);
+      try {
+        await this.cmd("POST", `/element/${el[ELEMENT]}/click`, {});
+        return el;
+      } catch (e) {
+        if (!/intercepted/.test(e.message)) throw e;
+        // WebKitWebDriver's own hit test misplaces points in the app's undecorated window. Click
+        // through the page only when the page agrees nothing covers the element.
+        const clicked = await this.run((node) => {
+          const r = node.getBoundingClientRect();
+          const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+          if (!top || !(top === node || node.contains(top))) return false;
+          node.click();
+          return true;
+        }, el);
+        if (clicked) return el;
+        if (Date.now() > deadline) throw e;
+        await new Promise((r) => setTimeout(r, 150));
+      }
     }
-    return el;
   }
 
   /** Types into the element (focused by WebDriver first). */
